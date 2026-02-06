@@ -102,6 +102,14 @@
                 <option value="no">No</option>
               </select>
             </label>
+            <label class="full-width">
+              Open to in-person office work?
+              <select name="work_auth.in_person_office_preference">
+                <option value="">Select</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
           </div>
         </section>
 
@@ -110,13 +118,22 @@
           <p class="hint">These values are optional and user-controlled.</p>
           <div class="grid two-col">
             <label>
-              Gender
+              Gender Identity
               <select name="demographics.gender">
                 <option value="prefer_not_to_say">Prefer not to say</option>
-                <option value="female">Female</option>
-                <option value="male">Male</option>
+                <option value="male">Man</option>
+                <option value="female">Woman</option>
                 <option value="non_binary">Non-binary</option>
                 <option value="self_describe">Self-describe</option>
+              </select>
+            </label>
+            <label>
+              Pronouns
+              <select name="demographics.pronouns">
+                <option value="prefer_not_to_answer">Prefer not to answer</option>
+                <option value="she_her_hers">She/Her/Hers</option>
+                <option value="he_him_his">He/Him/His</option>
+                <option value="they_them_theirs">They/Them/Theirs</option>
               </select>
             </label>
             <label>
@@ -144,6 +161,48 @@
                 <option value="prefer_not_to_say">Prefer not to say</option>
                 <option value="yes">Yes</option>
                 <option value="no">No</option>
+              </select>
+            </label>
+            <label>
+              Are you Hispanic or Latinx?
+              <select name="demographics.hispanic_latinx">
+                <option value="prefer_not_to_answer">Prefer not to answer</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label>
+              Do you identify as transgender?
+              <select name="demographics.transgender_identity">
+                <option value="prefer_not_to_answer">Prefer not to answer</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Education</h2>
+          <div class="grid two-col">
+            <label class="full-width">
+              School
+              <input type="text" name="education.school" placeholder="e.g., Rutgers University" />
+            </label>
+            <label class="full-width">
+              Degree
+              <select name="education.degree">
+                <option value="">Select</option>
+                <option value="high_school">High School</option>
+                <option value="associate_degree">Associate's Degree</option>
+                <option value="bachelors_degree">Bachelor's Degree</option>
+                <option value="masters_degree">Master's Degree</option>
+                <option value="master_of_business_administration_mba">Master of Business Administration (M.B.A.)</option>
+                <option value="doctor_of_philosophy_phd">Doctor of Philosophy (Ph.D.)</option>
+                <option value="doctor_of_medicine_md">Doctor of Medicine (M.D.)</option>
+                <option value="juris_doctor_jd">Juris Doctor (J.D.)</option>
+                <option value="engineers_degree">Engineer's Degree</option>
+                <option value="other">Other</option>
               </select>
             </label>
           </div>

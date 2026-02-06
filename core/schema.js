@@ -22,13 +22,21 @@
       eligible_to_work_us: "",
       requires_sponsorship: "",
       open_to_relocate: "",
-      worked_here_before: ""
+      worked_here_before: "",
+      in_person_office_preference: ""
     },
     demographics: {
       gender: "prefer_not_to_say",
       ethnicity: "prefer_not_to_say",
       disability_status: "prefer_not_to_say",
-      veteran_status: "prefer_not_to_say"
+      veteran_status: "prefer_not_to_say",
+      pronouns: "prefer_not_to_answer",
+      hispanic_latinx: "prefer_not_to_answer",
+      transgender_identity: "prefer_not_to_answer"
+    },
+    education: {
+      school: "",
+      degree: ""
     },
     links: {
       linkedin: "",
@@ -53,10 +61,16 @@
     "work_auth.requires_sponsorship",
     "work_auth.open_to_relocate",
     "work_auth.worked_here_before",
+    "work_auth.in_person_office_preference",
     "demographics.gender",
     "demographics.ethnicity",
     "demographics.disability_status",
     "demographics.veteran_status",
+    "demographics.pronouns",
+    "demographics.hispanic_latinx",
+    "demographics.transgender_identity",
+    "education.school",
+    "education.degree",
     "links.linkedin",
     "links.github",
     "links.portfolio",
@@ -113,11 +127,40 @@
     return "";
   }
 
+  function normalizeYesNoOrPreferNot(value) {
+    var normalized = String(value || "").trim().toLowerCase();
+    var yesNo = normalizeYesNo(normalized);
+    if (yesNo) {
+      return yesNo;
+    }
+
+    if (
+      normalized === "prefer_not_to_answer" ||
+      normalized === "prefer not to answer" ||
+      normalized === "prefer_not_to_say" ||
+      normalized === "prefer not to say" ||
+      normalized === "decline_to_answer" ||
+      normalized === "decline to answer"
+    ) {
+      return "prefer_not_to_answer";
+    }
+
+    return "";
+  }
+
   function normalizeProfileField(path, value) {
     var trimmed = String(value == null ? "" : value).trim();
 
     if (path.indexOf("work_auth.") === 0) {
       return normalizeYesNo(trimmed);
+    }
+
+    if (path === "demographics.hispanic_latinx" || path === "demographics.transgender_identity") {
+      return normalizeYesNoOrPreferNot(trimmed) || "prefer_not_to_answer";
+    }
+
+    if (path === "demographics.pronouns") {
+      return trimmed || "prefer_not_to_answer";
     }
 
     if (path.indexOf("demographics.") === 0) {

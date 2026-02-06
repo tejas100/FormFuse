@@ -114,6 +114,27 @@
     });
   }
 
+  function showInlineButtonOnActiveTab() {
+    return new Promise(function (resolve) {
+      chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+        if (chrome.runtime.lastError) {
+          resolve(false);
+          return;
+        }
+
+        var tab = tabs && tabs.length ? tabs[0] : null;
+        if (!tab || typeof tab.id !== "number") {
+          resolve(false);
+          return;
+        }
+
+        chrome.tabs.sendMessage(tab.id, { action: "FORMFUSE_SHOW_INLINE_BUTTON" }, function () {
+          resolve(!chrome.runtime.lastError);
+        });
+      });
+    });
+  }
+
   async function handleFillClick() {
     fillButton.disabled = true;
 
@@ -151,6 +172,8 @@
     } catch (error) {
       setStatus(error.message || "Could not load profile.", "error");
     }
+
+    showInlineButtonOnActiveTab();
   }
 
   init();

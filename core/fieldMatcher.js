@@ -40,7 +40,7 @@
     },
     {
       path: "address.country",
-      keywords: ["country", "nation"]
+      keywords: ["country", "nation", "country code", "dial code", "dialing code", "phone country", "phone country code"]
     },
     {
       path: "work_auth.eligible_to_work_us",
@@ -94,12 +94,36 @@
       ]
     },
     {
+      path: "work_auth.in_person_office_preference",
+      keywords: [
+        "work in person",
+        "in person office",
+        "in office",
+        "on site",
+        "onsite",
+        "from the office",
+        "5 days a week"
+      ]
+    },
+    {
       path: "demographics.gender",
-      keywords: ["gender", "sex"]
+      keywords: ["gender", "gender identity", "input gender", "sex"]
     },
     {
       path: "demographics.ethnicity",
       keywords: ["ethnicity", "race", "racial"]
+    },
+    {
+      path: "demographics.pronouns",
+      keywords: ["pronouns", "preferred pronouns", "your pronouns"]
+    },
+    {
+      path: "demographics.hispanic_latinx",
+      keywords: ["hispanic", "latinx", "hispanic or latino", "hispanic or latinx"]
+    },
+    {
+      path: "demographics.transgender_identity",
+      keywords: ["identify as transgender", "transgender", "trans identity", "gender identity transgender"]
     },
     {
       path: "demographics.disability_status",
@@ -124,6 +148,14 @@
     {
       path: "links.website",
       keywords: ["website", "personal website", "personal site", "homepage"]
+    },
+    {
+      path: "education.school",
+      keywords: ["school", "college", "university", "institution", "school name"]
+    },
+    {
+      path: "education.degree",
+      keywords: ["degree", "highest degree", "education level", "academic degree"]
     }
   ];
 
@@ -324,6 +356,50 @@
     return score;
   }
 
+  function looksLikePlainNameField(field, signals) {
+    if (!(field instanceof HTMLInputElement) && !(field instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    if (field instanceof HTMLInputElement) {
+      var type = (field.type || "text").toLowerCase();
+      if (["email", "tel", "number", "date", "url", "search", "password"].indexOf(type) !== -1) {
+        return false;
+      }
+    }
+
+    var combined = [signals.label, signals.aria, signals.placeholder, signals.name, signals.id, signals.autocomplete].join(" ");
+    if (!/\bname\b/.test(combined)) {
+      return false;
+    }
+
+    var excluded = [
+      "first",
+      "last",
+      "surname",
+      "family",
+      "given",
+      "middle",
+      "preferred",
+      "nickname",
+      "company",
+      "school",
+      "university",
+      "college",
+      "degree",
+      "username",
+      "user name"
+    ];
+
+    for (var i = 0; i < excluded.length; i += 1) {
+      if (combined.indexOf(excluded[i]) !== -1) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   function getBestMatch(field) {
     var signals = getElementSignals(field);
 
@@ -342,6 +418,9 @@
     }
 
     if (!results.length) {
+      if (looksLikePlainNameField(field, signals)) {
+        return { path: "identity.full_name", score: MIN_CONFIDENT_SCORE };
+      }
       return null;
     }
 
@@ -353,6 +432,9 @@
     var second = results[1];
 
     if (best.score < MIN_CONFIDENT_SCORE) {
+      if (looksLikePlainNameField(field, signals)) {
+        return { path: "identity.full_name", score: MIN_CONFIDENT_SCORE };
+      }
       return null;
     }
 

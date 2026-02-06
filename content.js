@@ -70,6 +70,7 @@
     "input",
     "textarea",
     "select",
+    "[role='combobox']",
     "[role='radio']",
     "[role='option']",
     "[role='checkbox']",
@@ -139,10 +140,27 @@
     return !isNonAnswerToken(text);
   }
 
-  function hasValueAlready(field) {
+  function hasValueAlready(field, path, value) {
+    if (isComboboxField(field)) {
+      return false;
+    }
+
     if (isCustomChoiceField(field)) {
-      var groupInfo = collectGroupOptions(field, "custom");
-      return hasMeaningfulSelectedOption(groupInfo.options);
+      var groupInfo = collectGroupOptions(field, path || "custom");
+      var selected = getSelectedOption(groupInfo.options);
+      if (!selected) {
+        return false;
+      }
+
+      if (!path) {
+        return !isNonAnswerToken(optionText(selected));
+      }
+
+      if (optionMatchesValue(selected, path, value)) {
+        return true;
+      }
+
+      return !shouldAllowChoiceOverride(path);
     }
 
     if (field instanceof HTMLInputElement) {
@@ -150,13 +168,33 @@
 
       if (type === "radio") {
         if (!field.name) {
-          return field.checked;
+          if (!field.checked) {
+            return false;
+          }
+          if (path && optionMatchesValue(field, path, value)) {
+            return true;
+          }
+          return !shouldAllowChoiceOverride(path) && !isNonAnswerToken(optionText(field));
         }
-        return radioIsMeaningfulSelection(getCheckedRadio(field.name));
+        var checkedRadio = getCheckedRadio(field.name);
+        if (!checkedRadio) {
+          return false;
+        }
+        if (path && optionMatchesValue(checkedRadio, path, value)) {
+          return true;
+        }
+        if (path && shouldAllowChoiceOverride(path)) {
+          return false;
+        }
+        return radioIsMeaningfulSelection(checkedRadio);
       }
 
       if (type === "checkbox") {
         return field.checked;
+      }
+
+      if (shouldAllowChoiceOverride(path) && String(value || "").trim()) {
+        return normalize(field.value) === normalize(value);
       }
 
       return Boolean((field.value || "").trim());
@@ -167,7 +205,19 @@
     }
 
     if (field instanceof HTMLSelectElement) {
-      return isSelectMeaningfullyFilled(field);
+      if (!isSelectMeaningfullyFilled(field)) {
+        return false;
+      }
+
+      if (!path) {
+        return true;
+      }
+
+      if (selectMatchesValue(field, path, value)) {
+        return true;
+      }
+
+      return !shouldAllowChoiceOverride(path);
     }
 
     return true;
@@ -241,6 +291,20 @@
     return false;
   }
 
+  function isComboboxField(field) {
+    if (!field || !(field instanceof HTMLElement)) {
+      return false;
+    }
+
+    var role = normalize(field.getAttribute("role"));
+    if (role === "combobox") {
+      return true;
+    }
+
+    var popup = normalize(field.getAttribute("aria-haspopup"));
+    return popup === "listbox";
+  }
+
   function getGroupContainer(field) {
     if (!field || typeof field.closest !== "function") {
       return null;
@@ -284,11 +348,6 @@
       parts.push(questionBlock.textContent);
     }
 
-    var section = field.closest("section, article, form");
-    if (section && section.textContent) {
-      parts.push(section.textContent.slice(0, 1200));
-    }
-
     return normalize(parts.join(" "));
   }
 
@@ -296,6 +355,36 @@
     var text = getQuestionContextText(field);
     if (!text) {
       return null;
+    }
+
+    var leading = text.slice(0, 240);
+
+    if (/\bgender identity\b|\binput gender\b|^gender\b/.test(leading)) {
+      return "demographics.gender";
+    }
+
+    if (/\brace\b|\bethnicity\b/.test(leading)) {
+      return "demographics.ethnicity";
+    }
+
+    if (/\bpronouns\b|\bpreferred pronouns\b/.test(leading)) {
+      return "demographics.pronouns";
+    }
+
+    if (/hispanic|latinx|latino/.test(leading)) {
+      return "demographics.hispanic_latinx";
+    }
+
+    if (/identify as transgender|transgender|trans identity/.test(leading)) {
+      return "demographics.transgender_identity";
+    }
+
+    if (/\bschool\b|\bcollege\b|\buniversity\b/.test(leading)) {
+      return "education.school";
+    }
+
+    if (/\bdegree\b|\beducation level\b|\bacademic degree\b/.test(leading)) {
+      return "education.degree";
     }
 
     if (
@@ -310,6 +399,10 @@
       return "work_auth.open_to_relocate";
     }
 
+    if (/in person|in office|onsite|on site|from the office|5 days a week/.test(text)) {
+      return "work_auth.in_person_office_preference";
+    }
+
     if (
       /authorized to work|eligible to work|lawfully authorized|legally authorized|work in the country to which you are applying|authorization to work/.test(
         text
@@ -322,6 +415,10 @@
       return "work_auth.worked_here_before";
     }
 
+    if (/country code|dial code|dialing code|phone country|country calling code/.test(text)) {
+      return "address.country";
+    }
+
     if (/veteran|protected veteran/.test(text)) {
       return "demographics.veteran_status";
     }
@@ -332,6 +429,30 @@
 
     if (/\bgender\b|\binput gender\b|\bsex\b/.test(text)) {
       return "demographics.gender";
+    }
+
+    if (/\bethnicity\b|\brace\b|\bracial\b/.test(text)) {
+      return "demographics.ethnicity";
+    }
+
+    if (/\bpronouns\b|\bpreferred pronouns\b/.test(text)) {
+      return "demographics.pronouns";
+    }
+
+    if (/hispanic|latinx|latino/.test(text)) {
+      return "demographics.hispanic_latinx";
+    }
+
+    if (/identify as transgender|transgender|trans identity/.test(text)) {
+      return "demographics.transgender_identity";
+    }
+
+    if (/\bschool\b|\bcollege\b|\buniversity\b/.test(text)) {
+      return "education.school";
+    }
+
+    if (/\bdegree\b|\beducation level\b|\bacademic degree\b/.test(text)) {
+      return "education.degree";
     }
 
     return null;
@@ -436,20 +557,20 @@
       textParts.push(option.value || "");
     }
 
-    textParts.push(option.getAttribute("aria-label") || "");
-    textParts.push(option.getAttribute("data-value") || "");
-    textParts.push(option.textContent || "");
+    addOptionTextPart(textParts, option.getAttribute("aria-label"), 12);
+    addOptionTextPart(textParts, option.getAttribute("data-value"), 8);
+    addOptionTextPart(textParts, option.textContent, 16);
 
     if (option.id) {
       var linked = document.querySelector('label[for="' + cssEscape(option.id) + '"]');
       if (linked && linked.textContent) {
-        textParts.push(linked.textContent);
+        addOptionTextPart(textParts, linked.textContent, 24);
       }
     }
 
     var wrappedLabel = option.closest("label");
     if (wrappedLabel && wrappedLabel.textContent) {
-      textParts.push(wrappedLabel.textContent);
+      addOptionTextPart(textParts, wrappedLabel.textContent, 24);
     }
 
     var ariaLabelledBy = option.getAttribute("aria-labelledby");
@@ -458,7 +579,7 @@
       for (var i = 0; i < ids.length; i += 1) {
         var node = document.getElementById(ids[i]);
         if (node && node.textContent) {
-          textParts.push(node.textContent);
+          addOptionTextPart(textParts, node.textContent, 24);
         }
       }
     }
@@ -508,6 +629,54 @@
     return false;
   }
 
+  function getSelectedOption(options) {
+    for (var i = 0; i < options.length; i += 1) {
+      if (isOptionSelected(options[i])) {
+        return options[i];
+      }
+    }
+
+    return null;
+  }
+
+  function shouldAllowChoiceOverride(path) {
+    if (!path) {
+      return false;
+    }
+
+    return (
+      path.indexOf("demographics.") === 0 ||
+      path.indexOf("work_auth.") === 0 ||
+      path.indexOf("education.") === 0 ||
+      path === "address.country"
+    );
+  }
+
+  function optionMatchesValue(option, path, value) {
+    var candidates = valueCandidates(path, value);
+    if (!candidates.length) {
+      return false;
+    }
+
+    var text = optionText(option);
+    for (var i = 0; i < candidates.length; i += 1) {
+      if (containsCandidate(text, candidates[i])) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function selectMatchesValue(select, path, value) {
+    var selected = select.options[select.selectedIndex];
+    if (!selected) {
+      return false;
+    }
+
+    return optionMatchesValue(selected, path, value);
+  }
+
   function clickElement(element) {
     if (!element) {
       return;
@@ -516,6 +685,25 @@
     element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
     element.click();
+  }
+
+  function addOptionTextPart(parts, rawText, maxWords) {
+    var text = String(rawText || "").trim();
+    if (!text) {
+      return;
+    }
+
+    var normalized = normalize(text);
+    if (!normalized) {
+      return;
+    }
+
+    var limit = typeof maxWords === "number" ? maxWords : 24;
+    if (normalized.split(" ").length > limit) {
+      return;
+    }
+
+    parts.push(text);
   }
 
   function valueCandidates(path, rawValue) {
@@ -535,6 +723,13 @@
 
     if (isNoToken(normalized)) {
       list = list.concat(["no", "false", "0", "n"]);
+    }
+
+    if (path === "identity.full_name") {
+      var pieces = normalized.split(" ").filter(Boolean);
+      if (pieces.length >= 2) {
+        list.push(pieces.join(" "));
+      }
     }
 
     if (path === "work_auth.eligible_to_work_us") {
@@ -579,6 +774,84 @@
       }
     }
 
+    if (path === "work_auth.in_person_office_preference") {
+      if (isYesToken(normalized)) {
+        list = list.concat(["in person", "in office", "on site", "onsite", "office five days"]);
+      }
+      if (isNoToken(normalized)) {
+        list = list.concat(["remote", "not in person", "not on site", "not onsite", "not in office"]);
+      }
+    }
+
+    if (path === "demographics.gender") {
+      if (normalized === "male" || normalized === "man") {
+        list = list.concat(["man", "male", "he him", "he him his"]);
+      }
+      if (normalized === "female" || normalized === "woman") {
+        list = list.concat(["woman", "female", "she her", "she her hers"]);
+      }
+      if (normalized.indexOf("non binary") !== -1 || normalized.indexOf("nonbinary") !== -1) {
+        list = list.concat(["non binary", "nonbinary", "non conforming", "non binary non conforming"]);
+      }
+    }
+
+    if (path === "demographics.ethnicity") {
+      if (normalized === "asian") {
+        list = list.concat(["asian not hispanic or latino", "asian not hispanic or latinx"]);
+      }
+      if (normalized === "white") {
+        list = list.concat(["white not hispanic or latino", "white not hispanic or latinx"]);
+      }
+      if (normalized.indexOf("black") !== -1 || normalized.indexOf("african american") !== -1) {
+        list = list.concat(["black or african american", "african american"]);
+      }
+      if (normalized.indexOf("hispanic") !== -1 || normalized.indexOf("latino") !== -1) {
+        list = list.concat(["hispanic or latino", "hispanic or latinx"]);
+      }
+      if (normalized.indexOf("two or more") !== -1) {
+        list.push("two or more races");
+      }
+    }
+
+    if (path === "demographics.pronouns") {
+      if (normalized.indexOf("she her") !== -1) {
+        list = list.concat(["she her hers", "she her"]);
+      }
+      if (normalized.indexOf("he him") !== -1) {
+        list = list.concat(["he him his", "he him"]);
+      }
+      if (normalized.indexOf("they them") !== -1) {
+        list = list.concat(["they them theirs", "they them"]);
+      }
+      if (normalized.indexOf("prefer not") !== -1) {
+        list = list.concat(["prefer not to answer", "decline to answer"]);
+      }
+    }
+
+    if (path === "demographics.hispanic_latinx") {
+      if (isYesToken(normalized)) {
+        list = list.concat(["hispanic", "latinx", "latino"]);
+      }
+      if (isNoToken(normalized)) {
+        list = list.concat(["not hispanic", "not latino", "not latinx"]);
+      }
+      if (normalized.indexOf("prefer not") !== -1) {
+        list = list.concat(["prefer not to answer", "decline to answer"]);
+      }
+    }
+
+    if (path === "demographics.transgender_identity") {
+      if (isYesToken(normalized)) {
+        list = list.concat(["yes", "i identify as transgender"]);
+      }
+      if (isNoToken(normalized)) {
+        list = list.concat(["no", "i do not identify as transgender"]);
+      }
+      if (normalized.indexOf("prefer not") !== -1) {
+        list = list.concat(["prefer not to answer", "i do not wish to answer", "decline to answer"]);
+      }
+    }
+
     if (path === "demographics.veteran_status") {
       if (isYesToken(normalized)) {
         list = list.concat(["veteran", "protected veteran", "i am a protected veteran"]);
@@ -612,8 +885,55 @@
       ]);
     }
 
+    if (path.indexOf("demographics.") === 0 && normalized === "prefer not to answer") {
+      list = list.concat([
+        "prefer not to answer",
+        "prefer not to disclose",
+        "decline to answer",
+        "i do not wish to answer",
+        "choose not to answer"
+      ]);
+    }
+
+    if (path === "education.degree") {
+      list = list.concat([
+        normalized.replace(/\s+/g, " "),
+        normalized.replace(/_/g, " "),
+        normalized.replace(/\bdegree\b/g, "").trim()
+      ]);
+
+      if (normalized.indexOf("bachelors") !== -1) {
+        list = list.concat(["bachelor s degree", "bachelor degree"]);
+      }
+      if (normalized.indexOf("masters") !== -1) {
+        list = list.concat(["master s degree", "master degree"]);
+      }
+      if (normalized.indexOf("mba") !== -1) {
+        list = list.concat(["master of business administration", "m b a"]);
+      }
+      if (normalized.indexOf("phd") !== -1) {
+        list = list.concat(["doctor of philosophy", "ph d"]);
+      }
+      if (normalized.indexOf("md") !== -1) {
+        list = list.concat(["doctor of medicine", "m d"]);
+      }
+      if (normalized.indexOf("jd") !== -1) {
+        list = list.concat(["juris doctor", "j d"]);
+      }
+    }
+
     if (path === "address.country" && normalized === "united states") {
-      list = list.concat(["usa", "us", "u s", "united states of america"]);
+      list = list.concat([
+        "usa",
+        "us",
+        "u s",
+        "united states of america",
+        "united states +1",
+        "us +1",
+        "usa +1",
+        "country code +1",
+        "dial code +1"
+      ]);
     }
 
     var unique = [];
@@ -634,11 +954,11 @@
       return false;
     }
 
-    if (needle.length <= 3) {
-      return new RegExp("\\b" + escapeRegExp(needle) + "\\b").test(haystack);
+    if (haystack === needle) {
+      return true;
     }
 
-    return haystack === needle || haystack.indexOf(needle) !== -1;
+    return new RegExp("(^|\\b)" + escapeRegExp(needle) + "(\\b|$)").test(haystack);
   }
 
   function tryFillSelect(select, path, value) {
@@ -794,9 +1114,16 @@
       return false;
     }
 
-    if (hasMeaningfulSelectedOption(radios)) {
-      seenGroups.add(groupKey);
-      return false;
+    var selectedRadio = getSelectedOption(radios);
+    if (selectedRadio) {
+      if (optionMatchesValue(selectedRadio, path, value)) {
+        seenGroups.add(groupKey);
+        return false;
+      }
+      if (!shouldAllowChoiceOverride(path) && !isNonAnswerToken(optionText(selectedRadio))) {
+        seenGroups.add(groupKey);
+        return false;
+      }
     }
 
     var target = findRadioTarget(radios, path, value);
@@ -852,8 +1179,14 @@
 
     seenChoiceGroups.add(groupKey);
 
-    if (hasMeaningfulSelectedOption(info.options)) {
-      return false;
+    var selected = getSelectedOption(info.options);
+    if (selected) {
+      if (optionMatchesValue(selected, path, value)) {
+        return false;
+      }
+      if (!shouldAllowChoiceOverride(path) && !isNonAnswerToken(optionText(selected))) {
+        return false;
+      }
     }
 
     var target = findCustomChoiceTarget(info.options, path, value);
@@ -911,7 +1244,262 @@
     return true;
   }
 
-  function fillField(field, path, value, seenRadioGroups, seenChoiceGroups) {
+  var AUTOCOMPLETE_OPTION_SELECTOR =
+    "[role='option'], [role='listbox'] [aria-selected], [role='menuitem'], li, .option, .select-option, .menu-item";
+
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  function isVisibleNode(node) {
+    if (!node || !(node instanceof HTMLElement)) {
+      return false;
+    }
+
+    var rect = node.getBoundingClientRect();
+    var style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  }
+
+  function uniqueNodes(nodes) {
+    var seen = new Set();
+    var out = [];
+
+    for (var i = 0; i < nodes.length; i += 1) {
+      var node = nodes[i];
+      if (!node || seen.has(node)) {
+        continue;
+      }
+      seen.add(node);
+      out.push(node);
+    }
+
+    return out;
+  }
+
+  function scoreOptionByCandidates(optionNode, candidates) {
+    var text = optionText(optionNode);
+    if (!text) {
+      return 0;
+    }
+
+    var best = 0;
+    for (var i = 0; i < candidates.length; i += 1) {
+      var candidate = normalize(candidates[i]);
+      if (!candidate) {
+        continue;
+      }
+
+      if (text === candidate) {
+        best = Math.max(best, 100);
+      } else if (containsCandidate(text, candidate)) {
+        best = Math.max(best, 70);
+      } else if (text.indexOf(candidate) !== -1) {
+        best = Math.max(best, 50);
+      }
+    }
+
+    return best;
+  }
+
+  function collectAutocompleteOptions(field) {
+    var container = getGroupContainer(field) || field.parentElement || document.body;
+    var local = Array.prototype.slice.call(container.querySelectorAll(AUTOCOMPLETE_OPTION_SELECTOR));
+    var global = Array.prototype.slice.call(document.querySelectorAll(AUTOCOMPLETE_OPTION_SELECTOR));
+    var merged = uniqueNodes(local.concat(global));
+
+    return merged.filter(function (node) {
+      if (!isVisibleNode(node)) {
+        return false;
+      }
+
+      var nodeText = normalize(node.textContent);
+      if (!nodeText || nodeText.length < 2) {
+        return false;
+      }
+
+      var rect = node.getBoundingClientRect();
+      return rect.top < window.innerHeight + 220 && rect.bottom > -120;
+    });
+  }
+
+  function fieldCenter(field) {
+    if (!field || !(field instanceof HTMLElement)) {
+      return { x: 0, y: 0 };
+    }
+    var rect = field.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+
+  function distanceToField(field, node) {
+    var centerA = fieldCenter(field);
+    var rectB = node.getBoundingClientRect();
+    var centerB = { x: rectB.left + rectB.width / 2, y: rectB.top + rectB.height / 2 };
+    var dx = centerA.x - centerB.x;
+    var dy = centerA.y - centerB.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function collectComboboxInputs(field) {
+    var container = getGroupContainer(field) || field.parentElement || document.body;
+    var localInputs = Array.prototype.slice.call(
+      container.querySelectorAll("input:not([type='hidden']), textarea, [role='searchbox'], [contenteditable='true']")
+    );
+    var globalInputs = Array.prototype.slice.call(
+      document.querySelectorAll("input:not([type='hidden']), textarea, [role='searchbox'], [contenteditable='true']")
+    );
+    var merged = uniqueNodes(localInputs.concat(globalInputs));
+
+    return merged.filter(function (node) {
+      if (!isVisibleNode(node)) {
+        return false;
+      }
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+
+      if (node === field) {
+        return true;
+      }
+
+      var rect = node.getBoundingClientRect();
+      return rect.top < window.innerHeight + 200 && rect.bottom > -120;
+    });
+  }
+
+  function chooseBestComboboxInput(field, inputs) {
+    if (!inputs.length) {
+      return null;
+    }
+
+    var sorted = inputs.slice().sort(function (a, b) {
+      return distanceToField(field, a) - distanceToField(field, b);
+    });
+
+    return sorted[0];
+  }
+
+  function setEditableValue(node, value) {
+    if (!node) {
+      return false;
+    }
+
+    var next = String(value || "").trim();
+    if (!next) {
+      return false;
+    }
+
+    if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {
+      node.focus();
+      node.value = next;
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+
+    if (node.isContentEditable || normalize(node.getAttribute("contenteditable")) === "true") {
+      node.focus();
+      node.textContent = next;
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+
+    return false;
+  }
+
+  async function tryPickAutocompleteOption(field, path, value) {
+    var candidates = valueCandidates(path, value);
+    if (!candidates.length) {
+      return false;
+    }
+
+    await wait(60);
+    var options = collectAutocompleteOptions(field);
+    if (!options.length) {
+      return false;
+    }
+
+    var bestNode = null;
+    var bestScore = 0;
+
+    for (var i = 0; i < options.length; i += 1) {
+      var score = scoreOptionByCandidates(options[i], candidates);
+      if (score > bestScore) {
+        bestScore = score;
+        bestNode = options[i];
+      }
+    }
+
+    if (!bestNode || bestScore < 60) {
+      return false;
+    }
+
+    clickElement(bestNode);
+    emitInputEvents(field);
+    return true;
+  }
+
+  async function tryFillTextWithAutocomplete(field, path, value) {
+    var changed = tryFillTextLike(field, value);
+    var selectedOption = await tryPickAutocompleteOption(field, path, value);
+    return changed || selectedOption;
+  }
+
+  async function tryFillCombobox(field, path, value) {
+    clickElement(field);
+    await wait(60);
+
+    if (await tryPickAutocompleteOption(field, path, value)) {
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+
+    var inputs = collectComboboxInputs(field);
+    var inputTarget = chooseBestComboboxInput(field, inputs);
+    if (inputTarget && setEditableValue(inputTarget, value)) {
+      await wait(120);
+
+      if (await tryPickAutocompleteOption(field, path, value)) {
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+
+      inputTarget.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      inputTarget.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+
+    return false;
+  }
+
+  function shouldUseAutocomplete(path, field) {
+    if (!path || !(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    if (
+      path === "education.school" ||
+      path === "education.degree" ||
+      path === "demographics.ethnicity" ||
+      path === "demographics.pronouns"
+    ) {
+      return true;
+    }
+
+    var role = normalize(field.getAttribute("role"));
+    var ariaAutocomplete = normalize(field.getAttribute("aria-autocomplete"));
+    return role === "combobox" || ariaAutocomplete === "list" || ariaAutocomplete === "both";
+  }
+
+  async function fillField(field, path, value, seenRadioGroups, seenChoiceGroups) {
+    if (isComboboxField(field)) {
+      return tryFillCombobox(field, path, value);
+    }
+
     if (isCustomChoiceField(field)) {
       return tryFillCustomChoice(field, path, value, seenChoiceGroups);
     }
@@ -935,6 +1523,10 @@
         return tryFillCheckbox(field, path, value);
       }
 
+      if (shouldUseAutocomplete(path, field)) {
+        return tryFillTextWithAutocomplete(field, path, value);
+      }
+
       return tryFillTextLike(field, value);
     }
 
@@ -943,6 +1535,14 @@
 
   function shouldUseContextInference(field) {
     if (isCustomChoiceField(field)) {
+      return true;
+    }
+
+    if (isComboboxField(field)) {
+      return true;
+    }
+
+    if (field instanceof HTMLSelectElement) {
       return true;
     }
 
@@ -991,13 +1591,13 @@
         continue;
       }
 
-      if (hasValueAlready(field)) {
+      if (hasValueAlready(field, resolvedPath, value)) {
         skipped += 1;
         continue;
       }
 
       matched += 1;
-      if (fillField(field, resolvedPath, value, seenRadioGroups, seenChoiceGroups)) {
+      if (await fillField(field, resolvedPath, value, seenRadioGroups, seenChoiceGroups)) {
         filled += 1;
       } else {
         skipped += 1;
@@ -1013,19 +1613,105 @@
     };
   }
 
-  chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
-    if (!message || message.action !== "FORMFUSE_FILL") {
+  function installInlineFillButton() {
+    if (!document.documentElement || document.getElementById("__formfuse-inline-root")) {
       return;
     }
 
-    fillApplication()
-      .then(function (result) {
-        sendResponse(result);
-      })
-      .catch(function (error) {
-        sendResponse({ ok: false, error: error && error.message ? error.message : "Autofill failed." });
-      });
+    var host = document.createElement("div");
+    host.id = "__formfuse-inline-root";
+    document.documentElement.appendChild(host);
 
-    return true;
+    var shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML =
+      '<style>' +
+      ':host{all:initial}' +
+      '.wrap{position:fixed;top:14px;right:14px;z-index:2147483647;display:flex;flex-direction:column;align-items:flex-end;gap:6px;font-family:"Avenir Next","Segoe UI",sans-serif;}' +
+      '.btn{border:none;border-radius:999px;padding:10px 16px;font-size:13px;font-weight:700;color:#fff;cursor:pointer;background:linear-gradient(135deg,#2b6cff,#124eca);box-shadow:0 10px 24px rgba(19,39,84,.28);}' +
+      '.btn:disabled{opacity:.75;cursor:wait}' +
+      '.msg{font-size:12px;color:#102a5f;background:#ffffff;border:1px solid rgba(25,52,108,.15);border-radius:8px;padding:5px 8px;max-width:240px;box-shadow:0 8px 16px rgba(20,33,61,.16)}' +
+      "@media (max-width:700px){.wrap{top:10px;right:10px}.btn{padding:9px 13px;font-size:12px}}" +
+      "</style>" +
+      '<div class="wrap"><button class="btn" id="ff-inline-fill" type="button">Fill with FormFuse</button><div class="msg" id="ff-inline-msg" hidden></div></div>';
+
+    var button = shadow.getElementById("ff-inline-fill");
+    var message = shadow.getElementById("ff-inline-msg");
+    var hideTimer = null;
+
+    function setMessage(text, isError) {
+      message.textContent = text;
+      message.hidden = !text;
+      message.style.color = isError ? "#8b1c2d" : "#102a5f";
+      message.style.borderColor = isError ? "rgba(139,28,45,.25)" : "rgba(25,52,108,.15)";
+
+      if (hideTimer) {
+        window.clearTimeout(hideTimer);
+      }
+
+      if (text) {
+        hideTimer = window.setTimeout(function () {
+          message.hidden = true;
+        }, 4500);
+      }
+    }
+
+    button.addEventListener("click", function () {
+      button.disabled = true;
+      setMessage("Filling application...", false);
+
+      fillApplication()
+        .then(function (result) {
+          if (!result.ok) {
+            setMessage(result.error || "Autofill failed.", true);
+            return;
+          }
+          setMessage("Filled " + result.filled + " field(s).", false);
+        })
+        .catch(function (error) {
+          setMessage(error && error.message ? error.message : "Autofill failed.", true);
+        })
+        .finally(function () {
+          button.disabled = false;
+        });
+    });
+  }
+
+  function removeInlineFillButton() {
+    var node = document.getElementById("__formfuse-inline-root");
+    if (node && node.parentNode) {
+      node.parentNode.removeChild(node);
+    }
+  }
+
+  chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+    if (!message || !message.action) {
+      return;
+    }
+
+    if (message.action === "FORMFUSE_SHOW_INLINE_BUTTON") {
+      installInlineFillButton();
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message.action === "FORMFUSE_HIDE_INLINE_BUTTON") {
+      removeInlineFillButton();
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message.action === "FORMFUSE_FILL") {
+      fillApplication()
+        .then(function (result) {
+          sendResponse(result);
+        })
+        .catch(function (error) {
+          sendResponse({ ok: false, error: error && error.message ? error.message : "Autofill failed." });
+        });
+
+      return true;
+    }
+
+    return;
   });
 })();
