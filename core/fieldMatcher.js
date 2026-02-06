@@ -3,6 +3,10 @@
 
   var FIELD_RULES = [
     {
+      path: "identity.full_name",
+      keywords: ["full name", "legal name", "applicant name", "candidate name"]
+    },
+    {
       path: "identity.first_name",
       keywords: ["first name", "given name", "firstname", "legal first name"]
     },
@@ -45,13 +49,49 @@
         "eligible to work",
         "work authorization",
         "work in the us",
+        "work in the united states",
         "legally authorized",
-        "authorization to work"
+        "lawfully authorized",
+        "authorization to work",
+        "currently authorized to work in the country",
+        "authorized to work in the country",
+        "authorized to work in the country to which you are applying"
       ]
     },
     {
       path: "work_auth.requires_sponsorship",
-      keywords: ["requires sponsorship", "sponsorship", "visa sponsorship", "need sponsorship"]
+      keywords: [
+        "requires sponsorship",
+        "require sponsorship",
+        "visa sponsorship",
+        "need sponsorship",
+        "now or in the future require sponsorship",
+        "require company sponsorship now or in the future",
+        "maintain or extend your current work authorization status"
+      ]
+    },
+    {
+      path: "work_auth.open_to_relocate",
+      keywords: [
+        "open to relocate",
+        "willing to relocate",
+        "available to relocate",
+        "relocation",
+        "open to relocation",
+        "commuting distance"
+      ]
+    },
+    {
+      path: "work_auth.worked_here_before",
+      keywords: [
+        "worked here before",
+        "previously worked here",
+        "employed here before",
+        "former employee",
+        "worked for this company before",
+        "worked at snowflake in the past",
+        "in the past in a full time part time contractor or intern capacity"
+      ]
     },
     {
       path: "demographics.gender",
@@ -177,6 +217,24 @@
         var node = document.getElementById(ids[i]);
         if (node && node.textContent) {
           pieces.push(node.textContent);
+        }
+      }
+    }
+
+    var type = field instanceof HTMLInputElement ? (field.type || "").toLowerCase() : "";
+    var needsContainerContext = pieces.length === 0 || field instanceof HTMLSelectElement || type === "radio" || type === "checkbox";
+
+    if (needsContainerContext) {
+      var container = field.closest(
+        "fieldset, [role='group'], [role='radiogroup'], .ashby-application-form-question, .ashby-application-form-field, .application-question, .question, .form-field, .field, .input-wrapper"
+      );
+      if (!container) {
+        container = field.parentElement;
+      }
+      if (container && container.textContent) {
+        var containerText = container.textContent.replace(/\s+/g, " ").trim();
+        if (containerText) {
+          pieces.push(containerText.slice(0, 320));
         }
       }
     }

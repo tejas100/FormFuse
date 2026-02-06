@@ -5,6 +5,7 @@
 
   var DEFAULT_PROFILE = {
     identity: {
+      full_name: "",
       first_name: "",
       last_name: "",
       email: "",
@@ -19,7 +20,9 @@
     },
     work_auth: {
       eligible_to_work_us: "",
-      requires_sponsorship: ""
+      requires_sponsorship: "",
+      open_to_relocate: "",
+      worked_here_before: ""
     },
     demographics: {
       gender: "prefer_not_to_say",
@@ -36,6 +39,7 @@
   };
 
   var PATHS = [
+    "identity.full_name",
     "identity.first_name",
     "identity.last_name",
     "identity.email",
@@ -47,6 +51,8 @@
     "address.country",
     "work_auth.eligible_to_work_us",
     "work_auth.requires_sponsorship",
+    "work_auth.open_to_relocate",
+    "work_auth.worked_here_before",
     "demographics.gender",
     "demographics.ethnicity",
     "demographics.disability_status",
@@ -110,7 +116,7 @@
   function normalizeProfileField(path, value) {
     var trimmed = String(value == null ? "" : value).trim();
 
-    if (path === "work_auth.eligible_to_work_us" || path === "work_auth.requires_sponsorship") {
+    if (path.indexOf("work_auth.") === 0) {
       return normalizeYesNo(trimmed);
     }
 

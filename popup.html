@@ -18,6 +18,10 @@
         <section class="card">
           <h2>Identity</h2>
           <div class="grid two-col">
+            <label class="full-width">
+              Full Name
+              <input type="text" name="identity.full_name" autocomplete="name" />
+            </label>
             <label>
               First Name
               <input type="text" name="identity.first_name" autocomplete="given-name" />
@@ -77,6 +81,22 @@
             <label>
               Requires sponsorship?
               <select name="work_auth.requires_sponsorship">
+                <option value="">Select</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label>
+              Open to relocate?
+              <select name="work_auth.open_to_relocate">
+                <option value="">Select</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label>
+              Have you worked here before?
+              <select name="work_auth.worked_here_before">
                 <option value="">Select</option>
                 <option value="yes">Yes</option>
                 <option value="no">No</option>
