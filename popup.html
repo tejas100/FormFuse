@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FormFuse</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <p class="kicker">Job Application Autofill</p>
+        <h1>FormFuse</h1>
+        <p class="subtitle">Save your stable details once, then fill matching fields on any application page.</p>
+      </header>
+
+      <form id="profile-form" class="form-grid">
+        <section class="card">
+          <h2>Identity</h2>
+          <div class="grid two-col">
+            <label>
+              First Name
+              <input type="text" name="identity.first_name" autocomplete="given-name" />
+            </label>
+            <label>
+              Last Name
+              <input type="text" name="identity.last_name" autocomplete="family-name" />
+            </label>
+            <label>
+              Email
+              <input type="email" name="identity.email" autocomplete="email" />
+            </label>
+            <label>
+              Phone
+              <input type="tel" name="identity.phone" autocomplete="tel" />
+            </label>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Address</h2>
+          <div class="grid two-col">
+            <label class="full-width">
+              Street
+              <input type="text" name="address.street" autocomplete="address-line1" />
+            </label>
+            <label>
+              City
+              <input type="text" name="address.city" autocomplete="address-level2" />
+            </label>
+            <label>
+              State
+              <input type="text" name="address.state" autocomplete="address-level1" />
+            </label>
+            <label>
+              ZIP Code
+              <input type="text" name="address.zip" autocomplete="postal-code" />
+            </label>
+            <label>
+              Country
+              <input type="text" name="address.country" autocomplete="country-name" />
+            </label>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Work Authorization</h2>
+          <div class="grid two-col">
+            <label>
+              Eligible to work in the US?
+              <select name="work_auth.eligible_to_work_us">
+                <option value="">Select</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label>
+              Requires sponsorship?
+              <select name="work_auth.requires_sponsorship">
+                <option value="">Select</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Demographics (Optional)</h2>
+          <p class="hint">These values are optional and user-controlled.</p>
+          <div class="grid two-col">
+            <label>
+              Gender
+              <select name="demographics.gender">
+                <option value="prefer_not_to_say">Prefer not to say</option>
+                <option value="female">Female</option>
+                <option value="male">Male</option>
+                <option value="non_binary">Non-binary</option>
+                <option value="self_describe">Self-describe</option>
+              </select>
+            </label>
+            <label>
+              Ethnicity
+              <select name="demographics.ethnicity">
+                <option value="prefer_not_to_say">Prefer not to say</option>
+                <option value="asian">Asian</option>
+                <option value="black_or_african_american">Black or African American</option>
+                <option value="hispanic_or_latino">Hispanic or Latino</option>
+                <option value="white">White</option>
+                <option value="two_or_more_races">Two or more races</option>
+              </select>
+            </label>
+            <label>
+              Disability Status
+              <select name="demographics.disability_status">
+                <option value="prefer_not_to_say">Prefer not to say</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label>
+              Veteran Status
+              <select name="demographics.veteran_status">
+                <option value="prefer_not_to_say">Prefer not to say</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Professional Links</h2>
+          <div class="grid two-col">
+            <label>
+              LinkedIn
+              <input type="url" name="links.linkedin" placeholder="https://linkedin.com/in/you" />
+            </label>
+            <label>
+              GitHub
+              <input type="url" name="links.github" placeholder="https://github.com/you" />
+            </label>
+            <label>
+              Portfolio
+              <input type="url" name="links.portfolio" placeholder="https://yourportfolio.com" />
+            </label>
+            <label>
+              Personal Website
+              <input type="url" name="links.website" placeholder="https://yourwebsite.com" />
+            </label>
+          </div>
+        </section>
+      </form>
+
+      <footer class="actions">
+        <button id="save-button" type="button" class="button secondary">Save Profile</button>
+        <button id="fill-button" type="button" class="button primary">Fill Application</button>
+      </footer>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <script src="core/schema.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
