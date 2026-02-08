@@ -7,128 +7,210 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="app">
-      <header class="hero">
-        <p class="kicker">Job Application Autofill</p>
+    <main class="app-shell">
+      <span class="ambient ambient-one" aria-hidden="true"></span>
+      <span class="ambient ambient-two" aria-hidden="true"></span>
+      <span class="ambient ambient-three" aria-hidden="true"></span>
+
+      <!-- HOME VIEW -->
+      <header class="topbar">
+        <p class="eyebrow">AI Autofill Workspace</p>
         <h1>FormFuse</h1>
-        <p class="subtitle">Save your stable details once, then fill matching fields on any application page.</p>
       </header>
 
-      <form id="profile-form" class="form-grid">
-        <section class="card">
-          <h2>Identity</h2>
-          <div class="grid two-col">
-            <label class="full-width">
-              Full Name
-              <input type="text" name="identity.full_name" autocomplete="name" />
-            </label>
-            <label>
-              First Name
-              <input type="text" name="identity.first_name" autocomplete="given-name" />
-            </label>
-            <label>
-              Last Name
-              <input type="text" name="identity.last_name" autocomplete="family-name" />
-            </label>
-            <label>
-              Email
-              <input type="email" name="identity.email" autocomplete="email" />
-            </label>
-            <label>
-              Phone
-              <input type="tel" name="identity.phone" autocomplete="tel" />
-            </label>
+      <section class="panel home-panel" id="home-section" aria-labelledby="home-title">
+        <div class="panel-gloss" aria-hidden="true"></div>
+        <div class="home-copy">
+          <h2 id="home-title">Ready to fill this application</h2>
+          <p>Your profile stays local and fills only when you choose.</p>
+        </div>
+
+        <button id="fill-button" type="button" class="button button-primary">Fill Application</button>
+
+        <div class="home-signals" aria-hidden="true">
+          <span class="signal">✓ Profile loaded</span>
+          <span class="signal">✓ Page ready</span>
+        </div>
+
+        <nav class="quick-links" aria-label="Secondary actions">
+          <a href="#profile-section">Edit Profile</a>
+          <span aria-hidden="true">·</span>
+          <a href="#preferences-section">Preferences</a>
+        </nav>
+      </section>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <!-- PROFILE + PREFERENCES: all names/ids preserved for existing JS -->
+      <form id="profile-form" class="workspace">
+        <!-- PROFILE VIEW -->
+        <section class="panel view" id="profile-section" aria-labelledby="profile-title">
+          <div class="panel-gloss" aria-hidden="true"></div>
+          <div class="panel-head">
+            <h2 id="profile-title">Profile</h2>
+            <p>Core identity and application details.</p>
           </div>
+
+          <details class="group" open>
+            <summary>Identity</summary>
+            <div class="group-grid two-col">
+              <label class="full-width">
+                <span>Full Name</span>
+                <input type="text" name="identity.full_name" autocomplete="name" />
+              </label>
+              <label>
+                <span>First Name</span>
+                <input type="text" name="identity.first_name" autocomplete="given-name" />
+              </label>
+              <label>
+                <span>Last Name</span>
+                <input type="text" name="identity.last_name" autocomplete="family-name" />
+              </label>
+              <label>
+                <span>Email</span>
+                <input type="email" name="identity.email" autocomplete="email" />
+              </label>
+              <label>
+                <span>Phone</span>
+                <input type="tel" name="identity.phone" autocomplete="tel" />
+              </label>
+            </div>
+          </details>
+
+          <details class="group" open>
+            <summary>Address</summary>
+            <div class="group-grid two-col">
+              <label class="full-width">
+                <span>Street</span>
+                <input type="text" name="address.street" autocomplete="address-line1" />
+              </label>
+              <label>
+                <span>City</span>
+                <input type="text" name="address.city" autocomplete="address-level2" />
+              </label>
+              <label>
+                <span>State</span>
+                <input type="text" name="address.state" autocomplete="address-level1" />
+              </label>
+              <label>
+                <span>ZIP Code</span>
+                <input type="text" name="address.zip" autocomplete="postal-code" />
+              </label>
+              <label>
+                <span>Country</span>
+                <input type="text" name="address.country" autocomplete="country-name" />
+              </label>
+            </div>
+          </details>
+
+          <details class="group" open>
+            <summary>Work Authorization</summary>
+            <div class="group-grid two-col">
+              <label>
+                <span>Eligible to work in the US?</span>
+                <select name="work_auth.eligible_to_work_us">
+                  <option value="">Select</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label>
+                <span>Requires sponsorship?</span>
+                <select name="work_auth.requires_sponsorship">
+                  <option value="">Select</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label>
+                <span>Open to relocate?</span>
+                <select name="work_auth.open_to_relocate">
+                  <option value="">Select</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label>
+                <span>Have you worked here before?</span>
+                <select name="work_auth.worked_here_before">
+                  <option value="">Select</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+            </div>
+          </details>
+
+          <details class="group" open>
+            <summary>Education</summary>
+            <div class="group-grid two-col">
+              <label class="full-width">
+                <span>School</span>
+                <input type="text" name="education.school" placeholder="e.g., Rutgers University" />
+              </label>
+              <label class="full-width">
+                <span>Degree</span>
+                <select name="education.degree">
+                  <option value="">Select</option>
+                  <option value="high_school">High School</option>
+                  <option value="associate_degree">Associate's Degree</option>
+                  <option value="bachelors_degree">Bachelor's Degree</option>
+                  <option value="masters_degree">Master's Degree</option>
+                  <option value="master_of_business_administration_mba">Master of Business Administration (M.B.A.)</option>
+                  <option value="doctor_of_philosophy_phd">Doctor of Philosophy (Ph.D.)</option>
+                  <option value="doctor_of_medicine_md">Doctor of Medicine (M.D.)</option>
+                  <option value="juris_doctor_jd">Juris Doctor (J.D.)</option>
+                  <option value="engineers_degree">Engineer's Degree</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+            </div>
+          </details>
+
+          <details class="group" open>
+            <summary>Links</summary>
+            <div class="group-grid two-col">
+              <label>
+                <span>LinkedIn</span>
+                <input type="url" name="links.linkedin" placeholder="https://linkedin.com/in/you" />
+              </label>
+              <label>
+                <span>GitHub</span>
+                <input type="url" name="links.github" placeholder="https://github.com/you" />
+              </label>
+              <label>
+                <span>Portfolio</span>
+                <input type="url" name="links.portfolio" placeholder="https://yourportfolio.com" />
+              </label>
+              <label>
+                <span>Personal Website</span>
+                <input type="url" name="links.website" placeholder="https://yourwebsite.com" />
+              </label>
+            </div>
+          </details>
+
+          <details class="group">
+            <summary>Demographics (Optional)</summary>
+            <div class="group-grid">
+              <p class="group-note">
+                Demographic and EEO preferences are available in the Preferences panel.
+              </p>
+              <a class="inline-jump" href="#preferences-section">Open Preferences</a>
+            </div>
+          </details>
         </section>
 
-        <section class="card">
-          <h2>Address</h2>
-          <div class="grid two-col">
-            <label class="full-width">
-              Street
-              <input type="text" name="address.street" autocomplete="address-line1" />
-            </label>
-            <label>
-              City
-              <input type="text" name="address.city" autocomplete="address-level2" />
-            </label>
-            <label>
-              State
-              <input type="text" name="address.state" autocomplete="address-level1" />
-            </label>
-            <label>
-              ZIP Code
-              <input type="text" name="address.zip" autocomplete="postal-code" />
-            </label>
-            <label>
-              Country
-              <input type="text" name="address.country" autocomplete="country-name" />
-            </label>
+        <!-- PREFERENCES VIEW -->
+        <section class="panel view" id="preferences-section" aria-labelledby="preferences-title">
+          <div class="panel-gloss" aria-hidden="true"></div>
+          <div class="panel-head">
+            <h2 id="preferences-title">Preferences</h2>
+            <p>Pronouns, in-person preference, and optional EEO settings.</p>
           </div>
-        </section>
 
-        <section class="card">
-          <h2>Work Authorization</h2>
-          <div class="grid two-col">
+          <div class="group-grid two-col preference-grid">
             <label>
-              Eligible to work in the US?
-              <select name="work_auth.eligible_to_work_us">
-                <option value="">Select</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label>
-              Requires sponsorship?
-              <select name="work_auth.requires_sponsorship">
-                <option value="">Select</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label>
-              Open to relocate?
-              <select name="work_auth.open_to_relocate">
-                <option value="">Select</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label>
-              Have you worked here before?
-              <select name="work_auth.worked_here_before">
-                <option value="">Select</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label class="full-width">
-              Open to in-person office work?
-              <select name="work_auth.in_person_office_preference">
-                <option value="">Select</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-          </div>
-        </section>
-
-        <section class="card">
-          <h2>Demographics (Optional)</h2>
-          <p class="hint">These values are optional and user-controlled.</p>
-          <div class="grid two-col">
-            <label>
-              Gender Identity
-              <select name="demographics.gender">
-                <option value="prefer_not_to_say">Prefer not to say</option>
-                <option value="male">Man</option>
-                <option value="female">Woman</option>
-                <option value="non_binary">Non-binary</option>
-                <option value="self_describe">Self-describe</option>
-              </select>
-            </label>
-            <label>
-              Pronouns
+              <span>Pronouns</span>
               <select name="demographics.pronouns">
                 <option value="prefer_not_to_answer">Prefer not to answer</option>
                 <option value="she_her_hers">She/Her/Hers</option>
@@ -137,106 +219,79 @@
               </select>
             </label>
             <label>
-              Ethnicity
-              <select name="demographics.ethnicity">
-                <option value="prefer_not_to_say">Prefer not to say</option>
-                <option value="asian">Asian</option>
-                <option value="black_or_african_american">Black or African American</option>
-                <option value="hispanic_or_latino">Hispanic or Latino</option>
-                <option value="white">White</option>
-                <option value="two_or_more_races">Two or more races</option>
-              </select>
-            </label>
-            <label>
-              Disability Status
-              <select name="demographics.disability_status">
-                <option value="prefer_not_to_say">Prefer not to say</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label>
-              Veteran Status
-              <select name="demographics.veteran_status">
-                <option value="prefer_not_to_say">Prefer not to say</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label>
-              Are you Hispanic or Latinx?
-              <select name="demographics.hispanic_latinx">
-                <option value="prefer_not_to_answer">Prefer not to answer</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label>
-              Do you identify as transgender?
-              <select name="demographics.transgender_identity">
-                <option value="prefer_not_to_answer">Prefer not to answer</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-          </div>
-        </section>
-
-        <section class="card">
-          <h2>Education</h2>
-          <div class="grid two-col">
-            <label class="full-width">
-              School
-              <input type="text" name="education.school" placeholder="e.g., Rutgers University" />
-            </label>
-            <label class="full-width">
-              Degree
-              <select name="education.degree">
+              <span>In-Person Preference</span>
+              <select name="work_auth.in_person_office_preference">
                 <option value="">Select</option>
-                <option value="high_school">High School</option>
-                <option value="associate_degree">Associate's Degree</option>
-                <option value="bachelors_degree">Bachelor's Degree</option>
-                <option value="masters_degree">Master's Degree</option>
-                <option value="master_of_business_administration_mba">Master of Business Administration (M.B.A.)</option>
-                <option value="doctor_of_philosophy_phd">Doctor of Philosophy (Ph.D.)</option>
-                <option value="doctor_of_medicine_md">Doctor of Medicine (M.D.)</option>
-                <option value="juris_doctor_jd">Juris Doctor (J.D.)</option>
-                <option value="engineers_degree">Engineer's Degree</option>
-                <option value="other">Other</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
               </select>
             </label>
           </div>
-        </section>
 
-        <section class="card">
-          <h2>Professional Links</h2>
-          <div class="grid two-col">
-            <label>
-              LinkedIn
-              <input type="url" name="links.linkedin" placeholder="https://linkedin.com/in/you" />
-            </label>
-            <label>
-              GitHub
-              <input type="url" name="links.github" placeholder="https://github.com/you" />
-            </label>
-            <label>
-              Portfolio
-              <input type="url" name="links.portfolio" placeholder="https://yourportfolio.com" />
-            </label>
-            <label>
-              Personal Website
-              <input type="url" name="links.website" placeholder="https://yourwebsite.com" />
-            </label>
-          </div>
+          <details class="group" open>
+            <summary>EEO Settings</summary>
+            <div class="group-grid two-col preference-grid">
+              <label>
+                <span>Gender Identity</span>
+                <select name="demographics.gender">
+                  <option value="prefer_not_to_say">Prefer not to say</option>
+                  <option value="male">Man</option>
+                  <option value="female">Woman</option>
+                  <option value="non_binary">Non-binary</option>
+                  <option value="self_describe">Self-describe</option>
+                </select>
+              </label>
+              <label>
+                <span>Ethnicity</span>
+                <select name="demographics.ethnicity">
+                  <option value="prefer_not_to_say">Prefer not to say</option>
+                  <option value="asian">Asian</option>
+                  <option value="black_or_african_american">Black or African American</option>
+                  <option value="hispanic_or_latino">Hispanic or Latino</option>
+                  <option value="white">White</option>
+                  <option value="two_or_more_races">Two or more races</option>
+                </select>
+              </label>
+              <label>
+                <span>Disability Status</span>
+                <select name="demographics.disability_status">
+                  <option value="prefer_not_to_say">Prefer not to say</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label>
+                <span>Veteran Status</span>
+                <select name="demographics.veteran_status">
+                  <option value="prefer_not_to_say">Prefer not to say</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label>
+                <span>Are you Hispanic or Latinx?</span>
+                <select name="demographics.hispanic_latinx">
+                  <option value="prefer_not_to_answer">Prefer not to answer</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label>
+                <span>Do you identify as transgender?</span>
+                <select name="demographics.transgender_identity">
+                  <option value="prefer_not_to_answer">Prefer not to answer</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+            </div>
+          </details>
         </section>
       </form>
 
-      <footer class="actions">
-        <button id="save-button" type="button" class="button secondary">Save Profile</button>
-        <button id="fill-button" type="button" class="button primary">Fill Application</button>
+      <footer class="footer-actions">
+        <button id="save-button" type="button" class="button button-secondary">Save Profile</button>
       </footer>
-
-      <p id="status" class="status" role="status" aria-live="polite"></p>
     </main>
 
     <script src="core/schema.js"></script>

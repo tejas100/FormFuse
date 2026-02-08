@@ -587,6 +587,38 @@
     return normalize(textParts.join(" "));
   }
 
+  function optionPrimaryText(option) {
+    var textParts = [];
+
+    if (!option) {
+      return "";
+    }
+
+    if (option instanceof HTMLInputElement) {
+      textParts.push(option.value || "");
+    }
+
+    if (typeof option.getAttribute === "function") {
+      addOptionTextPart(textParts, option.getAttribute("aria-label"), 12);
+      addOptionTextPart(textParts, option.getAttribute("data-value"), 8);
+    }
+    addOptionTextPart(textParts, option.textContent, 16);
+
+    return normalize(textParts.join(" "));
+  }
+
+  function shouldSkipNonAnswerChoice(path, value, optionLabel) {
+    if (!path || path.indexOf("demographics.") !== 0) {
+      return false;
+    }
+
+    if (isNonAnswerToken(value)) {
+      return false;
+    }
+
+    return isNonAnswerToken(optionLabel);
+  }
+
   function isOptionSelected(option) {
     if (!option) {
       return false;
@@ -658,8 +690,12 @@
       return false;
     }
 
+    var directText = optionPrimaryText(option);
     var text = optionText(option);
     for (var i = 0; i < candidates.length; i += 1) {
+      if (containsCandidate(directText, candidates[i])) {
+        return true;
+      }
       if (containsCandidate(text, candidates[i])) {
         return true;
       }
@@ -961,6 +997,42 @@
     return new RegExp("(^|\\b)" + escapeRegExp(needle) + "(\\b|$)").test(haystack);
   }
 
+  function scoreTextByCandidates(text, candidates) {
+    var normalizedText = normalize(text);
+    if (!normalizedText) {
+      return 0;
+    }
+
+    var best = 0;
+    for (var i = 0; i < candidates.length; i += 1) {
+      var candidate = normalize(candidates[i]);
+      if (!candidate) {
+        continue;
+      }
+
+      if (normalizedText === candidate) {
+        best = Math.max(best, 1000);
+        continue;
+      }
+
+      if (containsCandidate(normalizedText, candidate)) {
+        best = Math.max(best, 820 - Math.min(220, Math.abs(normalizedText.length - candidate.length)));
+        continue;
+      }
+
+      if (containsCandidate(candidate, normalizedText)) {
+        best = Math.max(best, 700 - Math.min(180, Math.abs(normalizedText.length - candidate.length)));
+        continue;
+      }
+
+      if (normalizedText.indexOf(candidate) !== -1 || candidate.indexOf(normalizedText) !== -1) {
+        best = Math.max(best, 520 - Math.min(160, Math.abs(normalizedText.length - candidate.length)));
+      }
+    }
+
+    return best;
+  }
+
   function tryFillSelect(select, path, value) {
     var candidates = valueCandidates(path, value);
     if (!candidates.length) {
@@ -977,6 +1049,10 @@
       optionValue = normalize(option.value);
       optionText = normalize(option.textContent);
 
+      if (shouldSkipNonAnswerChoice(path, value, optionText) || shouldSkipNonAnswerChoice(path, value, optionValue)) {
+        continue;
+      }
+
       if (candidates.indexOf(optionValue) !== -1 || candidates.indexOf(optionText) !== -1) {
         if (select.value !== option.value) {
           select.value = option.value;
@@ -991,6 +1067,10 @@
       option = select.options[i];
       optionValue = normalize(option.value);
       optionText = normalize(option.textContent);
+
+      if (shouldSkipNonAnswerChoice(path, value, optionText) || shouldSkipNonAnswerChoice(path, value, optionValue)) {
+        continue;
+      }
 
       for (var j = 0; j < candidates.length; j += 1) {
         if (containsCandidate(optionValue, candidates[j]) || containsCandidate(optionText, candidates[j])) {
@@ -1037,19 +1117,31 @@
     }
 
     var candidates = valueCandidates(path, value);
+    var bestRadio = null;
+    var bestRadioScore = 0;
 
     for (var i = 0; i < radios.length; i += 1) {
-      var text = radioText(radios[i]);
-
-      for (var j = 0; j < candidates.length; j += 1) {
-        if (containsCandidate(text, candidates[j])) {
-          return radios[i];
-        }
+      var text = optionPrimaryText(radios[i]);
+      if (shouldSkipNonAnswerChoice(path, value, text)) {
+        continue;
       }
+
+      var score = scoreTextByCandidates(text, candidates);
+      if (score > bestRadioScore) {
+        bestRadioScore = score;
+        bestRadio = radios[i];
+      }
+    }
+
+    if (bestRadio && bestRadioScore >= 560) {
+      return bestRadio;
     }
 
     for (var k = 0; k < radios.length; k += 1) {
       var radioLabel = radioText(radios[k]);
+      if (shouldSkipNonAnswerChoice(path, value, radioLabel)) {
+        continue;
+      }
 
       if (isYesToken(normalized) && isPositiveOptionText(radioLabel) && !isNegativeOptionText(radioLabel)) {
         return radios[k];
@@ -1143,19 +1235,31 @@
     }
 
     var candidates = valueCandidates(path, value);
+    var bestOption = null;
+    var bestScore = 0;
 
     for (var i = 0; i < options.length; i += 1) {
-      var text = optionText(options[i]);
-
-      for (var j = 0; j < candidates.length; j += 1) {
-        if (containsCandidate(text, candidates[j])) {
-          return options[i];
-        }
+      var text = optionPrimaryText(options[i]);
+      if (shouldSkipNonAnswerChoice(path, value, text)) {
+        continue;
       }
+
+      var score = scoreTextByCandidates(text, candidates);
+      if (score > bestScore) {
+        bestScore = score;
+        bestOption = options[i];
+      }
+    }
+
+    if (bestOption && bestScore >= 560) {
+      return bestOption;
     }
 
     for (var k = 0; k < options.length; k += 1) {
       var optionLabel = optionText(options[k]);
+      if (shouldSkipNonAnswerChoice(path, value, optionLabel)) {
+        continue;
+      }
 
       if (isYesToken(normalized) && isPositiveOptionText(optionLabel) && !isNegativeOptionText(optionLabel)) {
         return options[k];
@@ -1280,28 +1384,26 @@
   }
 
   function scoreOptionByCandidates(optionNode, candidates) {
-    var text = optionText(optionNode);
-    if (!text) {
-      return 0;
+    var directScore = scoreTextByCandidates(optionPrimaryText(optionNode), candidates);
+    if (directScore > 0) {
+      return directScore;
     }
 
-    var best = 0;
-    for (var i = 0; i < candidates.length; i += 1) {
-      var candidate = normalize(candidates[i]);
-      if (!candidate) {
-        continue;
-      }
+    return Math.max(0, scoreTextByCandidates(optionText(optionNode), candidates) - 40);
+  }
 
-      if (text === candidate) {
-        best = Math.max(best, 100);
-      } else if (containsCandidate(text, candidate)) {
-        best = Math.max(best, 70);
-      } else if (text.indexOf(candidate) !== -1) {
-        best = Math.max(best, 50);
-      }
+  function formatAutocompleteQuery(path, value) {
+    var raw = String(value || "").trim();
+    if (!raw) {
+      return "";
     }
 
-    return best;
+    if (path === "education.degree") {
+      var humanized = raw.replace(/[_-]+/g, " ").trim();
+      return humanized || raw;
+    }
+
+    return raw;
   }
 
   function collectAutocompleteOptions(field) {
@@ -1416,55 +1518,86 @@
       return false;
     }
 
-    await wait(60);
-    var options = collectAutocompleteOptions(field);
-    if (!options.length) {
-      return false;
-    }
+    var minScore = path === "education.school" || path === "education.degree" ? 450 : 560;
 
-    var bestNode = null;
-    var bestScore = 0;
+    for (var attempt = 0; attempt < 4; attempt += 1) {
+      await wait(80 + attempt * 50);
+      var options = collectAutocompleteOptions(field);
+      if (!options.length) {
+        continue;
+      }
 
-    for (var i = 0; i < options.length; i += 1) {
-      var score = scoreOptionByCandidates(options[i], candidates);
-      if (score > bestScore) {
-        bestScore = score;
-        bestNode = options[i];
+      var bestNode = null;
+      var bestScore = 0;
+
+      for (var i = 0; i < options.length; i += 1) {
+        var score = scoreOptionByCandidates(options[i], candidates);
+        if (
+          score > bestScore ||
+          (score === bestScore && bestNode && distanceToField(field, options[i]) < distanceToField(field, bestNode))
+        ) {
+          bestScore = score;
+          bestNode = options[i];
+        }
+      }
+
+      if (bestNode && bestScore >= minScore) {
+        clickElement(bestNode);
+        emitInputEvents(field);
+        return true;
       }
     }
 
-    if (!bestNode || bestScore < 60) {
-      return false;
-    }
-
-    clickElement(bestNode);
-    emitInputEvents(field);
-    return true;
+    return false;
   }
 
   async function tryFillTextWithAutocomplete(field, path, value) {
-    var changed = tryFillTextLike(field, value);
-    var selectedOption = await tryPickAutocompleteOption(field, path, value);
+    var queryValue = formatAutocompleteQuery(path, value);
+    var candidates = valueCandidates(path, queryValue);
+    clickElement(field);
+    await wait(40);
+
+    var changed = tryFillTextLike(field, queryValue);
+    if (changed) {
+      await wait(140);
+    }
+
+    var selectedOption = await tryPickAutocompleteOption(field, path, queryValue);
+    if (!selectedOption && (path === "education.school" || path === "education.degree")) {
+      var visibleOptions = collectAutocompleteOptions(field);
+      var hasRelevantDropdown = visibleOptions.some(function (option) {
+        return scoreOptionByCandidates(option, candidates) > 0;
+      });
+      if (hasRelevantDropdown) {
+        return false;
+      }
+    }
+
     return changed || selectedOption;
   }
 
   async function tryFillCombobox(field, path, value) {
+    var queryValue = formatAutocompleteQuery(path, value);
     clickElement(field);
     await wait(60);
 
-    if (await tryPickAutocompleteOption(field, path, value)) {
+    if (await tryPickAutocompleteOption(field, path, queryValue)) {
       field.dispatchEvent(new Event("change", { bubbles: true }));
       return true;
     }
 
     var inputs = collectComboboxInputs(field);
     var inputTarget = chooseBestComboboxInput(field, inputs);
-    if (inputTarget && setEditableValue(inputTarget, value)) {
+    if (inputTarget && setEditableValue(inputTarget, queryValue)) {
       await wait(120);
 
-      if (await tryPickAutocompleteOption(field, path, value)) {
+      if (await tryPickAutocompleteOption(field, path, queryValue)) {
         field.dispatchEvent(new Event("change", { bubbles: true }));
         return true;
+      }
+
+      if (path === "education.school" || path === "education.degree") {
+        return false;
       }
 
       inputTarget.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
