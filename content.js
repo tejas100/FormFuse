@@ -1816,6 +1816,110 @@
     }
   }
 
+  var JOB_CONTEXT_SELECTOR = [
+    "[data-testid*='job-description']",
+    "[class*='job-description']",
+    "[id*='job-description']",
+    "[class*='jobDescription']",
+    "[id*='jobDescription']",
+    "[class*='description']",
+    "[id*='description']",
+    "[class*='requirements']",
+    "[id*='requirements']",
+    "main",
+    "article"
+  ].join(", ");
+
+  function cleanContextText(text) {
+    return String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function maybePushContextText(list, seen, text, maxLength) {
+    var cleaned = cleanContextText(text);
+    if (!cleaned || cleaned.length < 120) {
+      return;
+    }
+
+    var key = cleaned.slice(0, 240).toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+
+    list.push(cleaned.slice(0, maxLength));
+  }
+
+  function extractJobContextFromPage() {
+    var chunks = [];
+    var seen = new Set();
+    var maxChunks = 12;
+    var maxChunkLength = 1800;
+    var keywordPattern = /responsibilities|requirements|qualifications|about the role|what you'll do|job description|about this role|skills/i;
+
+    var primaryNodes = document.querySelectorAll(JOB_CONTEXT_SELECTOR);
+    for (var i = 0; i < primaryNodes.length; i += 1) {
+      if (chunks.length >= maxChunks) {
+        break;
+      }
+      maybePushContextText(chunks, seen, primaryNodes[i].innerText || primaryNodes[i].textContent || "", maxChunkLength);
+    }
+
+    if (chunks.length < 3) {
+      var headings = document.querySelectorAll("h1, h2, h3, h4, [role='heading']");
+      for (var j = 0; j < headings.length; j += 1) {
+        if (chunks.length >= maxChunks) {
+          break;
+        }
+
+        var heading = headings[j];
+        var headingText = cleanContextText(heading.textContent || "");
+        if (!headingText || !keywordPattern.test(headingText)) {
+          continue;
+        }
+
+        var container =
+          heading.closest("section, article, main, [class*='job'], [id*='job'], [class*='description'], [id*='description']") ||
+          heading.parentElement;
+
+        if (!container) {
+          continue;
+        }
+
+        maybePushContextText(chunks, seen, container.innerText || container.textContent || "", maxChunkLength);
+      }
+    }
+
+    if (!chunks.length) {
+      var fallbackRoot = document.querySelector("main, article") || document.body;
+      maybePushContextText(chunks, seen, fallbackRoot ? fallbackRoot.innerText || fallbackRoot.textContent || "" : "", 12000);
+    }
+
+    if (!chunks.length) {
+      return {
+        ok: false,
+        error: "No readable job description text found on this page."
+      };
+    }
+
+    var merged = cleanContextText(chunks.join("\n\n")).slice(0, 14000);
+    if (merged.length < 160) {
+      return {
+        ok: false,
+        error: "The extracted page context is too short to analyze."
+      };
+    }
+
+    return {
+      ok: true,
+      title: document.title || "",
+      url: window.location.href || "",
+      text: merged
+    };
+  }
+
   chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     if (!message || !message.action) {
       return;
@@ -1843,6 +1947,11 @@
         });
 
       return true;
+    }
+
+    if (message.action === "FORMFUSE_GET_PAGE_CONTEXT") {
+      sendResponse(extractJobContextFromPage());
+      return;
     }
 
     return;

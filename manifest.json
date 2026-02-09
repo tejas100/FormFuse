@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Save stable job application details once and autofill matching fields on demand.",
   "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://api.openai.com/*"],
   "action": {
     "default_title": "FormFuse",
     "default_popup": "popup.html"
