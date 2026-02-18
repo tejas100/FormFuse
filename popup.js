@@ -4,8 +4,46 @@
   var schema = window.FormFuseSchema;
 
   var LLM_SETTINGS_KEY = "FORMFUSE_LLM_SETTINGS";
-  var LLM_RESUME_KEY = "FORMFUSE_LLM_RESUME_TEXT";
+  var RESUME_VARIANTS_KEY = "FORMFUSE_RESUME_VARIANTS";
   var LLM_CONTEXT_MAX = 14000;
+  var MAX_RESUME_VARIANTS = 8;
+
+  var STOP_WORDS = {
+    the: true,
+    and: true,
+    for: true,
+    with: true,
+    this: true,
+    that: true,
+    from: true,
+    you: true,
+    your: true,
+    have: true,
+    will: true,
+    are: true,
+    our: true,
+    but: true,
+    not: true,
+    all: true,
+    any: true,
+    can: true,
+    job: true,
+    role: true,
+    about: true,
+    they: true,
+    into: true,
+    has: true,
+    been: true,
+    more: true,
+    than: true,
+    years: true,
+    year: true,
+    who: true,
+    when: true,
+    what: true,
+    where: true,
+    how: true
+  };
 
   var form = document.getElementById("profile-form");
   var saveButton = document.getElementById("save-button");
@@ -14,16 +52,18 @@
 
   var homeTabButton = document.getElementById("tab-home");
   var llmTabButton = document.getElementById("tab-llm");
+  var autofillTabButton = document.getElementById("tab-autofill");
   var homeTabPanel = document.getElementById("home-tab-panel");
   var llmTabPanel = document.getElementById("llm-tab-panel");
+  var autofillTabPanel = document.getElementById("autofill-tab-panel");
+
+  var resumeAddButton = document.getElementById("resume-add-button");
+  var resumeUploadInput = document.getElementById("resume-upload-input");
+  var matchRefreshButton = document.getElementById("match-refresh-button");
+  var matchStatusNode = document.getElementById("match-status");
+  var matchListNode = document.getElementById("resume-match-list");
 
   var llmStatusNode = document.getElementById("llm-status");
-  var llmApiKeyInput = document.getElementById("llm-api-key");
-  var llmModelInput = document.getElementById("llm-model");
-  var llmSaveSettingsButton = document.getElementById("llm-save-settings");
-  var llmResumeTextArea = document.getElementById("llm-resume-text");
-  var llmResumeFileInput = document.getElementById("llm-resume-file");
-  var llmRefreshContextButton = document.getElementById("llm-refresh-context");
   var llmChatLog = document.getElementById("llm-chat-log");
   var llmChatForm = document.getElementById("llm-chat-form");
   var llmUserInput = document.getElementById("llm-user-input");
@@ -31,7 +71,12 @@
   var llmSendButton = document.getElementById("llm-send");
 
   var llmConversation = [];
-  var latestJobContext = null;
+  var resumeVariants = [];
+  var matchSummaryById = {};
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
 
   function setStatus(message, type) {
     if (!statusNode) {
@@ -40,9 +85,20 @@
 
     statusNode.textContent = message;
     statusNode.className = "status";
-
     if (type) {
       statusNode.classList.add(type);
+    }
+  }
+
+  function setMatchStatus(message, type) {
+    if (!matchStatusNode) {
+      return;
+    }
+
+    matchStatusNode.textContent = message;
+    matchStatusNode.className = "status";
+    if (type) {
+      matchStatusNode.classList.add(type);
     }
   }
 
@@ -53,7 +109,6 @@
 
     llmStatusNode.textContent = message;
     llmStatusNode.className = "status";
-
     if (type) {
       llmStatusNode.classList.add(type);
     }
@@ -232,29 +287,49 @@
     });
   }
 
+  function fetchJobDescriptionContext() {
+    return sendActiveTabMessage({ action: "FORMFUSE_GET_PAGE_CONTEXT" }).then(function (response) {
+      if (!response || !response.ok || !response.text) {
+        throw new Error((response && response.error) || "Could not read job description from this page.");
+      }
+
+      return {
+        title: response.title || "",
+        url: response.url || "",
+        text: String(response.text || "").slice(0, LLM_CONTEXT_MAX)
+      };
+    });
+  }
+
+  function getTabElements() {
+    return [
+      { name: "home", button: homeTabButton, panel: homeTabPanel },
+      { name: "llm", button: llmTabButton, panel: llmTabPanel },
+      { name: "autofill", button: autofillTabButton, panel: autofillTabPanel }
+    ];
+  }
+
   function setActiveTabPanel(tabName) {
-    var isHome = tabName !== "llm";
+    var tabs = getTabElements();
 
-    if (homeTabButton) {
-      homeTabButton.classList.toggle("is-active", isHome);
-      homeTabButton.setAttribute("aria-selected", isHome ? "true" : "false");
+    for (var i = 0; i < tabs.length; i += 1) {
+      var item = tabs[i];
+      var isActive = item.name === tabName;
+
+      if (item.button) {
+        item.button.classList.toggle("is-active", isActive);
+        item.button.setAttribute("aria-selected", isActive ? "true" : "false");
+      }
+
+      if (item.panel) {
+        item.panel.classList.toggle("is-active", isActive);
+        item.panel.hidden = !isActive;
+        item.panel.setAttribute("aria-hidden", isActive ? "false" : "true");
+      }
     }
 
-    if (llmTabButton) {
-      llmTabButton.classList.toggle("is-active", !isHome);
-      llmTabButton.setAttribute("aria-selected", isHome ? "false" : "true");
-    }
-
-    if (homeTabPanel) {
-      homeTabPanel.classList.toggle("is-active", isHome);
-      homeTabPanel.hidden = !isHome;
-      homeTabPanel.setAttribute("aria-hidden", isHome ? "false" : "true");
-    }
-
-    if (llmTabPanel) {
-      llmTabPanel.classList.toggle("is-active", !isHome);
-      llmTabPanel.hidden = isHome;
-      llmTabPanel.setAttribute("aria-hidden", isHome ? "true" : "false");
+    if (tabName === "home" && resumeVariants.length) {
+      refreshResumeMatches(false);
     }
 
     document.documentElement.scrollTop = 0;
@@ -271,7 +346,7 @@
 
     var roleNode = document.createElement("p");
     roleNode.className = "llm-message-role";
-    roleNode.textContent = role === "assistant" ? "ChatGPT" : "You";
+    roleNode.textContent = role === "assistant" ? "Assistant" : "You";
 
     var bodyNode = document.createElement("p");
     bodyNode.className = "llm-message-body";
@@ -279,7 +354,6 @@
 
     messageNode.appendChild(roleNode);
     messageNode.appendChild(bodyNode);
-
     llmChatLog.appendChild(messageNode);
     llmChatLog.scrollTop = llmChatLog.scrollHeight;
   }
@@ -330,104 +404,414 @@
     return "";
   }
 
-  function loadLLMSettings() {
-    return storageGet([LLM_SETTINGS_KEY, LLM_RESUME_KEY]).then(function (result) {
-      var settings = result[LLM_SETTINGS_KEY] || {};
-      if (llmApiKeyInput) {
-        llmApiKeyInput.value = settings.apiKey || "";
-      }
-      if (llmModelInput) {
-        llmModelInput.value = settings.model || "gpt-4o-mini";
-      }
-      if (llmResumeTextArea) {
-        llmResumeTextArea.value = result[LLM_RESUME_KEY] || "";
-      }
-    });
-  }
-
-  function saveLLMSettings() {
-    var apiKey = llmApiKeyInput ? String(llmApiKeyInput.value || "").trim() : "";
-    var model = llmModelInput ? String(llmModelInput.value || "").trim() : "gpt-4o-mini";
-
-    var payload = {};
-    payload[LLM_SETTINGS_KEY] = {
-      apiKey: apiKey,
-      model: model || "gpt-4o-mini"
-    };
-    return storageSet(payload);
-  }
-
-  function saveResumeText() {
-    if (!llmResumeTextArea) {
-      return Promise.resolve();
+  function parseJsonObject(text) {
+    if (!text) {
+      return null;
     }
 
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      var first = text.indexOf("{");
+      var last = text.lastIndexOf("}");
+      if (first !== -1 && last !== -1 && last > first) {
+        try {
+          return JSON.parse(text.slice(first, last + 1));
+        } catch (error) {
+          return null;
+        }
+      }
+      return null;
+    }
+  }
+
+  function sanitizeResumeVariants(list) {
+    if (!Array.isArray(list) || !list.length) {
+      return [];
+    }
+
+    var out = [];
+    var seen = {};
+
+    for (var i = 0; i < list.length && out.length < MAX_RESUME_VARIANTS; i += 1) {
+      var item = list[i] || {};
+      var id = String(item.id || "resume_" + String(Date.now()) + "_" + String(i));
+      if (seen[id]) {
+        id = id + "_" + String(i);
+      }
+      seen[id] = true;
+
+      var name = String(item.name || "").trim();
+      var text = String(item.text || "");
+      if (!name || !text.trim()) {
+        continue;
+      }
+
+      out.push({
+        id: id,
+        name: name,
+        text: text
+      });
+    }
+
+    return out;
+  }
+
+  function saveResumeVariants() {
     var payload = {};
-    payload[LLM_RESUME_KEY] = String(llmResumeTextArea.value || "");
+    payload[RESUME_VARIANTS_KEY] = resumeVariants;
     return storageSet(payload);
   }
 
-  function buildSystemPrompt(resumeText, pageContext) {
-    var pageTitle = pageContext && pageContext.title ? pageContext.title : "";
-    var pageUrl = pageContext && pageContext.url ? pageContext.url : "";
-    var jdText = pageContext && pageContext.text ? pageContext.text : "";
-
-    return (
-      "You are an expert resume coach helping a user match their resume to a job description. " +
-      "Use only the provided resume and job description context. " +
-      "If information is missing, say exactly what is missing.\n\n" +
-      "Return concise sections in this order:\n" +
-      "1) Match score (0-100)\n" +
-      "2) Why this match score\n" +
-      "3) Missing requirements\n" +
-      "4) Resume updates to make immediately (bullets)\n" +
-      "5) Suggested short answers for application text fields\n\n" +
-      "Current page title: " +
-      pageTitle +
-      "\nCurrent page URL: " +
-      pageUrl +
-      "\n\nResume:\n" +
-      resumeText +
-      "\n\nJob description:\n" +
-      jdText
-    );
-  }
-
-  function fetchJobDescriptionContext() {
-    return sendActiveTabMessage({ action: "FORMFUSE_GET_PAGE_CONTEXT" }).then(function (response) {
-      if (!response || !response.ok || !response.text) {
-        throw new Error((response && response.error) || "Could not read job description from this page.");
+  function loadResumeVariants() {
+    return storageGet([RESUME_VARIANTS_KEY]).then(function (result) {
+      resumeVariants = sanitizeResumeVariants(result[RESUME_VARIANTS_KEY]);
+      renderResumeMatches({}, false);
+      if (!resumeVariants.length) {
+        setMatchStatus("", null);
       }
-
-      latestJobContext = {
-        title: response.title || "",
-        url: response.url || "",
-        text: String(response.text || "").slice(0, LLM_CONTEXT_MAX)
-      };
-
-      return latestJobContext;
     });
   }
 
-  async function handleResumeFileUpload() {
-    if (!llmResumeFileInput || !llmResumeFileInput.files || !llmResumeFileInput.files.length) {
+  function extractTokens(text) {
+    var value = String(text || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+    var raw = value.split(/\s+/);
+    var output = [];
+
+    for (var i = 0; i < raw.length; i += 1) {
+      var token = raw[i];
+      if (!token || token.length < 3 || STOP_WORDS[token]) {
+        continue;
+      }
+      output.push(token);
+    }
+
+    return output;
+  }
+
+  function localMatchScore(resumeText, jobText) {
+    var resumeTokens = extractTokens(resumeText);
+    var jobTokens = extractTokens(jobText);
+
+    if (!resumeTokens.length || !jobTokens.length) {
+      return 0;
+    }
+
+    var resumeMap = {};
+    var jobMap = {};
+    var overlap = 0;
+
+    for (var i = 0; i < resumeTokens.length; i += 1) {
+      resumeMap[resumeTokens[i]] = true;
+    }
+    for (var j = 0; j < jobTokens.length; j += 1) {
+      jobMap[jobTokens[j]] = true;
+    }
+
+    var resumeUnique = Object.keys(resumeMap);
+    var jobUnique = Object.keys(jobMap);
+
+    for (var k = 0; k < resumeUnique.length; k += 1) {
+      if (jobMap[resumeUnique[k]]) {
+        overlap += 1;
+      }
+    }
+
+    var precision = overlap / resumeUnique.length;
+    var recall = overlap / jobUnique.length;
+    if (!precision || !recall) {
+      return 0;
+    }
+
+    var f1 = (2 * precision * recall) / (precision + recall);
+    return clamp(Math.round(f1 * 100), 0, 100);
+  }
+
+  function normalizeResumeName(base) {
+    var trimmed = String(base || "").trim();
+    if (!trimmed) {
+      return "Resume - Version " + String(resumeVariants.length + 1);
+    }
+    if (/^resume\s*[-:]/i.test(trimmed)) {
+      return trimmed;
+    }
+    return "Resume - " + trimmed;
+  }
+
+  function baseNameFromFileName(fileName) {
+    var clean = String(fileName || "").replace(/\.[^.]+$/, "");
+    clean = clean.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+    return clean;
+  }
+
+  async function addResumeFromFile(file) {
+    if (!file) {
       return;
     }
 
-    var file = llmResumeFileInput.files[0];
+    if (resumeVariants.length >= MAX_RESUME_VARIANTS) {
+      throw new Error("You can store up to " + String(MAX_RESUME_VARIANTS) + " resume versions.");
+    }
+
     var text = await file.text();
-
+    if (!String(text || "").trim()) {
+      throw new Error("Selected file is empty.");
+    }
     if (isProbablyBinaryText(text)) {
-      throw new Error("This file looks binary (PDF/DOCX). Paste resume text directly for best results.");
+      throw new Error("This file looks binary. Please upload a text-based resume.");
     }
 
-    if (!llmResumeTextArea) {
+    var baseName = baseNameFromFileName(file.name);
+    var typedName = window.prompt("Resume title", normalizeResumeName(baseName));
+    var title = normalizeResumeName(typedName || baseName);
+    var id = "resume_" + String(Date.now()) + "_" + String(resumeVariants.length);
+
+    resumeVariants.push({
+      id: id,
+      name: title,
+      text: text
+    });
+
+    await saveResumeVariants();
+    renderResumeMatches({}, false);
+    setMatchStatus(title + " uploaded. Refresh to compute match.", "success");
+  }
+
+  function renderResumeMatches(scoreMap, usedLLM) {
+    if (!matchListNode) {
       return;
     }
 
-    llmResumeTextArea.value = text;
-    await saveResumeText();
-    setLLMStatus("Resume loaded from " + file.name + ".", "success");
+    matchListNode.innerHTML = "";
+
+    if (!resumeVariants.length) {
+      matchListNode.hidden = true;
+      return;
+    }
+
+    matchListNode.hidden = false;
+
+    for (var i = 0; i < resumeVariants.length; i += 1) {
+      var variant = resumeVariants[i];
+      var scoreItem = scoreMap[variant.id] || { score: 0, summary: "" };
+
+      var card = document.createElement("article");
+      card.className = "resume-match-card";
+
+      var top = document.createElement("div");
+      top.className = "resume-match-top";
+
+      var title = document.createElement("p");
+      title.className = "resume-match-title";
+      title.textContent = variant.name;
+
+      var value = document.createElement("p");
+      value.className = "resume-match-value";
+      value.textContent = String(scoreItem.score) + "%";
+
+      var meter = document.createElement("div");
+      meter.className = "resume-match-meter";
+      var fill = document.createElement("span");
+      fill.style.width = String(scoreItem.score) + "%";
+      meter.appendChild(fill);
+
+      var note = document.createElement("p");
+      note.className = "resume-match-note";
+      if (scoreItem.summary) {
+        note.textContent = scoreItem.summary;
+      } else if (usedLLM) {
+        note.textContent = "Semantic match score for this resume.";
+      } else {
+        note.textContent = "Click Refresh to calculate match for this resume.";
+      }
+
+      top.appendChild(title);
+      top.appendChild(value);
+      card.appendChild(top);
+      card.appendChild(meter);
+      card.appendChild(note);
+      matchListNode.appendChild(card);
+    }
+  }
+
+  function getBestResumeVariant() {
+    if (!resumeVariants.length) {
+      return null;
+    }
+
+    var best = resumeVariants[0];
+    var bestScore = -1;
+
+    for (var i = 0; i < resumeVariants.length; i += 1) {
+      var variant = resumeVariants[i];
+      var scoreItem = matchSummaryById[variant.id];
+      var score = scoreItem && typeof scoreItem.score === "number" ? scoreItem.score : -1;
+      if (score > bestScore) {
+        bestScore = score;
+        best = variant;
+      }
+    }
+
+    return best;
+  }
+
+  async function getLLMMatchScores(variants, pageContext) {
+    var settingsPayload = await storageGet([LLM_SETTINGS_KEY]);
+    var settings = settingsPayload[LLM_SETTINGS_KEY] || {};
+    var apiKey = String(settings.apiKey || "").trim();
+    if (!apiKey) {
+      return null;
+    }
+
+    var lines = [];
+    for (var i = 0; i < variants.length; i += 1) {
+      lines.push(
+        "ID: " +
+          variants[i].id +
+          "\nName: " +
+          variants[i].name +
+          "\nResume Text:\n" +
+          String(variants[i].text || "").slice(0, 6000)
+      );
+    }
+
+    var response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + apiKey
+      },
+      body: JSON.stringify({
+        model: String(settings.model || "gpt-4o-mini"),
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: "Return strict JSON only."
+          },
+          {
+            role: "user",
+            content:
+              "Score each resume version against the job description. Return JSON with shape " +
+              "{\"results\":[{\"id\":\"...\",\"score\":0-100,\"summary\":\"...\"}]}.\n\nJob Description:\n" +
+              String(pageContext.text || "").slice(0, 12000) +
+              "\n\nResume Versions:\n\n" +
+              lines.join("\n\n---\n\n")
+          }
+        ]
+      })
+    });
+
+    var data = await response.json();
+    if (!response.ok) {
+      throw new Error((data && data.error && data.error.message) || "OpenAI scoring request failed.");
+    }
+
+    var parsed = parseJsonObject(extractAssistantText(data));
+    if (!parsed || !Array.isArray(parsed.results)) {
+      throw new Error("Could not parse scoring response.");
+    }
+
+    var out = {};
+    for (var j = 0; j < parsed.results.length; j += 1) {
+      var item = parsed.results[j];
+      if (!item || !item.id) {
+        continue;
+      }
+      out[String(item.id)] = {
+        score: clamp(Number(item.score) || 0, 0, 100),
+        summary: String(item.summary || "")
+      };
+    }
+
+    return out;
+  }
+
+  function getLocalMatchScores(variants, pageContext) {
+    var output = {};
+    var jdText = String(pageContext && pageContext.text ? pageContext.text : "");
+
+    for (var i = 0; i < variants.length; i += 1) {
+      var variant = variants[i];
+      output[variant.id] = {
+        score: localMatchScore(variant.text, jdText),
+        summary: "Local relevance estimate for this resume."
+      };
+    }
+
+    return output;
+  }
+
+  async function refreshResumeMatches(forceMessage) {
+    if (!matchRefreshButton) {
+      return;
+    }
+
+    if (!resumeVariants.length) {
+      matchListNode.hidden = true;
+      setMatchStatus("", null);
+      return;
+    }
+
+    matchRefreshButton.disabled = true;
+    setMatchStatus("Refreshing match scores...", null);
+
+    try {
+      var pageContext = await fetchJobDescriptionContext();
+      var scores = null;
+      var usedLLM = false;
+
+      try {
+        scores = await getLLMMatchScores(resumeVariants, pageContext);
+        usedLLM = Boolean(scores);
+      } catch (_) {
+        scores = null;
+      }
+
+      if (!scores) {
+        scores = getLocalMatchScores(resumeVariants, pageContext);
+      }
+
+      matchSummaryById = scores || {};
+      renderResumeMatches(matchSummaryById, usedLLM);
+
+      if (usedLLM) {
+        setMatchStatus("Match scores refreshed.", "success");
+      } else if (forceMessage) {
+        setMatchStatus("Match scores refreshed (local estimate).", "success");
+      }
+    } catch (error) {
+      setMatchStatus(error && error.message ? error.message : "Could not refresh match scores.", "error");
+    } finally {
+      matchRefreshButton.disabled = false;
+    }
+  }
+
+  async function getLLMRuntimeConfig() {
+    var settingsPayload = await storageGet([LLM_SETTINGS_KEY]);
+    var settings = settingsPayload[LLM_SETTINGS_KEY] || {};
+    return {
+      apiKey: String(settings.apiKey || "").trim(),
+      model: String(settings.model || "gpt-4o-mini")
+    };
+  }
+
+  function buildLLMSystemPrompt(resumeVariant, pageContext) {
+    return (
+      "You are an expert resume coach. Use the provided resume and job description. " +
+      "If data is missing, state that clearly.\n\n" +
+      "Selected resume name: " +
+      resumeVariant.name +
+      "\nPage title: " +
+      String(pageContext.title || "") +
+      "\nPage URL: " +
+      String(pageContext.url || "") +
+      "\n\nResume:\n" +
+      String(resumeVariant.text || "") +
+      "\n\nJob Description:\n" +
+      String(pageContext.text || "")
+    );
   }
 
   function setLLMInputsDisabled(disabled) {
@@ -437,27 +821,24 @@
     if (llmAnalyzeFitButton) {
       llmAnalyzeFitButton.disabled = disabled;
     }
-    if (llmRefreshContextButton) {
-      llmRefreshContextButton.disabled = disabled;
-    }
   }
 
   async function sendLLMMessage(userMessage) {
     var userText = String(userMessage || "").trim();
     if (!userText) {
-      setLLMStatus("Enter a question to chat with ChatGPT.", "error");
+      setLLMStatus("Enter a question to continue.", "error");
       return;
     }
 
-    var apiKey = llmApiKeyInput ? String(llmApiKeyInput.value || "").trim() : "";
-    if (!apiKey) {
-      setLLMStatus("Add and save your OpenAI API key first.", "error");
+    var selectedResume = getBestResumeVariant();
+    if (!selectedResume) {
+      setLLMStatus("Add at least one resume version in Home before using LLM chat.", "error");
       return;
     }
 
-    var resumeText = llmResumeTextArea ? String(llmResumeTextArea.value || "").trim() : "";
-    if (!resumeText) {
-      setLLMStatus("Upload or paste your resume text first.", "error");
+    var runtime = await getLLMRuntimeConfig();
+    if (!runtime.apiKey) {
+      setLLMStatus("LLM backend is not connected yet.", "error");
       return;
     }
 
@@ -466,26 +847,22 @@
     llmConversation.push({ role: "user", content: userText });
 
     try {
-      await saveResumeText();
-
-      setLLMStatus("Reading current page job description...", null);
       var pageContext = await fetchJobDescriptionContext();
-
-      var messages = [{ role: "system", content: buildSystemPrompt(resumeText, pageContext) }];
+      var messages = [{ role: "system", content: buildLLMSystemPrompt(selectedResume, pageContext) }];
       var historyStart = llmConversation.length > 10 ? llmConversation.length - 10 : 0;
       for (var i = historyStart; i < llmConversation.length; i += 1) {
         messages.push(llmConversation[i]);
       }
 
-      setLLMStatus("Waiting for ChatGPT response...", null);
+      setLLMStatus("Waiting for assistant response...", null);
       var response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer " + apiKey
+          Authorization: "Bearer " + runtime.apiKey
         },
         body: JSON.stringify({
-          model: (llmModelInput && llmModelInput.value) || "gpt-4o-mini",
+          model: runtime.model,
           temperature: 0.2,
           messages: messages
         })
@@ -493,12 +870,12 @@
 
       var data = await response.json();
       if (!response.ok) {
-        throw new Error((data && data.error && data.error.message) || "OpenAI request failed.");
+        throw new Error((data && data.error && data.error.message) || "Chat request failed.");
       }
 
       var assistantText = extractAssistantText(data);
       if (!assistantText) {
-        throw new Error("ChatGPT returned an empty response.");
+        throw new Error("Assistant returned an empty response.");
       }
 
       llmConversation.push({ role: "assistant", content: assistantText });
@@ -512,6 +889,10 @@
   }
 
   async function handleFillClick() {
+    if (!fillButton) {
+      return;
+    }
+
     fillButton.disabled = true;
 
     try {
@@ -544,7 +925,54 @@
       });
     }
 
+    if (autofillTabButton) {
+      autofillTabButton.addEventListener("click", function () {
+        setActiveTabPanel("autofill");
+      });
+    }
+
     setActiveTabPanel("home");
+  }
+
+  function initHomeMatching() {
+    loadResumeVariants()
+      .then(function () {
+        if (resumeVariants.length) {
+          refreshResumeMatches(false);
+        }
+      })
+      .catch(function (error) {
+        setMatchStatus(error.message || "Could not load resume versions.", "error");
+      });
+
+    if (resumeAddButton && resumeUploadInput) {
+      resumeAddButton.addEventListener("click", function () {
+        resumeUploadInput.value = "";
+        resumeUploadInput.click();
+      });
+
+      resumeUploadInput.addEventListener("change", function () {
+        var file = resumeUploadInput.files && resumeUploadInput.files.length ? resumeUploadInput.files[0] : null;
+        if (!file) {
+          return;
+        }
+
+        setMatchStatus("Uploading resume version...", null);
+        addResumeFromFile(file)
+          .then(function () {
+            refreshResumeMatches(false);
+          })
+          .catch(function (error) {
+            setMatchStatus(error.message || "Could not add resume version.", "error");
+          });
+      });
+    }
+
+    if (matchRefreshButton) {
+      matchRefreshButton.addEventListener("click", function () {
+        refreshResumeMatches(true);
+      });
+    }
   }
 
   function initLLM() {
@@ -553,57 +981,7 @@
     }
 
     llmChatLog.innerHTML = "";
-    addLLMMessage(
-      "assistant",
-      "Upload or paste your resume, open a job description page, and ask for a fit analysis."
-    );
-
-    loadLLMSettings().catch(function (error) {
-      setLLMStatus(error.message || "Could not load LLM settings.", "error");
-    });
-
-    if (llmSaveSettingsButton) {
-      llmSaveSettingsButton.addEventListener("click", function () {
-        setLLMStatus("Saving OpenAI connection...", null);
-        saveLLMSettings()
-          .then(function () {
-            setLLMStatus("Connection details saved.", "success");
-          })
-          .catch(function (error) {
-            setLLMStatus(error.message || "Could not save settings.", "error");
-          });
-      });
-    }
-
-    if (llmResumeTextArea) {
-      llmResumeTextArea.addEventListener("change", function () {
-        saveResumeText().catch(function () {
-          setLLMStatus("Could not save resume text.", "error");
-        });
-      });
-    }
-
-    if (llmResumeFileInput) {
-      llmResumeFileInput.addEventListener("change", function () {
-        setLLMStatus("Reading resume file...", null);
-        handleResumeFileUpload().catch(function (error) {
-          setLLMStatus(error.message || "Could not read resume file.", "error");
-        });
-      });
-    }
-
-    if (llmRefreshContextButton) {
-      llmRefreshContextButton.addEventListener("click", function () {
-        setLLMStatus("Reading current page content...", null);
-        fetchJobDescriptionContext()
-          .then(function (context) {
-            setLLMStatus("Loaded job context (" + context.text.length + " chars).", "success");
-          })
-          .catch(function (error) {
-            setLLMStatus(error.message || "Could not read current page.", "error");
-          });
-      });
-    }
+    addLLMMessage("assistant", "Add resumes in Home, then ask me to analyze fit with the current job page.");
 
     if (llmChatForm) {
       llmChatForm.addEventListener("submit", function (event) {
@@ -618,15 +996,14 @@
 
     if (llmAnalyzeFitButton) {
       llmAnalyzeFitButton.addEventListener("click", function () {
-        sendLLMMessage(
-          "Analyze this resume against the current job description and provide fit score, strengths, gaps, and concrete resume updates."
-        );
+        sendLLMMessage("Analyze resume fit for this job and suggest concrete updates.");
       });
     }
   }
 
   async function init() {
     initTabs();
+    initHomeMatching();
     initLLM();
 
     if (!schema) {
@@ -634,14 +1011,18 @@
       return;
     }
 
-    saveButton.addEventListener("click", function () {
-      setStatus("Saving profile...", null);
-      saveProfile(false).catch(function (error) {
-        setStatus(error.message || "Save failed.", "error");
+    if (saveButton) {
+      saveButton.addEventListener("click", function () {
+        setStatus("Saving profile...", null);
+        saveProfile(false).catch(function (error) {
+          setStatus(error.message || "Save failed.", "error");
+        });
       });
-    });
+    }
 
-    fillButton.addEventListener("click", handleFillClick);
+    if (fillButton) {
+      fillButton.addEventListener("click", handleFillClick);
+    }
 
     try {
       var profile = await loadProfile();

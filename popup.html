@@ -12,22 +12,90 @@
       <span class="ambient ambient-two" aria-hidden="true"></span>
       <span class="ambient ambient-three" aria-hidden="true"></span>
 
-      <!-- HOME VIEW -->
       <header class="topbar">
         <p class="eyebrow">AI Autofill Workspace</p>
         <h1>FormFuse</h1>
       </header>
 
       <nav class="mode-tabs" role="tablist" aria-label="Sections">
-        <button id="tab-home" class="mode-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="home-tab-panel">
+        <button
+          id="tab-home"
+          class="mode-tab is-active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="home-tab-panel"
+        >
           Home
         </button>
-        <button id="tab-llm" class="mode-tab" type="button" role="tab" aria-selected="false" aria-controls="llm-tab-panel">
+        <button
+          id="tab-llm"
+          class="mode-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="llm-tab-panel"
+        >
           LLM
+        </button>
+        <button
+          id="tab-autofill"
+          class="mode-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="autofill-tab-panel"
+        >
+          Autofill
         </button>
       </nav>
 
       <section id="home-tab-panel" class="tab-panel is-active" role="tabpanel" aria-labelledby="tab-home">
+        <section class="panel home-match-panel">
+          <div class="panel-gloss" aria-hidden="true"></div>
+
+          <div class="home-toolbar">
+            <button id="resume-add-button" type="button" class="button button-primary">Add Resume Version</button>
+            <button id="match-refresh-button" type="button" class="button button-secondary button-compact">Refresh</button>
+          </div>
+
+          <input id="resume-upload-input" type="file" accept=".txt,.md,.rtf,.json,.pdf,.doc,.docx" hidden />
+
+          <p id="match-status" class="status" role="status" aria-live="polite"></p>
+
+          <div id="resume-match-list" class="resume-match-list" hidden></div>
+        </section>
+      </section>
+
+      <section id="llm-tab-panel" class="tab-panel" role="tabpanel" aria-labelledby="tab-llm" hidden>
+        <section class="panel llm-panel" aria-labelledby="llm-title">
+          <div class="panel-gloss" aria-hidden="true"></div>
+          <div class="panel-head">
+            <h2 id="llm-title">LLM Resume Assistant</h2>
+            <p>Chat about fit and improvements using the best matching resume version from Home.</p>
+          </div>
+
+          <div id="llm-chat-log" class="llm-chat-log" role="log" aria-live="polite" aria-label="Chat messages"></div>
+
+          <form id="llm-chat-form" class="llm-chat-form">
+            <label>
+              <span>Ask ChatGPT</span>
+              <textarea
+                id="llm-user-input"
+                rows="3"
+                placeholder="Ask how well your resume matches this job, and what to update."
+              ></textarea>
+            </label>
+            <div class="llm-actions">
+              <button id="llm-analyze-fit" class="button button-secondary" type="button">Analyze Resume Fit</button>
+              <button id="llm-send" class="button button-primary" type="submit">Send</button>
+            </div>
+          </form>
+        </section>
+        <p id="llm-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="autofill-tab-panel" class="tab-panel" role="tabpanel" aria-labelledby="tab-autofill" hidden>
         <section class="panel home-panel" id="home-section" aria-labelledby="home-title">
           <div class="panel-gloss" aria-hidden="true"></div>
           <div class="home-copy">
@@ -57,7 +125,6 @@
 
         <!-- PROFILE + PREFERENCES: all names/ids preserved for existing JS -->
         <form id="profile-form" class="workspace">
-          <!-- PROFILE VIEW -->
           <section class="panel view" id="profile-section" aria-labelledby="profile-title">
             <div class="panel-gloss" aria-hidden="true"></div>
             <div class="panel-head">
@@ -214,7 +281,6 @@
             </details>
           </section>
 
-          <!-- PREFERENCES VIEW -->
           <section class="panel view" id="preferences-section" aria-labelledby="preferences-title">
             <div class="panel-gloss" aria-hidden="true"></div>
             <div class="panel-head">
@@ -306,60 +372,6 @@
         <footer class="footer-actions">
           <button id="save-button" type="button" class="button button-secondary">Save Profile</button>
         </footer>
-      </section>
-
-      <section id="llm-tab-panel" class="tab-panel" role="tabpanel" aria-labelledby="tab-llm" hidden>
-        <section class="panel llm-panel" aria-labelledby="llm-title">
-          <div class="panel-gloss" aria-hidden="true"></div>
-          <div class="panel-head">
-            <h2 id="llm-title">LLM Resume Assistant</h2>
-            <p>Compare your resume with the current page's job description directly inside FormFuse.</p>
-          </div>
-
-          <div class="group-grid llm-connection">
-            <label>
-              <span>OpenAI API Key</span>
-              <input id="llm-api-key" type="password" placeholder="sk-..." autocomplete="off" />
-            </label>
-            <label>
-              <span>Model</span>
-              <input id="llm-model" type="text" value="gpt-4o-mini" />
-            </label>
-            <button id="llm-save-settings" class="button button-secondary" type="button">Save Connection</button>
-          </div>
-
-          <div class="group-grid llm-context">
-            <label>
-              <span>Resume Text</span>
-              <textarea id="llm-resume-text" rows="5" placeholder="Paste resume text here, or upload a text-based file."></textarea>
-            </label>
-            <label class="llm-upload">
-              <span>Upload Resume File</span>
-              <input id="llm-resume-file" type="file" accept=".txt,.md,.rtf,.json,.pdf,.doc,.docx" />
-            </label>
-            <button id="llm-refresh-context" class="button button-secondary" type="button">
-              Load Job Description From Current Page
-            </button>
-          </div>
-
-          <div id="llm-chat-log" class="llm-chat-log" role="log" aria-live="polite" aria-label="Chat messages"></div>
-
-          <form id="llm-chat-form" class="llm-chat-form">
-            <label>
-              <span>Ask ChatGPT</span>
-              <textarea
-                id="llm-user-input"
-                rows="3"
-                placeholder="Ask how well your resume matches this job, and what to update."
-              ></textarea>
-            </label>
-            <div class="llm-actions">
-              <button id="llm-analyze-fit" class="button button-secondary" type="button">Analyze Resume Fit</button>
-              <button id="llm-send" class="button button-primary" type="submit">Send</button>
-            </div>
-          </form>
-        </section>
-        <p id="llm-status" class="status" role="status" aria-live="polite"></p>
       </section>
     </main>
 
