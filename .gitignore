@@ -1,2 +1,10 @@
 /docs
 /rack/frontend/node_modules
+/rack/backend/venv
+
+uploads/resumes/*
+!uploads/resumes/.gitkeep
+.env
+
+/rack/backend/__pycache__
+**/__pycache__

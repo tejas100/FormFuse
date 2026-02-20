@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "/Users/tejasbk/Documents/Aprojects/Resume-Autofill/FormFuse/rack/backend/venv/bin/python",
+  "python.analysis.extraPaths": [
+    "/Users/tejasbk/Documents/Aprojects/Resume-Autofill/FormFuse/rack/backend"
+  ]
+}
