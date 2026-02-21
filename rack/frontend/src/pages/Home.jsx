@@ -42,9 +42,10 @@ export default function Home() {
     <div style={{
       position: 'absolute', inset: 0, display: 'flex',
       flexDirection: 'column', alignItems: 'center',
-      justifyContent: results ? 'flex-start' : 'center',
+      justifyContent: 'flex-start',
       padding: '20px', paddingTop: results ? '200px' : '0',
       paddingBottom: '40px', overflowY: 'auto',
+      paddingTop: results ? '100px' : '100px',
       animation: 'fadeUp 0.4s ease both'
     }}>
       {!results && (
