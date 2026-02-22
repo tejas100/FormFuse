@@ -1,3 +1,171 @@
 {
-  "resumes": []
+  "resumes": [
+    {
+      "id": "d24238c8",
+      "name": "TejSDEWA",
+      "original_filename": "TejSDEWA.pdf",
+      "file_path": "/Users/tejasbk/Documents/Aprojects/Resume-Autofill/FormFuse/rack/uploads/resumes/a38920f0397e_TejSDEWA.pdf",
+      "file_ext": ".pdf",
+      "status": "active",
+      "uploaded_at": "2026-02-22T22:04:01.490379+00:00",
+      "updated": "Just now",
+      "raw_text_length": 4703,
+      "section_count": 5,
+      "chunk_count": 6,
+      "embedding_dim": 384,
+      "indexed": true,
+      "index_stats": {
+        "resume_id": "d24238c8",
+        "chunks_added": 6,
+        "total_vectors": 6,
+        "index_type": "Flat"
+      },
+      "structured": {
+        "skills": [
+          "AWS",
+          "CI/CD",
+          "Django",
+          "Docker",
+          "Flask",
+          "Git",
+          "Go",
+          "Java",
+          "JavaScript",
+          "Kubernetes",
+          "MongoDB",
+          "MySQL",
+          "Node.js",
+          "PostgreSQL",
+          "Python",
+          "REST",
+          "Rails",
+          "React",
+          "Redis",
+          "Ruby",
+          "SQL",
+          "Spring Boot",
+          "TensorFlow"
+        ],
+        "years_exp": 4.2,
+        "titles": [
+          "Software Developer",
+          "Full Stack Developer, Project Engineer",
+          "Founder, Lead Engineer"
+        ],
+        "companies": [
+          "Exito Infynites",
+          "Wipro",
+          "Cnotes.in"
+        ],
+        "education": [
+          {
+            "degree": "Master's",
+            "field": "Computer Science",
+            "institution": "New Jersey Institute of Technology Newark, NJ"
+          },
+          {
+            "degree": "Bachelor's",
+            "field": "Computer Science",
+            "institution": "Visvesvaraya Technological University Mysuru, India"
+          }
+        ],
+        "domains": [
+          "backend",
+          "machine learning",
+          "devops",
+          "frontend"
+        ],
+        "extraction_method": "rule_based",
+        "confidence": {
+          "skills": "high",
+          "years_exp": "high",
+          "titles": "high",
+          "companies": "high",
+          "education": "high",
+          "domains": "high"
+        }
+      },
+      "skills": [
+        "AWS",
+        "CI/CD",
+        "Django",
+        "Docker",
+        "Flask",
+        "Git",
+        "Go",
+        "Java"
+      ],
+      "sections": [
+        {
+          "section": "summary",
+          "text_length": 136,
+          "weight": 1.0
+        },
+        {
+          "section": "education",
+          "text_length": 197,
+          "weight": 0.3
+        },
+        {
+          "section": "experience",
+          "text_length": 2049,
+          "weight": 0.7
+        },
+        {
+          "section": "projects",
+          "text_length": 1464,
+          "weight": 0.5
+        },
+        {
+          "section": "skills",
+          "text_length": 796,
+          "weight": 1.0
+        }
+      ],
+      "chunks": [
+        {
+          "text": "Tejas Belakavadi Kemparaju\nSoftware Engineer | Seattle, WA | 862-214-0129 | tejas55bk@gmail.com | linkedin.com/in/tejasbk | git/tejas100",
+          "section": "summary",
+          "weight": 1.0,
+          "chunk_index": 0,
+          "token_count": 21
+        },
+        {
+          "text": "New Jersey Institute of Technology Newark, NJ\nMaster\u2019s in Computer Science Sep 2023 \u2013 May 2025\nVisvesvaraya Technological University Mysuru, India\nBachelor\u2019s in Computer Science Aug 2017 \u2013 Aug 2021",
+          "section": "education",
+          "weight": 0.3,
+          "chunk_index": 1,
+          "token_count": 39
+        },
+        {
+          "text": "Exito Infynites - Software Developer - Bengaluru, India Jul 2022 \u2013 Aug 2023 \u2022 Designedandimplementedlarge-scaledistributedbackendsystemsandRESTfulAPIsinJava,workingwithlatency- sensitive systems and performance-critical code paths, improving response times by 25% under real production load \u2022 Designed&deployedmicroservicesonAWSusingSpringBootforperformance-criticalbackendservices&Node.jsfor asynchronous workflows supporting high-throughput processing under heavy concurrent load (10K+ requests/min) \u2022 ImplementedunitandintegrationtestsusingJUnitandMockito,improvingcodereliabilityandreducingregressions \u2022 Built scalable, self-service, production-grade CI/CD and observability tooling that automated and standardized deployments, and improved developer iteration speed by 40% across backend teams \u2022 Diagnosed and resolved distributed-system performance bottlenecks, unblocking downstream engineering teams \u2022 DesignedbackendservicesusingMongoDB&PostgreSQLforscalable,low-latencydataaccessfordistributedsystems Wipro - Full Stack Developer, Project Engineer - Bengaluru, India Oct 2021 \u2013 Jul 2022 \u2022 Built scalable backend systems with Java, implemented REST APIs, and deployed microservices on AWS for high availability and fault tolerance, integrating database optimization and asynchronous job handling \u2022 ReducedAPIresponsetimeby40%throughloadbalancing,requestrouting,andefficientdataserializationpipelines \u2022 Enhanced reliability and scalability by refactoring services and adopting Docker + Kubernetes containerization Cnotes.in - Founder, Lead Engineer - Bengaluru, India May 2019 \u2013 Aug 2021 \u2022 Built a consumer-facing, CRM (React) for 50K+ users, enabling Local Cable Operators to manage billing and client records efficiently. Implemented role-based authentication and input sanitization to prevent injection vulnerabilities \u2022 DevelopedresponsivedashboardsandinteractiveUIsinReacttovisualizereal-timecustomeractivityandSMSalerts \u2022 Designed event-driven notification flow using",
+          "section": "experience",
+          "weight": 0.7,
+          "chunk_index": 2,
+          "token_count": 255
+        },
+        {
+          "text": "manage billing and client records efficiently. Implemented role-based authentication and input sanitization to prevent injection vulnerabilities \u2022 DevelopedresponsivedashboardsandinteractiveUIsinReacttovisualizereal-timecustomeractivityandSMSalerts \u2022 Designed event-driven notification flow using asynchronous process, reliable payment confirmations for 50K+ users",
+          "section": "experience",
+          "weight": 0.7,
+          "chunk_index": 3,
+          "token_count": 42
+        },
+        {
+          "text": "Instruction Tuning Dataset Generator for StarCoder2-15B | Python, Flask, Docker Oct 2024 \u2013 Dec 2024\n\u2022 Implementedasyntheticinstruction-tuningpipelineforStarCoder2-15B,generatinghigh-qualitytrainingdatathrough\nprompt orchestration and automated validation workflows\n\u2022 Refactored&extendedthecodebasefromStackv1tosupportmulti-languageparsinganddynamicpromptformatting\n\u2022 Designed a retrieval-augmented generation (RAG) system with semantic search for user-facing workflows\nAgentic Career Assistant (RAG-based Conversational AI System) | Python, RAG, Vector Search\n\u2022 Designed and builta stateful, agentic conversational AI system to help usersanalyze resumes, discover relevant jobs,\nmap skills to opportunities, prepare for interviews, and track progress over time.\n\u2022 BuiltaRetrieval-AugmentedGeneration(RAG)pipelineincludingdocumentchunking,embeddinggeneration,vector\nindexing, and similarity-based retrieval to ground responses in structured and unstructured career data\n\u2022 Tuned retrieval quality and latency through chunk-size and similarity threshold optimization; implemented drift\nmonitoring and retraining triggers to maintain model performance\nNSF I-Corps \u2013 Cancer Screening Optimization Platform - Technical Lead | Princeton University Aug 2024\n\u2022 LedAIcancerscreeningdiscovery,interviewed30+patients&clinicianstoassesscriticaluserneeds&techfeasibility\n\u2022 DesignedascalableMLpipelinearchitectureforhospitalstoreducediagnostic&overallhealthcarecostssignificantly",
+          "section": "projects",
+          "weight": 0.5,
+          "chunk_index": 4,
+          "token_count": 178
+        },
+        {
+          "text": "Languages: Java, Python, Go, SQL\nFramework: Ruby on Rails, React, MongoDB, Spring Boot\nBackend: Spring Boot, Node.js, REST APIs, Microservices, Distributed Systems\nCloud & DevOps: AWS, Docker, Kubernetes, CI/CD, Observability\nDatabases: PostgreSQL, MySQL, Redis, MongoDB\nNetworking & Systems: TCP/IP, REST APIs, Load Balancing, Routing Optimization, Virtualization (Kubernetes)\nPublications\nThe prediction of CERN electron mass collision by using CATBoosting and LGBMR Published in IEEE\n\u2022 AppliedMLatCERNusingCatBoost,&advancedfeatures,achieving99%accuracy&boostingpredictionreliability\nDetecting Diabetic Retinopathy using Deep Learning \u2014 Tensorflow, Django, Python Published Link\n\u2022 Developed a model for diabetic retinopathy detection using Fully convolutional Neural Network, with 93% accuracy",
+          "section": "skills",
+          "weight": 1.0,
+          "chunk_index": 5,
+          "token_count": 123
+        }
+      ]
+    }
+  ]
 }

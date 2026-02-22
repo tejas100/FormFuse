@@ -1,10 +1,21 @@
 """
 ingestion.py
-Orchestrates the resume ingestion pipeline:
-  file → extract text → parse sections → chunk → structured extraction → store metadata
+Orchestrates the full resume ingestion pipeline:
+  file → extract text → parse sections → chunk → structured extraction
+       → embed chunks → index in FAISS → store metadata
 
 This runs synchronously on upload. In production, this would be
 an async Celery/RQ task to avoid blocking the upload response.
+
+Pipeline timing (typical, single resume on CPU):
+  text_extractor:        ~50ms
+  section_parser:        ~5ms
+  chunker:               ~2ms
+  structured_extractor:  ~10ms
+  embedder:              ~200-500ms  (model loads once, cached after)
+  faiss_store:           ~5ms
+  Total first upload:    ~2-3s (includes model load)
+  Subsequent uploads:    ~300-600ms
 """
 
 import json
@@ -18,6 +29,8 @@ from services.text_extractor import extract_text
 from services.section_parser import parse_sections
 from services.chunker import chunk_sections
 from services.structured_extractor import extract_structured_data
+from services.embedder import embed_texts
+from services.faiss_store import add_resume_vectors, remove_resume_vectors
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # rack/
@@ -47,11 +60,13 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
     Full ingestion pipeline for a single resume file.
 
     Pipeline:
-      1. text_extractor   → raw text from PDF/DOCX
-      2. section_parser   → labeled sections (skills, experience, education, etc.)
-      3. chunker          → 256-token chunks with 32 overlap, section-aware
-      4. structured_extractor → skills, years_exp, titles, companies, education, domains
-      5. persist metadata  → JSON file (will move to Postgres later)
+      1. text_extractor        → raw text from PDF/DOCX
+      2. section_parser        → labeled sections (skills, experience, education, etc.)
+      3. chunker               → 256-token chunks with 32 overlap, section-aware
+      4. structured_extractor  → skills, years_exp, titles, companies, education, domains
+      5. embedder              → 384-dim vectors for each chunk (all-MiniLM-L6-v2)
+      6. faiss_store           → index vectors for similarity search
+      7. persist metadata      → JSON file (will move to Postgres later)
 
     Args:
         file_path: Path to the saved file on disk
@@ -68,13 +83,25 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
     # Step 2: Parse into sections
     sections = parse_sections(raw_text)
 
-    # Step 3: Chunk sections (for vector embeddings later)
+    # Step 3: Chunk sections (for vector embeddings)
     chunks = chunk_sections(sections)
 
     # Step 4: Structured extraction (Stage 1 — deterministic)
     structured = extract_structured_data(sections)
 
-    # Step 5: Build metadata record
+    # Step 5: Generate embeddings for each chunk
+    chunk_texts = [c["text"] for c in chunks]
+    embeddings = embed_texts(chunk_texts, normalize=True)
+
+    # Step 6: Index vectors in FAISS
+    index_result = add_resume_vectors(
+        resume_id=resume_id,
+        chunks=chunks,
+        embeddings=embeddings,
+        user_id="default",  # Will use actual user_id after auth is built
+    )
+
+    # Step 7: Build metadata record
     name = Path(original_filename).stem
     ext = Path(original_filename).suffix.lower()
 
@@ -90,6 +117,9 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
         "raw_text_length": len(raw_text),
         "section_count": len(sections),
         "chunk_count": len(chunks),
+        "embedding_dim": embeddings.shape[1] if embeddings.size > 0 else 384,
+        "indexed": True,
+        "index_stats": index_result,
         # Structured data — used for hybrid scoring (skill_overlap, experience_overlap)
         "structured": structured,
         # Flat skills list for the frontend cards
@@ -99,11 +129,20 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
             {"section": s["section"], "text_length": len(s["text"]), "weight": s["weight"]}
             for s in sections
         ],
-        # Full chunks stored here for now; will move to FAISS after embedder is built
-        "chunks": chunks,
+        # Chunks stored without embeddings (those are in FAISS now)
+        "chunks": [
+            {
+                "text": c["text"],
+                "section": c["section"],
+                "weight": c["weight"],
+                "chunk_index": c["chunk_index"],
+                "token_count": c["token_count"],
+            }
+            for c in chunks
+        ],
     }
 
-    # Step 6: Persist metadata
+    # Step 8: Persist metadata
     metadata = _load_metadata()
     metadata["resumes"].append(resume_record)
     _save_metadata(metadata)
@@ -128,6 +167,7 @@ def get_all_resumes() -> list:
             "skills": r.get("skills", []),
             "chunk_count": r.get("chunk_count", 0),
             "section_count": r.get("section_count", 0),
+            "indexed": r.get("indexed", False),
             # Structured summary for frontend
             "years_exp": structured.get("years_exp"),
             "titles": structured.get("titles", []),
@@ -149,7 +189,7 @@ def get_resume_by_id(resume_id: str) -> Optional[Dict]:
 
 
 def delete_resume(resume_id: str) -> bool:
-    """Delete resume file and metadata."""
+    """Delete resume file, FAISS vectors, and metadata."""
     metadata = _load_metadata()
     resume = None
     for r in metadata["resumes"]:
@@ -164,6 +204,9 @@ def delete_resume(resume_id: str) -> bool:
     file_path = resume.get("file_path")
     if file_path and os.path.exists(file_path):
         os.remove(file_path)
+
+    # Remove vectors from FAISS index
+    remove_resume_vectors(resume_id, user_id="default")
 
     # Remove from metadata
     metadata["resumes"] = [r for r in metadata["resumes"] if r["id"] != resume_id]
