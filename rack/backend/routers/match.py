@@ -1,9 +1,18 @@
+"""
+match.py — Router for job matching (placeholder)
+Will be built after ingestion pipeline is working.
+"""
+
 from fastapi import APIRouter
-from models.schemas import MatchRequest, MatchResponse
 
-router = APIRouter()
+router = APIRouter(prefix="/api/match", tags=["match"])
 
-@router.post("/match")
-async def match_resume(payload: MatchRequest):
-    # placeholder — we'll wire real logic here soon
-    return {"message": "match endpoint working", "jd_length": len(payload.job_description)}
+
+@router.post("")
+async def match_resume(payload: dict = {}):
+    """Placeholder — will implement hybrid scoring pipeline."""
+    return {
+        "status": "placeholder",
+        "message": "Matching pipeline not yet implemented.",
+        "results": [],
+    }

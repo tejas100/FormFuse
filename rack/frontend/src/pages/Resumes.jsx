@@ -1,15 +1,12 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
-const INITIAL_RESUMES = [
-  { id: 1, name: 'Software Engineer v3',  updated: '2 days ago',  status: 'active', skills: ['React','Node','Python'],  file: null },
-  { id: 2, name: 'Full Stack — Startup',  updated: '1 week ago',  status: 'active', skills: ['Vue','FastAPI','AWS'],    file: null },
-  { id: 3, name: 'Backend Specialist',    updated: '2 weeks ago', status: 'draft',  skills: ['Go','PostgreSQL','Docker'],file: null },
-  { id: 4, name: 'ML Engineer Focus',     updated: '1 month ago', status: 'draft',  skills: ['Python','PyTorch','MLflow'],file: null },
-]
+const API_BASE = 'http://localhost:8000'
 
 export default function Resumes() {
-  const [resumes, setResumes] = useState(INITIAL_RESUMES)
-  const [deleteConfirm, setDeleteConfirm] = useState(null) // id to confirm delete
+  const [resumes, setResumes] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [uploading, setUploading] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [toast, setToast] = useState(null)
   const fileInputRef = useRef(null)
 
@@ -18,48 +15,112 @@ export default function Resumes() {
     setTimeout(() => setToast(null), 3000)
   }
 
-  // ── Upload ──────────────────────────────────────────────────────
-  const handleFileChange = (e) => {
+  // ── Fetch resumes on mount ──────────────────────────────────
+  useEffect(() => {
+    fetchResumes()
+  }, [])
+
+  const fetchResumes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/resumes`)
+      const data = await res.json()
+      setResumes(data.resumes || [])
+    } catch (err) {
+      console.error('Failed to fetch resumes:', err)
+      showToast('Failed to load resumes.', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Upload ──────────────────────────────────────────────────
+  const handleFileChange = async (e) => {
     const file = e.target.files[0]
     if (!file) return
 
-    const allowed = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
+    const allowed = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ]
     if (!allowed.includes(file.type)) {
       showToast('Only PDF or DOCX files are allowed.', 'error')
       return
     }
 
-    const name = file.name.replace(/\.[^/.]+$/, '') // strip extension
-    const newResume = {
-      id: Date.now(),
-      name,
-      updated: 'Just now',
-      status: 'draft',
-      skills: [],
-      file,
-      fileURL: URL.createObjectURL(file),
-      fileType: file.type,
+    setUploading(true)
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await fetch(`${API_BASE}/api/resumes/upload`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Upload failed')
+      }
+
+      const data = await res.json()
+      showToast(`"${data.resume.name}" uploaded & processed! (${data.resume.chunk_count} chunks)`)
+
+      // Refresh the list from backend
+      await fetchResumes()
+    } catch (err) {
+      console.error('Upload error:', err)
+      showToast(err.message || 'Upload failed.', 'error')
+    } finally {
+      setUploading(false)
+      e.target.value = ''
     }
-
-    setResumes(prev => [...prev, newResume])
-    showToast(`"${name}" uploaded successfully!`)
-    e.target.value = '' // reset input
   }
 
-  // ── Delete ──────────────────────────────────────────────────────
-  const handleDelete = (id) => {
-    setResumes(prev => prev.filter(r => r.id !== id))
-    setDeleteConfirm(null)
-    showToast('Resume deleted.')
+  // ── Delete ──────────────────────────────────────────────────
+  const handleDelete = async (id) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/resumes/${id}`, {
+        method: 'DELETE',
+      })
+
+      if (!res.ok) throw new Error('Delete failed')
+
+      setResumes(prev => prev.filter(r => r.id !== id))
+      setDeleteConfirm(null)
+      showToast('Resume deleted.')
+    } catch (err) {
+      console.error('Delete error:', err)
+      showToast('Failed to delete resume.', 'error')
+      setDeleteConfirm(null)
+    }
   }
 
-  // ── View ────────────────────────────────────────────────────────
+  // ── View ────────────────────────────────────────────────────
   const handleView = (resume) => {
-    if (resume.fileURL) {
-      window.open(resume.fileURL, '_blank')
-    } else {
-      showToast('No file attached to this resume.', 'error')
-    }
+    window.open(`${API_BASE}/api/resumes/${resume.id}/file`, '_blank')
+  }
+
+  // ── Time formatting ─────────────────────────────────────────
+  const formatTime = (isoString) => {
+    if (!isoString) return ''
+    // If it's a relative string like "Just now", pass through
+    if (!isoString.includes('T')) return isoString
+
+    const date = new Date(isoString)
+    const now = new Date()
+    const diffMs = now - date
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    const diffDays = Math.floor(diffMs / 86400000)
+
+    if (diffMins < 1) return 'Just now'
+    if (diffMins < 60) return `${diffMins}m ago`
+    if (diffHours < 24) return `${diffHours}h ago`
+    if (diffDays < 7) return `${diffDays}d ago`
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`
+    return date.toLocaleDateString()
   }
 
   const activeCount = resumes.filter(r => r.status === 'active').length
@@ -124,13 +185,41 @@ export default function Resumes() {
         </div>
       )}
 
+      {/* Uploading overlay */}
+      {uploading && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 600, backdropFilter: 'blur(4px)'
+        }}>
+          <div style={{
+            background: '#161616', border: '1px solid rgba(232,255,107,0.2)',
+            borderRadius: '20px', padding: '40px', textAlign: 'center',
+            boxShadow: '0 24px 80px rgba(0,0,0,0.6)', animation: 'fadeUp 0.25s ease both'
+          }}>
+            <div style={{
+              width: '40px', height: '40px', border: '3px solid rgba(232,255,107,0.2)',
+              borderTopColor: '#e8ff6b', borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite',
+              margin: '0 auto 16px'
+            }} />
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 700, color: '#e8ff6b' }}>
+              Processing resume…
+            </div>
+            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', marginTop: '6px' }}>
+              Extracting text, parsing sections, chunking
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ width: '100%', maxWidth: '960px', marginBottom: '28px' }}>
         <div style={{ fontFamily: 'var(--font-display)', fontSize: '32px', fontWeight: 800, letterSpacing: '-1px', marginBottom: '4px' }}>
           Your Resumes
         </div>
         <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.4)' }}>
-          {resumes.length} versions · {activeCount} active
+          {loading ? 'Loading…' : `${resumes.length} version${resumes.length !== 1 ? 's' : ''} · ${activeCount} active`}
         </div>
       </div>
 
@@ -170,9 +259,9 @@ export default function Resumes() {
                   style={{
                     width: '28px', height: '28px', borderRadius: '8px',
                     background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                    color: 'rgba(255,255,255,0.5)', cursor: r.fileURL ? 'pointer' : 'not-allowed',
+                    color: 'rgba(255,255,255,0.5)', cursor: 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: '13px', transition: 'all 0.2s', opacity: r.fileURL ? 1 : 0.4
+                    fontSize: '13px', transition: 'all 0.2s'
                   }}
                 >👁</button>
 
@@ -195,11 +284,12 @@ export default function Resumes() {
               {r.name}
             </div>
             <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', marginBottom: '12px' }}>
-              Updated {r.updated}
-              {r.file && <span style={{ marginLeft: '6px', color: 'rgba(232,255,107,0.6)' }}>· {r.file.name.split('.').pop().toUpperCase()}</span>}
+              {formatTime(r.uploaded_at)}
+              {r.file_ext && <span style={{ marginLeft: '6px', color: 'rgba(232,255,107,0.6)' }}>· {r.file_ext.replace('.', '').toUpperCase()}</span>}
+              {r.chunk_count > 0 && <span style={{ marginLeft: '6px', color: 'rgba(255,255,255,0.25)' }}>· {r.chunk_count} chunks</span>}
             </div>
 
-            {r.skills.length > 0 && (
+            {r.skills && r.skills.length > 0 && (
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {r.skills.map(s => (
                   <span key={s} style={{
@@ -216,18 +306,21 @@ export default function Resumes() {
         {/* Add Resume Card */}
         <button
           onClick={() => fileInputRef.current.click()}
+          disabled={uploading}
           style={{
             background: 'transparent',
             border: '1px dashed rgba(232,255,107,0.25)',
-            borderRadius: '16px', padding: '22px', cursor: 'pointer',
+            borderRadius: '16px', padding: '22px', cursor: uploading ? 'not-allowed' : 'pointer',
             display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center',
             gap: '10px', minHeight: '160px',
             color: 'rgba(255,255,255,0.35)',
             fontFamily: 'var(--font-body)', fontSize: '13px',
             transition: 'all 0.25s ease',
+            opacity: uploading ? 0.4 : 1,
           }}
           onMouseEnter={e => {
+            if (uploading) return
             e.currentTarget.style.borderColor = 'rgba(232,255,107,0.5)'
             e.currentTarget.style.background = 'rgba(232,255,107,0.03)'
             e.currentTarget.style.color = 'rgba(232,255,107,0.7)'
@@ -252,6 +345,13 @@ export default function Resumes() {
         style={{ display: 'none' }}
         onChange={handleFileChange}
       />
+
+      {/* Spinner keyframe (injected once) */}
+      <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   )
 }
