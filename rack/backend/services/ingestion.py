@@ -1,7 +1,7 @@
 """
 ingestion.py
 Orchestrates the resume ingestion pipeline:
-  file → extract text → parse sections → chunk → store metadata
+  file → extract text → parse sections → chunk → structured extraction → store metadata
 
 This runs synchronously on upload. In production, this would be
 an async Celery/RQ task to avoid blocking the upload response.
@@ -17,6 +17,7 @@ from typing import Dict, Optional
 from services.text_extractor import extract_text
 from services.section_parser import parse_sections
 from services.chunker import chunk_sections
+from services.structured_extractor import extract_structured_data
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # rack/
@@ -44,32 +45,39 @@ def _save_metadata(data: Dict):
 def ingest_resume(file_path: str, original_filename: str) -> Dict:
     """
     Full ingestion pipeline for a single resume file.
-    
+
+    Pipeline:
+      1. text_extractor   → raw text from PDF/DOCX
+      2. section_parser   → labeled sections (skills, experience, education, etc.)
+      3. chunker          → 256-token chunks with 32 overlap, section-aware
+      4. structured_extractor → skills, years_exp, titles, companies, education, domains
+      5. persist metadata  → JSON file (will move to Postgres later)
+
     Args:
         file_path: Path to the saved file on disk
         original_filename: Original uploaded filename
-    
+
     Returns:
-        Resume metadata dict with id, name, chunks, etc.
+        Resume metadata dict with id, name, chunks, structured data, etc.
     """
     resume_id = str(uuid.uuid4())[:8]
-    
+
     # Step 1: Extract raw text
     raw_text = extract_text(file_path)
-    
+
     # Step 2: Parse into sections
     sections = parse_sections(raw_text)
-    
-    # Step 3: Chunk sections
+
+    # Step 3: Chunk sections (for vector embeddings later)
     chunks = chunk_sections(sections)
-    
-    # Step 4: Build metadata record
-    name = Path(original_filename).stem  # filename without extension
+
+    # Step 4: Structured extraction (Stage 1 — deterministic)
+    structured = extract_structured_data(sections)
+
+    # Step 5: Build metadata record
+    name = Path(original_filename).stem
     ext = Path(original_filename).suffix.lower()
-    
-    # Extract skill-like keywords from the skills section (simple heuristic)
-    skills = _extract_skill_tags(sections)
-    
+
     resume_record = {
         "id": resume_id,
         "name": name,
@@ -82,19 +90,24 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
         "raw_text_length": len(raw_text),
         "section_count": len(sections),
         "chunk_count": len(chunks),
-        "skills": skills,
+        # Structured data — used for hybrid scoring (skill_overlap, experience_overlap)
+        "structured": structured,
+        # Flat skills list for the frontend cards
+        "skills": structured.get("skills", [])[:8],
+        # Section summaries (without full text, for debugging)
         "sections": [
             {"section": s["section"], "text_length": len(s["text"]), "weight": s["weight"]}
             for s in sections
         ],
-        "chunks": chunks,  # stored for now; will move to FAISS later
+        # Full chunks stored here for now; will move to FAISS after embedder is built
+        "chunks": chunks,
     }
-    
-    # Step 5: Persist metadata
+
+    # Step 6: Persist metadata
     metadata = _load_metadata()
     metadata["resumes"].append(resume_record)
     _save_metadata(metadata)
-    
+
     return resume_record
 
 
@@ -103,6 +116,7 @@ def get_all_resumes() -> list:
     metadata = _load_metadata()
     results = []
     for r in metadata["resumes"]:
+        structured = r.get("structured", {})
         results.append({
             "id": r["id"],
             "name": r["name"],
@@ -114,12 +128,19 @@ def get_all_resumes() -> list:
             "skills": r.get("skills", []),
             "chunk_count": r.get("chunk_count", 0),
             "section_count": r.get("section_count", 0),
+            # Structured summary for frontend
+            "years_exp": structured.get("years_exp"),
+            "titles": structured.get("titles", []),
+            "domains": structured.get("domains", []),
+            "education": structured.get("education", []),
+            "companies": structured.get("companies", []),
+            "extraction_confidence": structured.get("confidence", {}),
         })
     return results
 
 
 def get_resume_by_id(resume_id: str) -> Optional[Dict]:
-    """Return full resume metadata including chunks."""
+    """Return full resume metadata including chunks and structured data."""
     metadata = _load_metadata()
     for r in metadata["resumes"]:
         if r["id"] == resume_id:
@@ -148,44 +169,3 @@ def delete_resume(resume_id: str) -> bool:
     metadata["resumes"] = [r for r in metadata["resumes"] if r["id"] != resume_id]
     _save_metadata(metadata)
     return True
-
-
-def _extract_skill_tags(sections: list, max_tags: int = 8) -> list:
-    """
-    Simple heuristic to extract skill-like keywords from the skills section.
-    For production, this would use structured_extractor.py with an LLM.
-    """
-    skills_text = ""
-    for s in sections:
-        if s["section"] == "skills":
-            skills_text += " " + s["text"]
-
-    if not skills_text.strip():
-        # Fallback: grab from the whole text
-        skills_text = " ".join(s["text"] for s in sections[:2])
-
-    # Common tech keywords to look for
-    KNOWN_SKILLS = [
-        "Python", "JavaScript", "TypeScript", "React", "Vue", "Angular",
-        "Node", "Node.js", "FastAPI", "Django", "Flask", "Express",
-        "PostgreSQL", "MySQL", "MongoDB", "Redis", "SQLite",
-        "Docker", "Kubernetes", "AWS", "GCP", "Azure",
-        "Git", "CI/CD", "Linux", "Terraform",
-        "PyTorch", "TensorFlow", "MLflow", "Pandas", "NumPy",
-        "Java", "Go", "Rust", "C++", "C#", "Ruby", "PHP", "Swift",
-        "GraphQL", "REST", "gRPC", "Kafka", "RabbitMQ",
-        "HTML", "CSS", "Tailwind", "SASS", "LESS",
-        "FAISS", "LangChain", "OpenAI", "Hugging Face",
-        "Spark", "Airflow", "dbt", "Snowflake", "BigQuery",
-        "Figma", "Jira", "Confluence",
-    ]
-
-    found = []
-    text_lower = skills_text.lower()
-    for skill in KNOWN_SKILLS:
-        if skill.lower() in text_lower and skill not in found:
-            found.append(skill)
-        if len(found) >= max_tags:
-            break
-
-    return found
