@@ -12,4 +12,4 @@ uploads/resumes/*
 
 **/uploads/
 
-
+.env
