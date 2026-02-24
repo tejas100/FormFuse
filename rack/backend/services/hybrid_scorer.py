@@ -14,16 +14,14 @@ Why hybrid over pure cosine similarity:
   The structured components (skill overlap, experience) provide sharp signal
   that separates a 95% match from a 70% match.
 
-  Example: Two resumes might both score 0.75 cosine sim to a Python/FastAPI JD,
-  but one has Python+FastAPI+PostgreSQL (skill overlap = 0.9) while the other
-  has Java+Spring+MySQL (skill overlap = 0.1). Hybrid scoring catches this.
-
 Design decisions:
   - Weights are tunable and logged (optimize by tracking click-through later)
   - Each component normalized to 0-1 range before weighting
   - Semantic score is the average of top-K chunk similarities (not max)
     to reward resumes that are consistently relevant, not just one lucky chunk
   - Skill matching uses normalized canonical names (from shared SKILL_ALIASES)
+  - For LLM-extracted skills not in SKILL_ALIASES, falls back to text search
+    in resume raw text/chunks to avoid false negatives
 """
 
 import re
@@ -82,45 +80,66 @@ def _compute_semantic_score(faiss_results: List[Dict], top_k: int = 5) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# COMPONENT 2: SKILL OVERLAP (set intersection)
+# COMPONENT 2: SKILL OVERLAP (set intersection + text fallback)
 # ═══════════════════════════════════════════════════════════════════
 
 def _compute_skill_overlap(
     jd_required: List[str],
     jd_preferred: List[str],
     resume_skills: List[str],
+    resume_chunks: List[Dict] = None,
+    resume_structured: Dict = None,
 ) -> Dict:
     """
     Compute skill overlap between JD requirements and resume skills.
-    Both use normalized canonical names from SKILL_ALIASES.
 
-    Scoring:
-      - Required skills matched → full weight
-      - Preferred skills matched → partial bonus
-      - Final score = (required_matched / required_total) * 0.8
-                    + (preferred_matched / preferred_total) * 0.2
+    Two-pass matching:
+      Pass 1: Canonical skill name matching (SKILL_ALIASES vocabulary)
+      Pass 2: Text-based search in resume chunks for LLM-extracted skills
+              that aren't in the SKILL_ALIASES list (e.g., "RAG systems",
+              "feature engineering", "model deployment")
 
-    Returns:
-        {
-            "score": 0.85,
-            "matched_skills": ["Python", "FastAPI"],
-            "missing_skills": ["Kubernetes"],
-            "matched_preferred": ["Redis"],
-            "required_match_rate": 0.8,
-            "preferred_match_rate": 0.5,
-        }
+    This is critical because:
+      - The LLM extracts conceptual skills ("data preprocessing", "fine-tuning")
+      - These may not be in SKILL_ALIASES as exact canonical names
+      - But the resume text clearly mentions them
+      - Without Pass 2, these always show as ✗ missing → artificially low scores
     """
     resume_set = set(s.lower() for s in resume_skills)
     required_set = set(s.lower() for s in jd_required)
     preferred_set = set(s.lower() for s in jd_preferred)
 
-    # Required skill matches
+    # Pass 1: Direct canonical matching
     required_matched = required_set & resume_set
     required_missing = required_set - resume_set
-    required_rate = len(required_matched) / len(required_set) if required_set else 1.0
-
-    # Preferred skill matches
     preferred_matched = preferred_set & resume_set
+    preferred_missing = preferred_set - resume_set
+
+    # Pass 2: Text-based fallback for still-missing skills
+    # Search the resume's raw text (from chunks) for mentions
+    if resume_chunks or resume_structured:
+        resume_full_text = _build_resume_text(resume_chunks, resume_structured)
+        
+        # Check required skills that didn't match canonically
+        text_matched_required = set()
+        for skill in list(required_missing):
+            if _skill_in_text(skill, resume_full_text):
+                text_matched_required.add(skill)
+        
+        required_matched |= text_matched_required
+        required_missing -= text_matched_required
+
+        # Check preferred skills too
+        text_matched_preferred = set()
+        for skill in list(preferred_missing):
+            if _skill_in_text(skill, resume_full_text):
+                text_matched_preferred.add(skill)
+
+        preferred_matched |= text_matched_preferred
+        preferred_missing -= text_matched_preferred
+
+    # Coverage rates
+    required_rate = len(required_matched) / len(required_set) if required_set else 1.0
     preferred_rate = len(preferred_matched) / len(preferred_set) if preferred_set else 0.0
 
     # Weighted score: required matters more
@@ -128,7 +147,6 @@ def _compute_skill_overlap(
 
     # Map back to original casing for display
     def _original_case(lowered_set, source_lists):
-        """Get original-cased version of matched skills."""
         lookup = {}
         for s_list in source_lists:
             for s in s_list:
@@ -143,6 +161,73 @@ def _compute_skill_overlap(
         "required_match_rate": round(required_rate, 4),
         "preferred_match_rate": round(preferred_rate, 4),
     }
+
+
+def _build_resume_text(chunks: List[Dict] = None, structured: Dict = None) -> str:
+    """Build full resume text from chunks and structured data for text search."""
+    parts = []
+    
+    if chunks:
+        for chunk in chunks:
+            text = chunk.get("text", "")
+            if text:
+                parts.append(text)
+    
+    if structured:
+        # Add titles, companies, etc. as searchable text
+        for title in structured.get("titles", []):
+            parts.append(title)
+        for skill in structured.get("skills", []):
+            parts.append(skill)
+    
+    return " ".join(parts).lower()
+
+
+def _skill_in_text(skill: str, text: str) -> bool:
+    """
+    Check if a skill concept appears in the resume text.
+    Handles multi-word skills and common variations.
+    
+    Examples:
+      "feature engineering" → searches for "feature engineering"
+      "RAG" → searches with word boundaries
+      "data preprocessing" → also matches "data pre-processing", "preprocessing"
+      "fine-tuning" → also matches "fine tuning", "finetuning"
+    """
+    skill_lower = skill.lower().strip()
+    
+    # Direct match
+    if skill_lower in text:
+        return True
+    
+    # Handle hyphenated variants: "fine-tuning" ↔ "fine tuning" ↔ "finetuning"
+    dehyphenated = skill_lower.replace("-", " ")
+    if dehyphenated != skill_lower and dehyphenated in text:
+        return True
+    
+    collapsed = skill_lower.replace("-", "").replace(" ", "")
+    # Search for collapsed form with word boundary
+    if len(collapsed) > 3:
+        pattern = r'\b' + re.escape(collapsed) + r'\b'
+        if re.search(pattern, text.replace("-", "").replace(" ", "")):
+            return True
+    
+    # For short acronyms (RAG, LLM, NLP), use word-boundary matching
+    if len(skill_lower) <= 4 and skill_lower.upper() == skill_lower.upper():
+        pattern = r'\b' + re.escape(skill_lower) + r'\b'
+        if re.search(pattern, text):
+            return True
+    
+    # Check individual significant words for multi-word skills
+    # e.g., "end-to-end ML development" → check if "end-to-end" AND "ml" appear
+    words = re.split(r'[\s\-]+', skill_lower)
+    significant_words = [w for w in words if len(w) > 2 and w not in {"and", "the", "for", "with", "end"}]
+    if len(significant_words) >= 2:
+        matches = sum(1 for w in significant_words if w in text)
+        if matches >= len(significant_words) * 0.7:  # 70% of significant words found
+            return True
+    
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -172,15 +257,12 @@ def _compute_experience_score(
         if resume_years >= jd_min_years:
             years_score = 1.0
         elif jd_min_years > 0:
-            # Linear scale: if JD wants 5 and resume has 3, score = 3/5 = 0.6
             years_score = min(1.0, resume_years / jd_min_years)
         else:
             years_score = 1.0
     elif jd_min_years is None:
-        # JD doesn't specify years → no penalty
-        years_score = 0.7  # Neutral-ish score
+        years_score = 0.7
     else:
-        # Resume has no years info → slight penalty
         years_score = 0.3
 
     # ── Title similarity ──
@@ -193,11 +275,10 @@ def _compute_experience_score(
         intersection = jd_domain_set & resume_domain_set
         domain_score = len(intersection) / len(jd_domain_set) if jd_domain_set else 0.0
     elif not jd_domains:
-        domain_score = 0.5  # JD doesn't specify domain → neutral
+        domain_score = 0.5
     else:
-        domain_score = 0.2  # Resume has no detected domains
+        domain_score = 0.2
 
-    # Weighted combination
     score = (years_score * 0.40) + (title_score * 0.35) + (domain_score * 0.25)
 
     return {
@@ -211,13 +292,10 @@ def _compute_experience_score(
 def _title_similarity(jd_title: Optional[str], resume_titles: List[str]) -> float:
     """
     Fuzzy keyword overlap between JD title and resume titles.
-    E.g., JD: "Senior Backend Engineer" vs Resume: "Software Engineer", "Backend Developer"
-    Shared keywords: "backend", "engineer" → 2/3 = 0.67
     """
     if not jd_title or not resume_titles:
-        return 0.3  # Can't compare → neutral
+        return 0.3
 
-    # Extract meaningful keywords (ignore common filler)
     stop_words = {"the", "a", "an", "and", "or", "of", "for", "in", "at", "to", "with", "-", "–", "/"}
 
     jd_words = set(
@@ -248,25 +326,17 @@ def _compute_keyword_position_score(
 ) -> float:
     """
     Score based on WHERE in the resume the JD keywords appear.
-
-    Skills mentioned in the "skills" section (weight 1.0) score higher
-    than skills mentioned only in "education" (weight 0.3).
-
-    This captures resume structure: a candidate who lists Python in their
-    Skills section is more confident in it than one who mentions it
-    only in a course description.
+    Skills in "skills" section (weight 1.0) score higher than "education" (0.3).
     """
     if not jd_required_skills or not faiss_results:
         return 0.0
 
     jd_skills_lower = set(s.lower() for s in jd_required_skills)
-    weighted_hits = 0.0
     total_possible = len(jd_skills_lower)
 
     if total_possible == 0:
         return 0.0
 
-    # For each JD skill, find the highest-weighted section it appears in
     skill_best_weight = {}
     for result in faiss_results:
         text_lower = result["text"].lower()
@@ -277,9 +347,8 @@ def _compute_keyword_position_score(
                 current_best = skill_best_weight.get(skill, 0.0)
                 skill_best_weight[skill] = max(current_best, section_weight)
 
-    # Sum the best weights, normalize by total possible
     weighted_hits = sum(skill_best_weight.values())
-    max_possible = total_possible * 1.0  # Max weight per skill is 1.0
+    max_possible = total_possible * 1.0
 
     return min(1.0, weighted_hits / max_possible) if max_possible > 0 else 0.0
 
@@ -292,6 +361,7 @@ def score_resume(
     parsed_jd: Dict,
     resume_structured: Dict,
     faiss_results: List[Dict],
+    resume_chunks: List[Dict] = None,
     weights: Optional[Dict] = None,
 ) -> Dict:
     """
@@ -301,21 +371,17 @@ def score_resume(
         parsed_jd: Output from jd_parser.parse_jd()
         resume_structured: Structured data from resume ingestion
         faiss_results: FAISS search results filtered for this resume
+        resume_chunks: Resume chunk dicts (for text-based skill fallback)
         weights: Optional custom weights (defaults to WEIGHTS)
 
     Returns:
         {
-            "final_score": 82,          # 0-100 integer for display
-            "raw_score": 0.823,         # 0-1 float
-            "components": {
-                "semantic": {"score": 0.75, "weight": 0.40, "weighted": 0.30},
-                "skill":   {"score": 0.90, "weight": 0.30, "weighted": 0.27, "details": {...}},
-                "experience": {"score": 0.85, "weight": 0.20, "weighted": 0.17, "details": {...}},
-                "keyword": {"score": 0.60, "weight": 0.10, "weighted": 0.06},
-            },
-            "matched_skills": ["Python", "FastAPI"],
-            "missing_skills": ["Kubernetes"],
-            "matched_preferred": ["Redis"],
+            "final_score": 82,
+            "raw_score": 0.823,
+            "components": { ... },
+            "matched_skills": [...],
+            "missing_skills": [...],
+            "matched_preferred": [...],
         }
     """
     w = weights or WEIGHTS
@@ -323,11 +389,13 @@ def score_resume(
     # Component 1: Semantic
     semantic = _compute_semantic_score(faiss_results)
 
-    # Component 2: Skill overlap
+    # Component 2: Skill overlap (with text fallback for LLM-extracted skills)
     skill_result = _compute_skill_overlap(
         jd_required=parsed_jd.get("required_skills", []),
         jd_preferred=parsed_jd.get("preferred_skills", []),
         resume_skills=resume_structured.get("skills", []),
+        resume_chunks=resume_chunks,
+        resume_structured=resume_structured,
     )
 
     # Component 3: Experience
@@ -354,11 +422,10 @@ def score_resume(
         + keyword               * w["keyword"]
     )
 
-    # Clamp to [0, 1]
     raw_score = max(0.0, min(1.0, raw_score))
 
     return {
-        "final_score": round(raw_score * 100),  # 0-100 for display
+        "final_score": round(raw_score * 100),
         "raw_score": round(raw_score, 4),
         "components": {
             "semantic": {

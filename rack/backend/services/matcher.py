@@ -11,24 +11,47 @@ Orchestrates the full matching pipeline:
     → gap_analyzer.analyze_gaps()    Missing skills per resume
     → Sort by score, return ranked results
 
-This runs synchronously per match request. At current scale (3-5 resumes,
-~30 chunks total), the entire pipeline takes < 500ms after model warm-up.
-
-For production at scale:
-  - Cache JD embeddings (same JD re-matched → skip embedding)
-  - Async FAISS search with batch queries
-  - Pre-compute resume structured data in Postgres (currently in JSON)
+Key optimization: We embed only the relevant JD sections (requirements,
+responsibilities) — NOT the company description, benefits, salary, or
+location sections. This dramatically improves semantic similarity scores
+because the embedding captures what the job *needs*, not noise about perks.
 """
 
 import time
 from typing import Dict, List, Optional
 
-from services.jd_parser import parse_jd
+from services.jd_parser import parse_jd, _split_jd_sections
 from services.embedder import embed_single
 from services.faiss_store import search as faiss_search, get_index_stats
 from services.ingestion import get_all_resumes, get_resume_by_id
 from services.hybrid_scorer import score_resume
 from services.gap_analyzer import analyze_gaps
+
+
+def _extract_relevant_jd_text(jd_text: str) -> str:
+    """
+    Extract only the relevant sections of a JD for embedding.
+    Removes company description, benefits, salary, location noise.
+    
+    This is critical: embedding "competitive salary + 401k + dental"
+    dilutes the semantic signal for actual job requirements.
+    """
+    sections = _split_jd_sections(jd_text)
+    
+    relevant_keys = ["required", "preferred", "responsibilities", "general"]
+    irrelevant_keys = ["about", "benefits"]
+    
+    relevant_parts = []
+    for key in relevant_keys:
+        if key in sections:
+            relevant_parts.append(sections[key])
+    
+    # If we couldn't parse sections, fall back to full text
+    # but truncate to first ~2000 chars (skip the tail which is usually benefits)
+    if not relevant_parts:
+        return jd_text[:2000]
+    
+    return "\n".join(relevant_parts)
 
 
 async def match_resumes(
@@ -39,36 +62,6 @@ async def match_resumes(
 ) -> Dict:
     """
     Full matching pipeline: JD → parsed → scored → ranked results.
-
-    Args:
-        jd_text: Raw job description text
-        user_id: User ID for FAISS index (per-user indexes)
-        top_k_chunks: Number of FAISS chunks to retrieve
-        use_llm: Whether to use LLM for JD parsing
-
-    Returns:
-        {
-            "results": [
-                {
-                    "resume_id": "abc123",
-                    "name": "Software Engineer v3",
-                    "score": 87,
-                    "raw_score": 0.873,
-                    "matched_skills": ["Python", "FastAPI"],
-                    "missing_skills": ["Kubernetes"],
-                    "matched_preferred": ["Redis"],
-                    "components": { ... },
-                    "gap_analysis": { ... },
-                },
-                ...
-            ],
-            "jd_parsed": { ... },
-            "meta": {
-                "total_resumes": 3,
-                "pipeline_time_ms": 450,
-                "faiss_chunks_searched": 20,
-            },
-        }
     """
     start_time = time.time()
 
@@ -90,10 +83,10 @@ async def match_resumes(
             },
         }
 
-    # ── Step 3: Embed JD for semantic search ──
-    # Use the full JD text (not just skills) for embedding
-    # This captures semantic meaning beyond just skill keywords
-    jd_embedding = embed_single(jd_text)
+    # ── Step 3: Embed ONLY relevant JD sections ──
+    # Don't embed salary, benefits, company description — it dilutes semantic signal
+    relevant_jd_text = _extract_relevant_jd_text(jd_text)
+    jd_embedding = embed_single(relevant_jd_text)
 
     # ── Step 4: FAISS search — retrieve top chunks across ALL resumes ──
     faiss_results = faiss_search(
@@ -129,21 +122,22 @@ async def match_resumes(
     for resume in all_resumes:
         resume_id = resume["id"]
 
-        # Get full resume data (with structured extraction)
         full_resume = get_resume_by_id(resume_id)
         if not full_resume:
             continue
 
         structured = full_resume.get("structured", {})
+        resume_chunks = full_resume.get("chunks", [])
 
-        # FAISS results for this resume (may be empty if no chunks matched)
+        # FAISS results for this resume
         resume_faiss = results_by_resume.get(resume_id, [])
 
-        # Hybrid scoring
+        # Hybrid scoring — now passes chunks for text-based skill matching
         score_result = score_resume(
             parsed_jd=parsed_jd,
             resume_structured=structured,
             faiss_results=resume_faiss,
+            resume_chunks=resume_chunks,
         )
 
         # Gap analysis
@@ -160,7 +154,6 @@ async def match_resumes(
             "matched_preferred": score_result["matched_preferred"],
             "components": score_result["components"],
             "gap_analysis": gaps,
-            # Resume metadata for display
             "skills": resume.get("skills", []),
             "years_exp": structured.get("years_exp"),
             "titles": structured.get("titles", []),
@@ -187,5 +180,4 @@ async def match_resumes(
 
 
 def _elapsed_ms(start: float) -> int:
-    """Return elapsed milliseconds since start."""
     return round((time.time() - start) * 1000)

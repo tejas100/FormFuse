@@ -3,14 +3,11 @@ gap_analyzer.py
 Analyzes gaps between JD requirements and resume capabilities.
 
 Two layers (matching the project's hybrid architecture):
-  Layer 1: Set difference — fast, deterministic
+  Layer 1: Set difference + text fallback — fast, deterministic
   Layer 2: LLM context — adds actionable advice for each gap (optional)
 
-Design decisions:
-  - Set difference uses normalized skill names (same SKILL_ALIASES vocabulary)
-  - Gaps are categorized by severity: critical (required + high-signal) vs minor
-  - LLM adds learning recommendations and skill adjacency hints
-    (e.g., "You know FastAPI → Flask is a quick learn")
+Uses same text-based fallback as hybrid_scorer to avoid false negatives
+when LLM-extracted skills aren't in SKILL_ALIASES vocabulary.
 """
 
 import os
@@ -20,54 +17,100 @@ from typing import Dict, List, Optional
 
 
 # ═══════════════════════════════════════════════════════════════════
+# TEXT-BASED SKILL MATCHING (shared logic with hybrid_scorer)
+# ═══════════════════════════════════════════════════════════════════
+
+def _skill_in_text(skill: str, text: str) -> bool:
+    """Check if a skill concept appears in text (handles variations)."""
+    skill_lower = skill.lower().strip()
+    
+    if skill_lower in text:
+        return True
+    
+    dehyphenated = skill_lower.replace("-", " ")
+    if dehyphenated != skill_lower and dehyphenated in text:
+        return True
+    
+    collapsed = skill_lower.replace("-", "").replace(" ", "")
+    if len(collapsed) > 3:
+        pattern = r'\b' + re.escape(collapsed) + r'\b'
+        if re.search(pattern, text.replace("-", "").replace(" ", "")):
+            return True
+    
+    if len(skill_lower) <= 4:
+        pattern = r'\b' + re.escape(skill_lower) + r'\b'
+        if re.search(pattern, text):
+            return True
+    
+    words = re.split(r'[\s\-]+', skill_lower)
+    significant_words = [w for w in words if len(w) > 2 and w not in {"and", "the", "for", "with", "end"}]
+    if len(significant_words) >= 2:
+        matches = sum(1 for w in significant_words if w in text)
+        if matches >= len(significant_words) * 0.7:
+            return True
+    
+    return False
+
+
+def _build_resume_text(resume_structured: Dict, resume_chunks: List[Dict] = None) -> str:
+    """Build searchable text from resume data."""
+    parts = []
+    if resume_chunks:
+        for chunk in resume_chunks:
+            parts.append(chunk.get("text", ""))
+    for skill in resume_structured.get("skills", []):
+        parts.append(skill)
+    for title in resume_structured.get("titles", []):
+        parts.append(title)
+    return " ".join(parts).lower()
+
+
+# ═══════════════════════════════════════════════════════════════════
 # LAYER 1: DETERMINISTIC GAP ANALYSIS
 # ═══════════════════════════════════════════════════════════════════
 
 def analyze_gaps(
     parsed_jd: Dict,
     resume_structured: Dict,
+    resume_chunks: List[Dict] = None,
 ) -> Dict:
     """
     Compute skill gaps between JD and resume.
-
-    Args:
-        parsed_jd: Output from jd_parser.parse_jd()
-        resume_structured: Structured data from resume ingestion
-
-    Returns:
-        {
-            "missing_required": ["Kubernetes", "Terraform"],
-            "missing_preferred": ["Redis"],
-            "gap_count": 3,
-            "critical_gaps": ["Kubernetes"],     # high-signal missing required skills
-            "coverage": {
-                "required": 0.75,                # 6 of 8 required skills matched
-                "preferred": 0.50,               # 2 of 4 preferred matched
-                "overall": 0.70,
-            },
-            "experience_gaps": {
-                "years_short": 2,                # null if meets requirement
-                "domain_gaps": ["devops"],        # JD domains not in resume
-            },
-        }
+    Uses both canonical matching and text-based fallback.
     """
     resume_skills = set(s.lower() for s in resume_structured.get("skills", []))
     jd_required = set(s.lower() for s in parsed_jd.get("required_skills", []))
     jd_preferred = set(s.lower() for s in parsed_jd.get("preferred_skills", []))
 
-    # Skill gaps
+    # Pass 1: Canonical matching
     missing_required = jd_required - resume_skills
     missing_preferred = jd_preferred - resume_skills
 
+    # Pass 2: Text-based fallback for still-missing skills
+    resume_text = _build_resume_text(resume_structured, resume_chunks)
+    
+    text_matched_req = set()
+    for skill in list(missing_required):
+        if _skill_in_text(skill, resume_text):
+            text_matched_req.add(skill)
+    missing_required -= text_matched_req
+
+    text_matched_pref = set()
+    for skill in list(missing_preferred):
+        if _skill_in_text(skill, resume_text):
+            text_matched_pref.add(skill)
+    missing_preferred -= text_matched_pref
+
     # Coverage rates
-    req_coverage = 1.0 - (len(missing_required) / len(jd_required)) if jd_required else 1.0
-    pref_coverage = 1.0 - (len(missing_preferred) / len(jd_preferred)) if jd_preferred else 1.0
-    total_jd = len(jd_required) + len(jd_preferred)
+    req_total = len(jd_required)
+    pref_total = len(jd_preferred)
+    req_coverage = 1.0 - (len(missing_required) / req_total) if req_total > 0 else 1.0
+    pref_coverage = 1.0 - (len(missing_preferred) / pref_total) if pref_total > 0 else 1.0
+    total_jd = req_total + pref_total
     total_missing = len(missing_required) + len(missing_preferred)
     overall_coverage = 1.0 - (total_missing / total_jd) if total_jd > 0 else 1.0
 
-    # Critical gaps: required skills that are high-signal
-    # (appear in the title, or are core tech like languages/frameworks)
+    # Critical gaps
     critical_gaps = _identify_critical_gaps(
         missing_required, parsed_jd.get("title", ""), parsed_jd.get("domains", [])
     )
@@ -93,31 +136,20 @@ def analyze_gaps(
     }
 
 
-def _identify_critical_gaps(
-    missing_skills: set,
-    jd_title: Optional[str],
-    jd_domains: List[str],
-) -> set:
-    """
-    Identify which missing skills are critical (vs nice-to-have).
-    A skill is critical if:
-      - It appears in the job title (e.g., "Python Developer" → Python is critical)
-      - It's a primary language/framework for the domain
-    """
+def _identify_critical_gaps(missing_skills, jd_title, jd_domains):
+    """Identify which missing skills are critical."""
     critical = set()
 
-    # Skills that appear in the job title
     if jd_title:
         title_lower = jd_title.lower()
         for skill in missing_skills:
             if skill in title_lower:
                 critical.add(skill)
 
-    # Core skills per domain
     _DOMAIN_CORE_SKILLS = {
         "backend": {"python", "java", "go", "node.js", "fastapi", "django", "flask", "express", "spring boot", "rest", "graphql", "postgresql", "mysql", "mongodb"},
         "frontend": {"javascript", "typescript", "react", "vue", "angular", "next.js", "html", "css"},
-        "machine learning": {"python", "pytorch", "tensorflow", "scikit-learn", "pandas", "numpy"},
+        "machine learning": {"python", "pytorch", "tensorflow", "scikit-learn", "pandas", "numpy", "deep learning", "llm", "transformers"},
         "data engineering": {"python", "sql", "spark", "airflow", "kafka", "snowflake", "bigquery", "dbt"},
         "devops": {"docker", "kubernetes", "terraform", "ci/cd", "aws", "gcp", "azure", "jenkins"},
         "cloud": {"aws", "gcp", "azure", "docker", "kubernetes", "terraform"},
@@ -133,25 +165,19 @@ def _identify_critical_gaps(
     return critical
 
 
-def _experience_gaps(parsed_jd: Dict, resume_structured: Dict) -> Dict:
+def _experience_gaps(parsed_jd, resume_structured):
     """Compute experience-level gaps."""
-    result = {
-        "years_short": None,
-        "domain_gaps": [],
-    }
+    result = {"years_short": None, "domain_gaps": []}
 
-    # Years gap
     jd_years = parsed_jd.get("min_years")
     resume_years = resume_structured.get("years_exp")
     if jd_years is not None and resume_years is not None:
         if resume_years < jd_years:
             result["years_short"] = round(jd_years - resume_years, 1)
 
-    # Domain gaps
     jd_domains = set(d.lower() for d in parsed_jd.get("domains", []))
     resume_domains = set(d.lower() for d in resume_structured.get("domains", []))
-    domain_gaps = jd_domains - resume_domains
-    result["domain_gaps"] = sorted(domain_gaps)
+    result["domain_gaps"] = sorted(jd_domains - resume_domains)
 
     return result
 
@@ -176,24 +202,16 @@ Return ONLY valid JSON (no markdown, no backticks):
             "severity": "critical",
             "adjacent_skills": ["Docker"],
             "learning_estimate": "2-3 weeks",
-            "advice": "You already know Docker, so Kubernetes concepts will feel familiar. Focus on Deployments, Services, and kubectl basics."
+            "advice": "You already know Docker, so Kubernetes concepts will feel familiar."
         }
     ]
 }"""
 
 
-async def analyze_gaps_with_llm(
-    parsed_jd: Dict,
-    resume_structured: Dict,
-) -> Dict:
-    """
-    Full gap analysis: deterministic + LLM advice.
-    Falls back to deterministic-only if LLM fails.
-    """
-    # Layer 1: deterministic
-    gaps = analyze_gaps(parsed_jd, resume_structured)
+async def analyze_gaps_with_llm(parsed_jd, resume_structured, resume_chunks=None):
+    """Full gap analysis: deterministic + LLM advice."""
+    gaps = analyze_gaps(parsed_jd, resume_structured, resume_chunks)
 
-    # Layer 2: LLM advice (only if there are gaps worth advising on)
     if gaps["gap_count"] > 0:
         llm_advice = await _get_llm_gap_advice(
             missing_skills=gaps["missing_required"] + gaps["missing_preferred"],
@@ -206,11 +224,7 @@ async def analyze_gaps_with_llm(
     return gaps
 
 
-async def _get_llm_gap_advice(
-    missing_skills: List[str],
-    resume_skills: List[str],
-    jd_title: str,
-) -> Optional[List[Dict]]:
+async def _get_llm_gap_advice(missing_skills, resume_skills, jd_title):
     """Get LLM-powered advice for each skill gap."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:

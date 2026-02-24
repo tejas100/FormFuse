@@ -100,7 +100,7 @@ SKILL_ALIASES = [
     ["Linux", "linux", "ubuntu", "centos", "debian"],
     ["Nginx", "nginx"],
 
-    # Data & ML
+    # Data & ML — Core frameworks
     ["PyTorch", "pytorch", "torch"],
     ["TensorFlow", "tensorflow", "tf"],
     ["scikit-learn", "sklearn", "scikit learn"],
@@ -118,10 +118,34 @@ SKILL_ALIASES = [
     ["LangChain", "langchain", "lang chain"],
     ["FAISS", "faiss"],
     ["OpenAI", "openai", "open ai"],
+    ["XGBoost", "xgboost", "xg boost"],
+
+    # AI/ML Concepts & Techniques (critical for JD matching)
+    ["RAG", "rag", "retrieval-augmented generation", "retrieval augmented generation"],
+    ["LLM", "llm", "llms", "large language model", "large language models"],
+    ["Transformers", "transformers", "transformer", "transformer models", "transformer architecture"],
+    ["Deep Learning", "deep learning", "deep-learning", "dl"],
+    ["NLP", "nlp", "natural language processing"],
+    ["Computer Vision", "computer vision", "cv", "image recognition"],
+    ["Fine-tuning", "fine-tuning", "fine tuning", "finetuning", "model fine-tuning"],
+    ["Prompt Engineering", "prompt engineering", "prompt optimization", "prompt orchestration"],
+    ["Embeddings", "embeddings", "embedding generation", "vector embeddings", "sentence-transformers"],
+    ["Vector Search", "vector search", "vector indexing", "similarity search", "semantic search"],
+    ["Model Evaluation", "model evaluation", "model assessment", "evaluation frameworks"],
+    ["Feature Engineering", "feature engineering", "feature extraction", "feature pipelines"],
+    ["Data Preprocessing", "data preprocessing", "data cleaning", "data preparation", "data wrangling"],
+    ["MLOps", "mlops", "ml ops", "ml operations"],
+    ["Model Deployment", "model deployment", "model serving", "model inference", "inference optimization"],
+    ["Drift Monitoring", "drift monitoring", "model drift", "data drift", "concept drift"],
+    ["A/B Testing", "a/b testing", "ab testing", "a/b test", "experimentation"],
+    ["Hyperparameter Tuning", "hyperparameter tuning", "hyperparameter optimization", "hyperparam tuning"],
+    ["Foundation Models", "foundation models", "foundation model"],
+    ["vLLM", "vllm"],
+    ["Neural Networks", "neural network", "neural networks", "nn", "cnn", "rnn", "lstm"],
 
     # DevOps & Tools
     ["Git", "git", "github", "gitlab", "bitbucket"],
-    ["CI/CD", "ci/cd", "cicd", "ci cd", "continuous integration"],
+    ["CI/CD", "ci/cd", "cicd", "ci cd", "continuous integration", "github actions"],
     ["Jenkins", "jenkins"],
     ["GitHub Actions", "github actions"],
     ["Jira", "jira"],
