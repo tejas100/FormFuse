@@ -1,20 +1,12 @@
 """
 matcher.py
-Orchestrates the full matching pipeline:
+Orchestrates the full matching pipeline.
 
-  JD text
-    → jd_parser.parse_jd()           Parse + extract JD requirements (rule-based + LLM)
-    → embedder.embed_single()        Embed JD text into same vector space as resumes
-    → faiss_store.search()           Top-K chunk retrieval across all resumes
-    → Load all resume structured data from metadata
-    → hybrid_scorer.score_resume()   Score each resume (4-component hybrid)
-    → gap_analyzer.analyze_gaps()    Missing skills per resume
-    → Sort by score, return ranked results
-
-Key optimization: We embed only the relevant JD sections (requirements,
-responsibilities) — NOT the company description, benefits, salary, or
-location sections. This dramatically improves semantic similarity scores
-because the embedding captures what the job *needs*, not noise about perks.
+Key fixes in this version:
+  1. Gap analyzer now receives resume_chunks for text-based fallback
+  2. JD embedding uses a focused query (skills + title + key requirements)
+     instead of the full JD text, staying within all-MiniLM-L6-v2's 256 token limit
+  3. This dramatically improves semantic similarity scores
 """
 
 import time
@@ -28,30 +20,52 @@ from services.hybrid_scorer import score_resume
 from services.gap_analyzer import analyze_gaps
 
 
-def _extract_relevant_jd_text(jd_text: str) -> str:
+def _build_semantic_query(parsed_jd: Dict, jd_text: str) -> str:
     """
-    Extract only the relevant sections of a JD for embedding.
-    Removes company description, benefits, salary, location noise.
+    Build a focused semantic query for FAISS embedding.
     
-    This is critical: embedding "competitive salary + 401k + dental"
-    dilutes the semantic signal for actual job requirements.
+    Instead of embedding the entire JD (which exceeds 256 tokens and gets
+    truncated, losing key requirements), we build a concentrated query
+    from the parsed JD data + relevant sections.
+    
+    This is like a search query — dense with signal, no noise.
+    
+    Example output:
+      "Applied AI Engineer. Python, RAG, LLM, Fine-tuning, Docker, CI/CD.
+       Build and deploy AI applications. LLM inference. RAG systems.
+       Production ML systems. Backend infrastructure."
     """
+    parts = []
+    
+    # Title
+    if parsed_jd.get("title"):
+        parts.append(parsed_jd["title"])
+    
+    # All skills as a dense list
+    all_skills = parsed_jd.get("required_skills", []) + parsed_jd.get("preferred_skills", [])
+    if all_skills:
+        parts.append(", ".join(all_skills))
+    
+    # Domains
+    if parsed_jd.get("domains"):
+        parts.append(", ".join(parsed_jd["domains"]))
+    
+    # Extract key responsibility sentences (short, signal-dense)
     sections = _split_jd_sections(jd_text)
-    
-    relevant_keys = ["required", "preferred", "responsibilities", "general"]
-    irrelevant_keys = ["about", "benefits"]
-    
-    relevant_parts = []
-    for key in relevant_keys:
+    for key in ["responsibilities", "required"]:
         if key in sections:
-            relevant_parts.append(sections[key])
+            # Take first ~500 chars of responsibilities/requirements
+            text = sections[key][:500]
+            parts.append(text)
     
-    # If we couldn't parse sections, fall back to full text
-    # but truncate to first ~2000 chars (skip the tail which is usually benefits)
-    if not relevant_parts:
-        return jd_text[:2000]
+    query = ". ".join(parts)
     
-    return "\n".join(relevant_parts)
+    # Keep under ~200 words to stay within 256 token limit
+    words = query.split()
+    if len(words) > 180:
+        query = " ".join(words[:180])
+    
+    return query
 
 
 async def match_resumes(
@@ -83,12 +97,14 @@ async def match_resumes(
             },
         }
 
-    # ── Step 3: Embed ONLY relevant JD sections ──
-    # Don't embed salary, benefits, company description — it dilutes semantic signal
-    relevant_jd_text = _extract_relevant_jd_text(jd_text)
-    jd_embedding = embed_single(relevant_jd_text)
+    # ── Step 3: Build focused semantic query and embed ──
+    # Don't embed the full JD — build a concentrated query from parsed data
+    # This stays within the 256-token limit and maximizes semantic signal
+    semantic_query = _build_semantic_query(parsed_jd, jd_text)
+    jd_embedding = embed_single(semantic_query)
+    print(f"[matcher] Semantic query: {len(semantic_query.split())} words")
 
-    # ── Step 4: FAISS search — retrieve top chunks across ALL resumes ──
+    # ── Step 4: FAISS search ──
     faiss_results = faiss_search(
         query_embedding=jd_embedding,
         top_k=top_k_chunks,
@@ -132,7 +148,7 @@ async def match_resumes(
         # FAISS results for this resume
         resume_faiss = results_by_resume.get(resume_id, [])
 
-        # Hybrid scoring — now passes chunks for text-based skill matching
+        # Hybrid scoring — passes chunks for text-based skill matching
         score_result = score_resume(
             parsed_jd=parsed_jd,
             resume_structured=structured,
@@ -140,8 +156,8 @@ async def match_resumes(
             resume_chunks=resume_chunks,
         )
 
-        # Gap analysis
-        gaps = analyze_gaps(parsed_jd, structured)
+        # Gap analysis — NOW PASSES CHUNKS for text-based fallback
+        gaps = analyze_gaps(parsed_jd, structured, resume_chunks=resume_chunks)
 
         scored_results.append({
             "resume_id": resume_id,

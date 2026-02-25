@@ -6,13 +6,11 @@ Two-layer job description parser:
 
 Design decisions:
   - Same skill vocabulary as resume extraction (SKILL_ALIASES + _SKILL_LOOKUP)
-    This is critical: if the resume says "FastAPI" and the JD says "fast api",
-    both normalize to "FastAPI" → skill_overlap scoring works correctly.
-  - LLM is additive only — it can add skills the rules missed, never removes.
-  - LLM uses structured JSON output for reliable parsing.
-  - Graceful degradation: if LLM call fails, rule-based results still returned.
-  - Distinguishes required vs preferred skills (JD sections matter).
-  - Runs once per match request, not cached (JDs are unique per query).
+  - LLM is additive only — adds skills the rules missed, never removes
+  - LLM prompt now explicitly asks for SPECIFIC technologies, not vague phrases
+  - Merge step normalizes ALL LLM skills through SKILL_LOOKUP, and only keeps
+    unknown skills if they pass a relevance filter (no vague compound phrases)
+  - Graceful degradation: if LLM call fails, rule-based results still returned
 """
 
 import os
@@ -35,22 +33,17 @@ from services.structured_extractor import (
 # JD SECTION SPLITTING
 # ═══════════════════════════════════════════════════════════════════
 
-# JDs have different headings than resumes
 _JD_SECTION_PATTERNS = {
-    "required": r"(?:required|requirements|must\s*have|qualifications|minimum\s*qualifications|what\s*you.?(?:ll)?\s*need|what\s*we.?(?:re)?\s*looking\s*for)",
+    "required": r"(?:required|requirements|must\s*have|qualifications|minimum\s*qualifications|what\s*you.?(?:ll)?\s*need|what\s*we.?(?:re)?\s*looking\s*for|you\s*might\s*be\s*a\s*fit|what\s*you\s*need)",
     "preferred": r"(?:preferred|nice\s*to\s*have|bonus|desired|plus|good\s*to\s*have|additional|ideal(?:ly)?)",
     "responsibilities": r"(?:responsibilities|what\s*you.?(?:ll)?\s*do|role|duties|about\s*the\s*role|the\s*role|job\s*description|overview)",
-    "about": r"(?:about\s*(?:us|the\s*company|the\s*team)|who\s*we\s*are|company|our\s*(?:mission|team))",
+    "about": r"(?:about\s*(?:us|the\s*company|the\s*team|ramp|stripe|the\s*role)|who\s*we\s*are|company|our\s*(?:mission|team))",
     "benefits": r"(?:benefits|perks|compensation|salary|what\s*we\s*offer|we\s*offer)",
 }
 
 
 def _split_jd_sections(text: str) -> Dict[str, str]:
-    """
-    Split JD text into labeled sections.
-    Returns dict: {"required": "...", "preferred": "...", "responsibilities": "...", ...}
-    If no sections detected, entire text goes under "general".
-    """
+    """Split JD text into labeled sections."""
     lines = text.split("\n")
     sections = {}
     current_section = "general"
@@ -62,7 +55,6 @@ def _split_jd_sections(text: str) -> Dict[str, str]:
             current_lines.append("")
             continue
 
-        # Check if this line is a JD section heading
         detected = None
         if len(stripped) < 80:
             cleaned = re.sub(r'^[\s\-=_*#|:•]+|[\s\-=_*#|:•]+$', '', stripped).strip()
@@ -73,7 +65,6 @@ def _split_jd_sections(text: str) -> Dict[str, str]:
                         break
 
         if detected:
-            # Save previous section
             if current_lines:
                 text_block = "\n".join(current_lines).strip()
                 if text_block:
@@ -83,13 +74,11 @@ def _split_jd_sections(text: str) -> Dict[str, str]:
         else:
             current_lines.append(stripped)
 
-    # Don't forget the last section
     if current_lines:
         text_block = "\n".join(current_lines).strip()
         if text_block:
             sections[current_section] = sections.get(current_section, "") + "\n" + text_block
 
-    # Clean up leading/trailing whitespace
     return {k: v.strip() for k, v in sections.items() if v.strip()}
 
 
@@ -98,10 +87,7 @@ def _split_jd_sections(text: str) -> Dict[str, str]:
 # ═══════════════════════════════════════════════════════════════════
 
 def _extract_skills_from_text(text: str) -> List[str]:
-    """
-    Extract and normalize skills from text using the same
-    SKILL_ALIASES vocabulary as resume extraction.
-    """
+    """Extract and normalize skills using SKILL_ALIASES vocabulary."""
     found = set()
     text_lower = text.lower()
 
@@ -119,22 +105,11 @@ def _extract_skills_from_text(text: str) -> List[str]:
 
 
 def _extract_years_required(text: str) -> Optional[int]:
-    """
-    Extract minimum years of experience from JD text.
-    Matches patterns like:
-      - "3+ years of experience"
-      - "minimum 5 years"
-      - "at least 2 years"
-      - "3-5 years of experience"  → takes the minimum (3)
-    """
+    """Extract minimum years of experience from JD text."""
     patterns = [
-        # "3+ years", "5+ yrs of experience"
-        r'(\d+)\+?\s*(?:years?|yrs?)(?:\s+of)?\s*(?:experience|exp|professional)',
-        # "minimum 3 years", "at least 5 years"
+        r'(\d+)\+?\s*(?:years?|yrs?)(?:\s+of)?\s*(?:experience|exp|professional|industry|software|engineering)',
         r'(?:minimum|at\s*least|min\.?)\s*(\d+)\s*(?:years?|yrs?)',
-        # "3-5 years" → capture the lower bound
         r'(\d+)\s*[-–—to]+\s*\d+\s*(?:years?|yrs?)(?:\s+of)?\s*(?:experience|exp)?',
-        # "X years" in requirements context
         r'(\d+)\s*(?:years?|yrs?)\s+(?:of\s+)?(?:hands-on|relevant|industry|professional|proven|solid|strong)',
     ]
 
@@ -144,23 +119,17 @@ def _extract_years_required(text: str) -> Optional[int]:
         matches = re.findall(pattern, text_lower)
         all_years.extend(int(m) for m in matches)
 
-    # Return the most common/minimum sensible value
     if not all_years:
         return None
 
-    # Filter out unreasonable values (> 20 years in a JD is unusual)
     reasonable = [y for y in all_years if 0 < y <= 20]
     return min(reasonable) if reasonable else None
 
 
 def _extract_title_from_jd(text: str) -> Optional[str]:
-    """
-    Extract the job title from JD text.
-    Usually appears in the first few lines or after "Role:" / "Position:"
-    """
+    """Extract the job title from JD text."""
     lines = text.strip().split("\n")
 
-    # Strategy 1: Look for explicit "Title:" or "Position:" or "Role:" prefix
     for line in lines[:10]:
         stripped = line.strip()
         title_match = re.match(
@@ -172,7 +141,6 @@ def _extract_title_from_jd(text: str) -> Optional[str]:
             if 3 < len(title) < 80:
                 return title
 
-    # Strategy 2: First short line that contains a title keyword
     for line in lines[:5]:
         stripped = line.strip()
         if not stripped or len(stripped) > 80:
@@ -183,7 +151,6 @@ def _extract_title_from_jd(text: str) -> Optional[str]:
             for kw in _TITLE_KEYWORDS
         )
         if has_title_kw:
-            # Clean it up
             cleaned = re.sub(r'\s*[-–—|]\s*(?:remote|hybrid|on-?site|full-?time|part-?time|contract).*$', '', stripped, flags=re.IGNORECASE)
             cleaned = re.sub(r'\s*\(.*?\)\s*$', '', cleaned)
             if 3 < len(cleaned.strip()) < 80:
@@ -193,7 +160,7 @@ def _extract_title_from_jd(text: str) -> Optional[str]:
 
 
 def _detect_jd_domains(text: str) -> List[str]:
-    """Detect domains from JD text, reusing _DOMAIN_SIGNALS."""
+    """Detect domains from JD text."""
     text_lower = text.lower()
     domain_scores = {}
 
@@ -207,13 +174,9 @@ def _detect_jd_domains(text: str) -> List[str]:
 
 
 def _rule_based_parse(jd_text: str) -> Dict:
-    """
-    Layer 1: Full rule-based JD parsing.
-    Uses the same skill vocabulary as resume extraction.
-    """
+    """Layer 1: Full rule-based JD parsing."""
     sections = _split_jd_sections(jd_text)
 
-    # Extract skills from different JD sections
     required_text = sections.get("required", "") + "\n" + sections.get("responsibilities", "") + "\n" + sections.get("general", "")
     preferred_text = sections.get("preferred", "")
 
@@ -221,12 +184,8 @@ def _rule_based_parse(jd_text: str) -> Dict:
     required_skills = _extract_skills_from_text(required_text)
     preferred_skills = _extract_skills_from_text(preferred_text)
 
-    # Skills found in preferred section but NOT in required → preferred
-    # Skills found in required section (or general text) → required
-    # If no section structure detected, all skills are "required"
     if preferred_text.strip():
         preferred_only = [s for s in preferred_skills if s not in required_skills]
-        # Any remaining skills not in either category go to required
         for s in all_skills:
             if s not in required_skills and s not in preferred_only:
                 required_skills.append(s)
@@ -236,7 +195,6 @@ def _rule_based_parse(jd_text: str) -> Dict:
         required_skills = all_skills
         preferred_skills = []
 
-    # Years, title, domains
     min_years = _extract_years_required(jd_text)
     title = _extract_title_from_jd(jd_text)
     domains = _detect_jd_domains(jd_text)
@@ -255,35 +213,70 @@ def _rule_based_parse(jd_text: str) -> Dict:
 # LAYER 2: LLM REFINEMENT (GPT-4o-mini)
 # ═══════════════════════════════════════════════════════════════════
 
-_LLM_SYSTEM_PROMPT = """You are a job description parser. Extract structured data from the given job description.
+_LLM_SYSTEM_PROMPT = """You are a job description parser that extracts SPECIFIC, CONCRETE technologies, tools, frameworks, and technical concepts.
 
-Return ONLY valid JSON with this exact structure (no markdown, no backticks, no explanation):
+CRITICAL RULES:
+1. Extract SPECIFIC technologies, NOT vague phrases. Examples:
+   - GOOD: "Python", "FastAPI", "PyTorch", "Docker", "RAG", "LLM", "FAISS"
+   - BAD: "backend systems", "cloud infrastructure", "full-stack development", "AI application deployment"
+   
+2. Break compound concepts into their specific parts:
+   - "build and deploy AI applications" → ["Docker", "CI/CD", "Model Deployment"]
+   - "full-stack AI projects" → ["React", "Python", "FastAPI", "LLM"]
+   - "backend systems and infrastructure" → ["Python", "FastAPI", "PostgreSQL", "Docker", "AWS"]
+   - "web frameworks" → ["React", "Next.js", "Django", "FastAPI"]
+
+3. Extract AI/ML concepts as specific terms:
+   - "RAG systems" → "RAG"
+   - "fine-tuning models" → "Fine-tuning"
+   - "LLM inference" → ["LLM", "Model Deployment", "vLLM"]
+   - "foundation models" → "Foundation Models"
+   - "embedding generation" → "Embeddings"
+   - "vector search" → "Vector Search"
+   - "prompt engineering" → "Prompt Engineering"
+   - "model evaluation" → "Model Evaluation"
+   - "drift monitoring" → "Drift Monitoring"
+   - "feature engineering" → "Feature Engineering"
+   - "data preprocessing" → "Data Preprocessing"
+   - "MLOps" → "MLOps"
+   - "deep learning" → "Deep Learning"
+   - "NLP" → "NLP"
+   - "transformers" → "Transformers"
+
+4. Use these EXACT canonical names:
+   Python, JavaScript, TypeScript, Java, Go, Rust, Scala, SQL,
+   React, Vue, Angular, Next.js, Node.js, FastAPI, Django, Flask, Express, REST, GraphQL,
+   PostgreSQL, MySQL, MongoDB, Redis, Elasticsearch,
+   AWS, GCP, Azure, Docker, Kubernetes, Terraform, Linux,
+   PyTorch, TensorFlow, scikit-learn, Pandas, NumPy, Spark, Kafka, Airflow,
+   Hugging Face, LangChain, FAISS, OpenAI, XGBoost, MLflow,
+   RAG, LLM, Transformers, Deep Learning, NLP, Fine-tuning, Embeddings,
+   Vector Search, Prompt Engineering, Model Evaluation, Feature Engineering,
+   Data Preprocessing, MLOps, Model Deployment, Drift Monitoring, Foundation Models, vLLM,
+   Git, CI/CD, A/B Testing
+
+Return ONLY valid JSON (no markdown, no backticks):
 {
-    "required_skills": ["skill1", "skill2"],
-    "preferred_skills": ["skill3", "skill4"],
+    "required_skills": ["Python", "RAG", "LLM", "Docker"],
+    "preferred_skills": ["Kubernetes"],
     "min_years": 3,
-    "title": "Backend Engineer",
-    "domains": ["backend", "cloud"],
-    "implicit_skills": ["skill5"]
+    "title": "Applied AI Engineer",
+    "domains": ["backend", "machine learning"],
+    "implicit_skills": ["CI/CD", "REST"]
 }
 
-Rules:
-- required_skills: Technologies, tools, and frameworks explicitly required
+Rules for the JSON fields:
+- required_skills: Specific technologies/concepts explicitly required
 - preferred_skills: Nice-to-have skills mentioned as "preferred", "bonus", etc.
-- min_years: Minimum years of experience (integer, null if not mentioned)
-- title: The job title being hired for
-- domains: Areas like "backend", "frontend", "fullstack", "machine learning", "data engineering", "devops", "cloud", "security", "mobile"
-- implicit_skills: Skills not explicitly listed but clearly implied by the responsibilities (e.g., "build REST APIs" implies "REST" and "API Design", "deploy to production" implies "CI/CD")
-
-Use canonical skill names: "Python" not "python3", "PostgreSQL" not "postgres", "Kubernetes" not "k8s", "JavaScript" not "js".
-Return null for fields you can't determine. Keep arrays empty [] if nothing found."""
+- min_years: Minimum years of experience (integer, null if not stated)
+- title: The job title
+- domains: Areas like "backend", "frontend", "fullstack", "machine learning", "data engineering", "devops", "cloud"
+- implicit_skills: Specific technologies clearly implied by responsibilities but not explicitly listed
+- Return null for unknown fields, empty [] for no results"""
 
 
 async def _llm_parse(jd_text: str) -> Optional[Dict]:
-    """
-    Layer 2: LLM-based JD parsing using GPT-4o-mini.
-    Returns parsed dict or None if LLM call fails.
-    """
+    """Layer 2: LLM-based JD parsing using GPT-4o-mini."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         print("[jd_parser] No OPENAI_API_KEY found, skipping LLM layer")
@@ -303,9 +296,9 @@ async def _llm_parse(jd_text: str) -> Optional[Dict]:
                     "model": "gpt-4o-mini",
                     "messages": [
                         {"role": "system", "content": _LLM_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Parse this job description:\n\n{jd_text[:4000]}"},  # Truncate to avoid token limits
+                        {"role": "user", "content": f"Parse this job description:\n\n{jd_text[:4000]}"},
                     ],
-                    "temperature": 0.1,  # Low temperature for consistent structured output
+                    "temperature": 0.1,
                     "max_tokens": 800,
                 },
             )
@@ -317,7 +310,6 @@ async def _llm_parse(jd_text: str) -> Optional[Dict]:
             data = response.json()
             content = data["choices"][0]["message"]["content"].strip()
 
-            # Strip markdown backticks if present
             content = re.sub(r'^```(?:json)?\s*', '', content)
             content = re.sub(r'\s*```$', '', content)
 
@@ -333,22 +325,57 @@ async def _llm_parse(jd_text: str) -> Optional[Dict]:
 # MERGE LAYER: COMBINE RULE-BASED + LLM RESULTS
 # ═══════════════════════════════════════════════════════════════════
 
-def _normalize_skill(skill: str) -> str:
+# Known valid skill concepts that can come from the LLM but aren't
+# single-word canonical names. These are allowed through the filter.
+_KNOWN_CONCEPTS = set(s[0].lower() for s in SKILL_ALIASES)
+
+
+def _normalize_skill(skill: str) -> Optional[str]:
     """
     Normalize a skill name using the shared SKILL_LOOKUP.
-    If not found in aliases, return title-cased version.
+    Returns None if the skill is a vague compound phrase that can't be matched.
     """
     lookup_key = skill.lower().strip()
+    
+    # Direct match in SKILL_LOOKUP → return canonical name
     if lookup_key in _SKILL_LOOKUP:
         return _SKILL_LOOKUP[lookup_key]
-    return skill.strip()
+    
+    # Check if it matches a known canonical concept name
+    if lookup_key in _KNOWN_CONCEPTS:
+        # Find the canonical name
+        for group in SKILL_ALIASES:
+            if group[0].lower() == lookup_key:
+                return group[0]
+    
+    # Filter out vague compound phrases that will never match a resume skill
+    # These are the root cause of false negatives
+    _VAGUE_PATTERNS = [
+        r'^(?:backend|frontend|full[- ]?stack)\s+(?:systems?|development|engineering|infrastructure)',
+        r'^(?:cloud|ai|ml)\s+(?:infrastructure|applications?|deployment|solutions?)',
+        r'^(?:web|mobile)\s+(?:frameworks?|development|applications?)',
+        r'^(?:production|enterprise|scalable)\s+(?:systems?|applications?|solutions?)',
+        r'^(?:data|ml|ai)\s+(?:driven|powered)\b',
+    ]
+    
+    for pattern in _VAGUE_PATTERNS:
+        if re.match(pattern, lookup_key):
+            return None  # Filter out — these are too vague to match
+    
+    # Allow through if it's a reasonable specific concept (not too many words)
+    words = skill.strip().split()
+    if len(words) <= 3:
+        return skill.strip()
+    
+    # 4+ word phrases are almost always too vague
+    return None
 
 
 def _merge_results(rule_based: Dict, llm_result: Optional[Dict]) -> Dict:
     """
     Merge rule-based and LLM results.
-    LLM is additive only — adds skills/data the rules missed.
-    Rule-based results are the baseline truth.
+    LLM is additive only — adds skills the rules missed.
+    Vague compound phrases from the LLM are filtered out.
     """
     if llm_result is None:
         return {
@@ -356,28 +383,33 @@ def _merge_results(rule_based: Dict, llm_result: Optional[Dict]) -> Dict:
             "extraction_method": "rule_based",
         }
 
-    # Merge required skills (normalize LLM skills through shared vocabulary)
+    # Merge required skills
     required_set = set(rule_based["required_skills"])
+    llm_added = []
     for skill in llm_result.get("required_skills", []):
         normalized = _normalize_skill(skill)
-        required_set.add(normalized)
+        if normalized and normalized not in required_set:
+            required_set.add(normalized)
+            llm_added.append(normalized)
 
-    # Add implicit skills the LLM detected
+    # Add implicit skills
     for skill in llm_result.get("implicit_skills", []):
         normalized = _normalize_skill(skill)
-        required_set.add(normalized)
+        if normalized and normalized not in required_set:
+            required_set.add(normalized)
+            llm_added.append(normalized)
 
     # Merge preferred skills
     preferred_set = set(rule_based["preferred_skills"])
     for skill in llm_result.get("preferred_skills", []):
         normalized = _normalize_skill(skill)
-        if normalized not in required_set:  # Don't duplicate into preferred if already required
+        if normalized and normalized not in required_set:
             preferred_set.add(normalized)
 
     # Title: prefer LLM if rule-based didn't find one
     title = rule_based["title"] or llm_result.get("title")
 
-    # Years: prefer rule-based (more reliable for exact numbers), fallback to LLM
+    # Years: prefer rule-based, fallback to LLM
     min_years = rule_based["min_years"]
     if min_years is None and llm_result.get("min_years") is not None:
         min_years = llm_result["min_years"]
@@ -386,6 +418,9 @@ def _merge_results(rule_based: Dict, llm_result: Optional[Dict]) -> Dict:
     domains_set = set(rule_based["domains"])
     for d in llm_result.get("domains", []):
         domains_set.add(d.lower())
+
+    print(f"[jd_parser] Rule-based found {len(rule_based['required_skills'])} skills, "
+          f"LLM added {len(llm_added)}: {llm_added[:5]}")
 
     return {
         "required_skills": sorted(required_set),
@@ -396,7 +431,7 @@ def _merge_results(rule_based: Dict, llm_result: Optional[Dict]) -> Dict:
         "sections_detected": rule_based["sections_detected"],
         "extraction_method": "hybrid",
         "llm_additions": {
-            "skills_added": len(required_set) - len(rule_based["required_skills"]),
+            "skills_added": len(llm_added),
             "implicit_skills": llm_result.get("implicit_skills", []),
         },
     }
@@ -409,25 +444,6 @@ def _merge_results(rule_based: Dict, llm_result: Optional[Dict]) -> Dict:
 async def parse_jd(jd_text: str, use_llm: bool = True) -> Dict:
     """
     Parse a job description using two-layer extraction.
-
-    Layer 1: Rule-based (always runs) — same skill vocabulary as resume extraction
-    Layer 2: LLM refinement (optional) — catches implicit skills, contextual requirements
-
-    Args:
-        jd_text: Raw job description text
-        use_llm: Whether to run LLM layer (default True)
-
-    Returns:
-        {
-            "required_skills": ["Python", "FastAPI", "PostgreSQL"],
-            "preferred_skills": ["Kubernetes", "Redis"],
-            "min_years": 3,
-            "title": "Backend Engineer",
-            "domains": ["backend", "cloud"],
-            "extraction_method": "hybrid" | "rule_based",
-            "sections_detected": ["required", "preferred", "responsibilities"],
-            "llm_additions": {...}  # only present if LLM ran
-        }
     """
     if not jd_text or not jd_text.strip():
         return {
@@ -451,7 +467,7 @@ async def parse_jd(jd_text: str, use_llm: bool = True) -> Dict:
     # Merge results
     result = _merge_results(rule_based, llm_result)
 
-    print(f"[jd_parser] Extracted: {len(result['required_skills'])} required skills, "
+    print(f"[jd_parser] Final: {len(result['required_skills'])} required skills, "
           f"{len(result['preferred_skills'])} preferred skills, "
           f"min_years={result['min_years']}, method={result['extraction_method']}")
 
@@ -459,10 +475,7 @@ async def parse_jd(jd_text: str, use_llm: bool = True) -> Dict:
 
 
 def parse_jd_sync(jd_text: str) -> Dict:
-    """
-    Synchronous version — rule-based only (no LLM).
-    Useful for testing or when LLM is not needed.
-    """
+    """Synchronous version — rule-based only."""
     if not jd_text or not jd_text.strip():
         return {
             "required_skills": [],
