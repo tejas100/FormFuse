@@ -23,9 +23,14 @@ Design decisions:
   - Runs once at upload time, NOT on every query
 """
 
+import json
+import logging
+import os
 import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -628,43 +633,240 @@ def _detect_domains(text: str) -> List[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# STAGE 2: LLM-BASED EXTRACTION (additive on top of rule-based)
+# ═══════════════════════════════════════════════════════════════════
+
+# Build canonical skill list for the LLM prompt
+_CANONICAL_SKILLS = sorted(set(group[0] for group in SKILL_ALIASES))
+
+
+def _llm_extract_structured(full_text: str, rule_based_result: Dict) -> Optional[Dict]:
+    """
+    Stage 2: Use GPT-4o-mini to extract structured data that rule-based missed.
+    
+    Key capabilities over regex:
+      - Infers implicit skills (e.g., "deployed inference using vLLM" → Model Deployment, MLOps)
+      - Understands conceptual equivalence (e.g., "evaluation workflows" → A/B Testing)
+      - Catches skills described in context but never named explicitly
+    
+    Returns None if API key missing or call fails (graceful degradation).
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        logger.info("No OPENAI_API_KEY — skipping LLM extraction (rule-based only)")
+        return None
+
+    # Build the prompt with canonical vocabulary
+    rule_skills = rule_based_result.get("skills", [])
+    rule_titles = rule_based_result.get("titles", [])
+    rule_years = rule_based_result.get("years_exp")
+
+    prompt = f"""You are an expert technical recruiter and resume analyst.
+
+Analyze this resume text and extract structured information. Focus on identifying 
+skills and technologies that are DEMONSTRATED or IMPLIED by the work described, 
+even if not explicitly named.
+
+CRITICAL INSTRUCTIONS:
+1. Return ONLY skills from this canonical list (use exact spelling):
+{json.dumps(_CANONICAL_SKILLS, indent=2)}
+
+2. For each skill you identify, it must be either:
+   - Explicitly mentioned in the resume, OR
+   - Strongly implied by the described work (e.g., "deployed models to production with CI/CD pipelines" implies MLOps, Model Deployment, CI/CD)
+
+3. Extract INFERRED skills that the candidate clearly has based on their work:
+   Examples of inference:
+   - "cross-validation, precision/recall tracking, evaluation workflows" → A/B Testing, Model Evaluation
+   - "MLflow, drift monitoring, model deployment pipelines" → MLOps
+   - "feature engineering, data processing, cleaning pipelines" → Data Preprocessing
+   - "deployed inference using vLLM" → Model Deployment, vLLM
+   - "fine-tuned StarCoder2" → Fine-tuning, LLM
+   - "built RAG pipeline with FAISS" → RAG, Vector Search, FAISS, Embeddings
+
+4. Also extract:
+   - Job titles (standardized, e.g., "Software Engineer", "ML Engineer", "Founder")
+   - Total years of professional experience (number)
+   - Professional domains (from: backend, frontend, fullstack, machine learning, data engineering, devops, cloud, security, mobile)
+
+5. Do NOT include skills the candidate does not demonstrate. Be accurate, not generous.
+
+RESUME TEXT:
+{full_text[:6000]}
+
+Already found by rule-based extraction (for reference, do NOT limit yourself to these):
+- Skills: {json.dumps(rule_skills)}
+- Titles: {json.dumps(rule_titles)}
+- Years: {rule_years}
+
+Return ONLY valid JSON (no markdown, no backticks, no explanation):
+{{
+  "skills": ["Skill1", "Skill2", ...],
+  "inferred_skills": {{"SkillName": "reasoning for inference", ...}},
+  "titles": ["Title1", ...],
+  "years_exp": <number or null>,
+  "domains": ["domain1", ...]
+}}"""
+
+    try:
+        import httpx
+
+        response = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "You are a precise resume analysis system. Return only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 1500,
+            },
+            timeout=15.0,
+        )
+
+        if response.status_code != 200:
+            logger.warning(f"OpenAI API returned {response.status_code}: {response.text[:200]}")
+            return None
+
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        # Strip markdown fences if present
+        content = re.sub(r'^```(?:json)?\s*', '', content)
+        content = re.sub(r'\s*```$', '', content)
+
+        result = json.loads(content)
+        logger.info(
+            f"LLM extraction: {len(result.get('skills', []))} skills "
+            f"({len(result.get('inferred_skills', {}))} inferred)"
+        )
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"LLM returned invalid JSON: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"LLM extraction failed: {e}")
+        return None
+
+
+def _merge_llm_results(rule_based: Dict, llm_result: Dict) -> Dict:
+    """
+    Merge LLM extraction into rule-based results.
+    
+    RULES:
+      - LLM is ADDITIVE ONLY — never removes rule-based findings
+      - Skills must be from canonical vocabulary (_CANONICAL_SKILLS)
+      - Titles from LLM are added if not already present
+      - years_exp: keep rule-based if available (date-range math is more precise)
+      - Domains: union of both
+      - Track which skills were inferred vs explicit for transparency
+    """
+    merged = {**rule_based}
+    canonical_set = set(_CANONICAL_SKILLS)
+
+    # ── Merge skills ──
+    rule_skills = set(rule_based.get("skills", []))
+    llm_skills_raw = llm_result.get("skills", [])
+    inferred_map = llm_result.get("inferred_skills", {})
+
+    # Filter LLM skills: must be canonical
+    llm_skills_valid = set()
+    for skill in llm_skills_raw:
+        if skill in canonical_set:
+            llm_skills_valid.add(skill)
+        else:
+            # Try case-insensitive lookup
+            for canonical in canonical_set:
+                if skill.lower() == canonical.lower():
+                    llm_skills_valid.add(canonical)
+                    break
+
+    new_skills = llm_skills_valid - rule_skills
+    merged["skills"] = sorted(rule_skills | llm_skills_valid)
+
+    # Track what came from where
+    merged["skills_rule_based"] = sorted(rule_skills)
+    merged["skills_llm_added"] = sorted(new_skills)
+    merged["skills_inferred"] = {
+        k: v for k, v in inferred_map.items()
+        if k in llm_skills_valid
+    }
+
+    logger.info(
+        f"Skill merge: {len(rule_skills)} rule + {len(new_skills)} LLM-added "
+        f"= {len(merged['skills'])} total"
+    )
+
+    # ── Merge titles ──
+    rule_titles = set(t.lower() for t in rule_based.get("titles", []))
+    llm_titles = llm_result.get("titles", [])
+    for title in llm_titles:
+        if title.lower() not in rule_titles:
+            merged["titles"] = merged.get("titles", []) + [title]
+            rule_titles.add(title.lower())
+
+    # ── years_exp: prefer rule-based (date-range math is more precise) ──
+    if merged.get("years_exp") is None and llm_result.get("years_exp"):
+        merged["years_exp"] = llm_result["years_exp"]
+
+    # ── Merge domains ──
+    rule_domains = set(rule_based.get("domains", []))
+    llm_domains = set(llm_result.get("domains", []))
+    merged["domains"] = sorted(rule_domains | llm_domains)
+
+    # ── Update extraction method ──
+    merged["extraction_method"] = "hybrid"
+
+    return merged
+
+
+# ═══════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════
 
-def extract_structured_data(sections: List[Dict]) -> Dict:
+def extract_structured_data(sections: List[Dict], use_llm: bool = True) -> Dict:
     """
-    Stage 1: Full deterministic structured extraction.
+    Two-stage structured extraction from resume sections.
 
-    Input: sections from section_parser.parse_sections()
+    Stage 1: Fast, rule-based, deterministic (always runs)
+    Stage 2: LLM refinement via GPT-4o-mini (additive only, graceful fallback)
+
+    The LLM layer catches implicit/inferred skills that regex can't detect:
+      - "cross-validation, precision/recall tracking" → A/B Testing
+      - "MLflow, drift monitoring" → MLOps  
+      - "deployed inference using vLLM" → Model Deployment
+
+    Args:
+        sections: sections from section_parser.parse_sections()
+        use_llm: whether to run Stage 2 (default True, set False for speed)
+
     Output: {
-        "skills": ["Python", "FastAPI", "PostgreSQL", ...],
+        "skills": ["Python", "FastAPI", "MLOps", ...],
+        "skills_rule_based": [...],      # what Stage 1 found
+        "skills_llm_added": [...],       # what Stage 2 added
+        "skills_inferred": {...},        # reasoning for inferred skills
         "years_exp": 5.2,
         "titles": ["Software Engineer", "Backend Developer"],
         "companies": ["Google", "Stripe"],
         "education": [{"degree": "Master's", "field": "Computer Science", "institution": "MIT"}],
         "domains": ["backend", "cloud", "devops"],
-        "extraction_method": "rule_based",   # vs "hybrid" after Stage 2
-        "confidence": { ... }                 # per-field confidence signals
+        "extraction_method": "hybrid",   # or "rule_based" if LLM skipped/failed
+        "confidence": { ... }
     }
     """
     full_text = " ".join(s["text"] for s in sections)
 
-    # Skills
+    # ── Stage 1: Rule-based (always runs) ──
     skills = _extract_skills(full_text)
-
-    # Years of experience
     years_exp = _extract_years_experience(sections)
-
-    # Roles and companies
     titles, companies = _extract_roles_and_companies(sections)
-
-    # Education
     education = _extract_education(sections)
-
-    # Domains
     domains = _detect_domains(full_text)
 
-    # Confidence signals — useful for Stage 2 to know what needs LLM help
     confidence = {
         "skills": "high" if len(skills) >= 3 else "low",
         "years_exp": "high" if years_exp is not None else "low",
@@ -674,7 +876,7 @@ def extract_structured_data(sections: List[Dict]) -> Dict:
         "domains": "high" if len(domains) >= 1 else "low",
     }
 
-    return {
+    rule_based_result = {
         "skills": skills,
         "years_exp": years_exp,
         "titles": titles,
@@ -684,6 +886,25 @@ def extract_structured_data(sections: List[Dict]) -> Dict:
         "extraction_method": "rule_based",
         "confidence": confidence,
     }
+
+    logger.info(f"Stage 1 (rule-based): {len(skills)} skills, {years_exp} yrs, {len(titles)} titles")
+
+    # ── Stage 2: LLM refinement (additive only) ──
+    if use_llm:
+        llm_result = _llm_extract_structured(full_text, rule_based_result)
+        if llm_result:
+            merged = _merge_llm_results(rule_based_result, llm_result)
+            # Preserve fields LLM doesn't touch
+            merged["companies"] = companies
+            merged["education"] = education
+            merged["confidence"] = confidence
+            return merged
+
+    # Fallback: rule-based only
+    rule_based_result["skills_rule_based"] = skills
+    rule_based_result["skills_llm_added"] = []
+    rule_based_result["skills_inferred"] = {}
+    return rule_based_result
 
 
 # ═══════════════════════════════════════════════════════════════════
