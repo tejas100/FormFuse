@@ -13,6 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers import resumes, match
 
+from routers import resumes, match, tracking, account
+
+
+
 app = FastAPI(
     title="Rack — Career Intelligence API",
     version="0.1.0",
@@ -31,6 +35,8 @@ app.add_middleware(
 # Routers
 app.include_router(resumes.router)
 app.include_router(match.router)
+app.include_router(tracking.router)
+app.include_router(account.router)  
 
 
 @app.get("/")
