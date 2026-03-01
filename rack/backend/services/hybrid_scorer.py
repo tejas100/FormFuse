@@ -24,8 +24,13 @@ Design decisions:
     in resume raw text/chunks to avoid false negatives
 """
 
+import json
+import logging
+import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
 # SCORING WEIGHTS (tunable — log these to find optimal balance)
@@ -89,21 +94,19 @@ def _compute_skill_overlap(
     resume_skills: List[str],
     resume_chunks: List[Dict] = None,
     resume_structured: Dict = None,
+    use_llm: bool = True,
 ) -> Dict:
     """
     Compute skill overlap between JD requirements and resume skills.
 
-    Two-pass matching:
+    Three-pass matching:
       Pass 1: Canonical skill name matching (SKILL_ALIASES vocabulary)
-      Pass 2: Text-based search in resume chunks for LLM-extracted skills
-              that aren't in the SKILL_ALIASES list (e.g., "RAG systems",
-              "feature engineering", "model deployment")
+      Pass 2: Text-based search in resume chunks for skills missed by Pass 1
+      Pass 3: LLM semantic matching for skills still unmatched — understands
+              that "instruction-tuning" = "Fine-tuning", etc.
 
-    This is critical because:
-      - The LLM extracts conceptual skills ("data preprocessing", "fine-tuning")
-      - These may not be in SKILL_ALIASES as exact canonical names
-      - But the resume text clearly mentions them
-      - Without Pass 2, these always show as ✗ missing → artificially low scores
+    This 3-pass approach is domain-agnostic: works for AI, biomedical,
+    mechanical engineering, or any field without hardcoding domain knowledge.
     """
     resume_set = set(s.lower() for s in resume_skills)
     required_set = set(s.lower() for s in jd_required)
@@ -116,11 +119,10 @@ def _compute_skill_overlap(
     preferred_missing = preferred_set - resume_set
 
     # Pass 2: Text-based fallback for still-missing skills
-    # Search the resume's raw text (from chunks) for mentions
+    resume_full_text = ""
     if resume_chunks or resume_structured:
         resume_full_text = _build_resume_text(resume_chunks, resume_structured)
         
-        # Check required skills that didn't match canonically
         text_matched_required = set()
         for skill in list(required_missing):
             if _skill_in_text(skill, resume_full_text):
@@ -129,7 +131,6 @@ def _compute_skill_overlap(
         required_matched |= text_matched_required
         required_missing -= text_matched_required
 
-        # Check preferred skills too
         text_matched_preferred = set()
         for skill in list(preferred_missing):
             if _skill_in_text(skill, resume_full_text):
@@ -137,6 +138,25 @@ def _compute_skill_overlap(
 
         preferred_matched |= text_matched_preferred
         preferred_missing -= text_matched_preferred
+
+    # Pass 3: LLM semantic matching for remaining unmatched skills
+    llm_matched_skills = set()
+    if use_llm and (required_missing or preferred_missing):
+        all_unmatched = required_missing | preferred_missing
+        if resume_full_text:
+            llm_matched_skills = _llm_skill_match(
+                unmatched_skills=all_unmatched,
+                resume_text=resume_full_text,
+                resume_skills=resume_skills,
+            )
+
+        llm_matched_req = required_missing & llm_matched_skills
+        required_matched |= llm_matched_req
+        required_missing -= llm_matched_req
+
+        llm_matched_pref = preferred_missing & llm_matched_skills
+        preferred_matched |= llm_matched_pref
+        preferred_missing -= llm_matched_pref
 
     # Coverage rates
     required_rate = len(required_matched) / len(required_set) if required_set else 1.0
@@ -228,6 +248,126 @@ def _skill_in_text(skill: str, text: str) -> bool:
             return True
     
     return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+# PASS 3: LLM SEMANTIC SKILL MATCHING
+# ═══════════════════════════════════════════════════════════════════
+
+def _llm_skill_match(
+    unmatched_skills: Set[str],
+    resume_text: str,
+    resume_skills: List[str],
+) -> Set[str]:
+    """
+    Pass 3: Use GPT-4o-mini to determine if the resume demonstrates skills
+    that Pass 1 (canonical) and Pass 2 (text search) missed.
+
+    This is the key to domain-agnostic matching. The LLM understands that:
+      - "instruction-tuning pipeline for StarCoder2" → Fine-tuning
+      - "cross-validation, precision/recall tracking" → A/B Testing / Experimentation
+      - "MLflow, drift monitoring, deployed inference" → MLOps
+      - "gel electrophoresis, PCR" → wet lab experience (for biomedical JDs)
+
+    Only fires for skills still unmatched after Pass 1+2 (typically 2-5 skills).
+    One LLM call per match request. Cost: ~$0.0001-0.0002.
+
+    Returns: set of skill names (lowercased) that the LLM confirmed are present.
+    """
+    if not unmatched_skills:
+        return set()
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return set()
+
+    # Truncate resume text to fit context (keep most relevant parts)
+    truncated_resume = resume_text[:4000]
+
+    skills_list = sorted(unmatched_skills)
+
+    prompt = f"""You are a precise resume skill matcher. Given a resume and a list of skills from a job description that were NOT found by keyword matching, determine which skills the candidate actually demonstrates through their work experience, projects, or education — even if they never use the exact term.
+
+RULES:
+1. A skill is MATCHED if the resume shows clear evidence of that competency, even using different terminology.
+2. Be STRICT — the evidence must be strong, not a vague stretch.
+3. Return ONLY skills that have clear supporting evidence.
+
+Examples of valid inference:
+- "instruction-tuning pipeline for StarCoder2" → demonstrates "Fine-tuning" ✓
+- "cross-validation, hyperparameter tuning, precision/recall tracking, evaluation workflows" → demonstrates "A/B Testing" ✓
+- "MLflow, drift monitoring, model deployment pipelines, CI/CD for models" → demonstrates "MLOps" ✓
+- "data processing, feature engineering, cleaning pipelines" → demonstrates "Data Preprocessing" ✓
+- "deployed inference using vLLM on GPU instances" → demonstrates "Model Deployment" ✓
+
+Examples of INVALID inference (too much of a stretch):
+- "used Python" → demonstrates "Machine Learning" ✗ (Python alone doesn't prove ML)
+- "built a website" → demonstrates "React" ✗ (could be any framework)
+
+RESUME TEXT:
+{truncated_resume}
+
+CANDIDATE'S KNOWN SKILLS: {', '.join(resume_skills[:20])}
+
+UNMATCHED SKILLS TO CHECK:
+{json.dumps(skills_list)}
+
+Return ONLY valid JSON (no markdown, no backticks):
+{{
+  "matched": [
+    {{"skill": "Fine-tuning", "evidence": "built instruction-tuning pipeline for StarCoder2-15B"}},
+  ],
+  "not_matched": ["SkillX", "SkillY"]
+}}"""
+
+    try:
+        import httpx
+
+        response = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "You are a precise skill matching system. Return only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 500,
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code != 200:
+            logger.warning(f"LLM skill match API error: {response.status_code}")
+            return set()
+
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        content = re.sub(r'^```(?:json)?\s*', '', content)
+        content = re.sub(r'\s*```$', '', content)
+
+        result = json.loads(content)
+        matched_skills = set()
+        for item in result.get("matched", []):
+            skill_name = item.get("skill", "") if isinstance(item, dict) else str(item)
+            matched_skills.add(skill_name.lower().strip())
+            evidence = item.get("evidence", "") if isinstance(item, dict) else ""
+            logger.info(f"Pass 3 LLM matched: '{skill_name}' — {evidence}")
+
+        logger.info(
+            f"Pass 3 LLM: {len(matched_skills)} matched out of {len(unmatched_skills)} checked"
+        )
+        return matched_skills
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"LLM skill match returned invalid JSON: {e}")
+        return set()
+    except Exception as e:
+        logger.warning(f"LLM skill match failed: {e}")
+        return set()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -363,6 +503,7 @@ def score_resume(
     faiss_results: List[Dict],
     resume_chunks: List[Dict] = None,
     weights: Optional[Dict] = None,
+    use_llm: bool = True,
 ) -> Dict:
     """
     Compute the hybrid match score for a single resume against a parsed JD.
@@ -373,6 +514,7 @@ def score_resume(
         faiss_results: FAISS search results filtered for this resume
         resume_chunks: Resume chunk dicts (for text-based skill fallback)
         weights: Optional custom weights (defaults to WEIGHTS)
+        use_llm: Whether to use LLM Pass 3 for semantic skill matching
 
     Returns:
         {
@@ -389,13 +531,14 @@ def score_resume(
     # Component 1: Semantic
     semantic = _compute_semantic_score(faiss_results)
 
-    # Component 2: Skill overlap (with text fallback for LLM-extracted skills)
+    # Component 2: Skill overlap (with text fallback + LLM Pass 3)
     skill_result = _compute_skill_overlap(
         jd_required=parsed_jd.get("required_skills", []),
         jd_preferred=parsed_jd.get("preferred_skills", []),
         resume_skills=resume_structured.get("skills", []),
         resume_chunks=resume_chunks,
         resume_structured=resume_structured,
+        use_llm=use_llm,
     )
 
     # Component 3: Experience

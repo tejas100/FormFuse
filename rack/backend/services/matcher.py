@@ -154,10 +154,11 @@ async def match_resumes(
             resume_structured=structured,
             faiss_results=resume_faiss,
             resume_chunks=resume_chunks,
+            use_llm=use_llm,
         )
 
-        # Gap analysis — NOW PASSES CHUNKS for text-based fallback
-        gaps = analyze_gaps(parsed_jd, structured, resume_chunks=resume_chunks)
+        # Gap analysis — same 3-pass matching for consistency
+        gaps = analyze_gaps(parsed_jd, structured, resume_chunks=resume_chunks, use_llm=use_llm)
 
         scored_results.append({
             "resume_id": resume_id,

@@ -2,18 +2,26 @@
 gap_analyzer.py
 Analyzes gaps between JD requirements and resume capabilities.
 
-Two layers (matching the project's hybrid architecture):
-  Layer 1: Set difference + text fallback — fast, deterministic
+Three layers (matching the project's hybrid architecture):
+  Pass 1: Canonical set intersection — fast, deterministic
+  Pass 2: Text-based fallback — catches literal mentions regex missed
+  Pass 3: LLM semantic matching — understands conceptual equivalence
   Layer 2: LLM context — adds actionable advice for each gap (optional)
 
-Uses same text-based fallback as hybrid_scorer to avoid false negatives
-when LLM-extracted skills aren't in SKILL_ALIASES vocabulary.
+Uses same 3-pass matching as hybrid_scorer to ensure gap display
+is consistent with the score calculation.
 """
 
 import os
 import re
 import json
+import logging
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# Import LLM Pass 3 from hybrid_scorer (single source of truth)
+from services.hybrid_scorer import _llm_skill_match
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -73,10 +81,11 @@ def analyze_gaps(
     parsed_jd: Dict,
     resume_structured: Dict,
     resume_chunks: List[Dict] = None,
+    use_llm: bool = True,
 ) -> Dict:
     """
     Compute skill gaps between JD and resume.
-    Uses both canonical matching and text-based fallback.
+    Uses 3-pass matching: canonical → text fallback → LLM semantic.
     """
     resume_skills = set(s.lower() for s in resume_structured.get("skills", []))
     jd_required = set(s.lower() for s in parsed_jd.get("required_skills", []))
@@ -100,6 +109,17 @@ def analyze_gaps(
         if _skill_in_text(skill, resume_text):
             text_matched_pref.add(skill)
     missing_preferred -= text_matched_pref
+
+    # Pass 3: LLM semantic matching for remaining unmatched skills
+    if use_llm and (missing_required or missing_preferred):
+        all_unmatched = missing_required | missing_preferred
+        llm_matched = _llm_skill_match(
+            unmatched_skills=all_unmatched,
+            resume_text=resume_text,
+            resume_skills=list(resume_structured.get("skills", [])),
+        )
+        missing_required -= llm_matched
+        missing_preferred -= llm_matched
 
     # Coverage rates
     req_total = len(jd_required)
