@@ -1,14 +1,11 @@
 """
 watchlist.py — Watchlist management + auto-match pipeline for RACK.
 
-Handles:
-  - Company watchlist CRUD (add/remove/list companies to monitor)
-  - Job storage (fetched jobs persisted to JSON)
-  - Auto-match pipeline: fetched JDs → PROFILE FILTER → jd_parser → matcher → ranked alerts
-  - Match history tracking (avoid re-alerting on same jobs)
-
-UPDATED: Profile-based pre-filtering + date filtering.
-Jobs are filtered BEFORE the RACK pipeline, turning 100 jobs into ~10 relevant ones.
+UPDATED v4: Fully automated pipeline.
+  - refresh_pipeline() = fetch + filter + match in ONE call
+  - Returns TOP JOBS (best resume per job), not all resume×job combos
+  - Deduplicates: one card per job, showing the highest-scoring resume
+  - Profile + date filtering BEFORE expensive RACK pipeline
 
 Storage: uploads/watchlist/ (JSON files)
 """
@@ -117,16 +114,12 @@ def _filter_by_date(jobs: list[dict], date_filter: Optional[str]) -> list[dict]:
     for job in jobs:
         posted = job.get("posted_at")
         if not posted:
-            # If no posted_at, include it (don't exclude unknowns)
             filtered.append(job)
             continue
         try:
-            # Handle various date formats from APIs
             if isinstance(posted, str):
-                # Try ISO format first
                 posted_dt = datetime.fromisoformat(posted.replace("Z", "+00:00"))
             elif isinstance(posted, (int, float)):
-                # Epoch milliseconds (Lever)
                 posted_dt = datetime.fromtimestamp(posted / 1000, tz=timezone.utc)
             else:
                 filtered.append(job)
@@ -135,7 +128,6 @@ def _filter_by_date(jobs: list[dict], date_filter: Optional[str]) -> list[dict]:
             if posted_dt >= cutoff:
                 filtered.append(job)
         except (ValueError, TypeError):
-            # Can't parse date, include the job
             filtered.append(job)
 
     logger.info(f"[DateFilter] {date_filter}: {len(jobs)} → {len(filtered)} jobs")
@@ -247,106 +239,112 @@ def get_fetched_jobs(
     return jobs[:limit]
 
 
-# ── Auto-match pipeline (UPDATED: profile + date filtering) ────────
-async def run_auto_match(
-    title_filter: Optional[str] = None,
-    company_filter: Optional[str] = None,
+# ═══════════════════════════════════════════════════════════════════
+# REFRESH PIPELINE — fetch + filter + match in ONE call
+# ═══════════════════════════════════════════════════════════════════
+
+async def refresh_pipeline(
     date_filter: Optional[str] = None,
     use_profile: bool = True,
     limit: int = 20,
+    force_fetch: bool = False,
 ) -> dict:
     """
-    Run the full auto-match pipeline with pre-filtering:
-    1. Get fetched jobs (optionally filtered by company/title)
-    2. Apply DATE filter (24h, 7d, 30d)
-    3. Apply PROFILE filter (target roles, locations, exclude keywords)
-    4. Only filtered jobs go through the expensive RACK pipeline
-    5. Store results, return sorted matches
+    Full automated pipeline:
+      1. Fetch jobs from all watchlisted companies (or use cached if recent)
+      2. Apply date filter
+      3. Apply profile filter (roles, locations, keywords)
+      4. Run RACK pipeline on filtered jobs
+      5. Deduplicate: best resume per job
+      6. Return top N jobs sorted by score
 
-    This is the key optimization: 100 fetched jobs → ~10 relevant → RACK pipeline.
+    This is the ONE endpoint the Tracking page calls.
     """
+    import time
+    pipeline_start = time.time()
+
     wl = get_watchlist()
     settings = wl.get("settings", DEFAULT_WATCHLIST["settings"])
-    min_score = settings.get("min_score_alert", 25)
     use_llm = settings.get("match_use_llm", True)
 
-    # Step 1: Get all fetched jobs (with basic company/title filter)
+    if not wl["companies"]:
+        return {
+            "status": "no_companies",
+            "message": "Add companies to your watchlist first.",
+            "matches": [],
+            "stats": {},
+        }
+
+    # ── Step 1: Fetch (or use cached) ─────────────────────────────
     store = _load_json(JOBS_FILE, DEFAULT_JOBS_STORE)
+    last_updated = store.get("last_updated")
+    cache_stale = True
+
+    if last_updated and not force_fetch:
+        try:
+            last_dt = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
+            age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+            cache_stale = age_hours > 6  # Consider stale after 6 hours
+        except:
+            cache_stale = True
+
+    fetch_stats = None
+    if cache_stale or force_fetch or not store.get("jobs"):
+        logger.info("[Refresh] Fetching fresh jobs from APIs...")
+        fetch_stats = await fetch_watchlist_jobs()
+        store = _load_json(JOBS_FILE, DEFAULT_JOBS_STORE)
+    else:
+        logger.info(f"[Refresh] Using cached jobs ({len(store.get('jobs', []))} jobs, updated {last_updated})")
+
     all_jobs = store.get("jobs", [])
-
     if not all_jobs:
-        return {"status": "no_jobs", "message": "No fetched jobs. Click Fetch Jobs first.", "matches": []}
+        return {
+            "status": "no_jobs",
+            "message": "No jobs found from your watchlisted companies.",
+            "matches": [],
+            "stats": {"total_fetched": 0},
+        }
 
-    # Apply basic filters
-    jobs = all_jobs
-    if company_filter:
-        jobs = [j for j in jobs if j["company"].lower() == company_filter.lower()]
-    if title_filter:
-        tf = title_filter.lower()
-        jobs = [j for j in jobs if tf in j["title"].lower()]
+    total_fetched = len(all_jobs)
 
-    total_before_filters = len(jobs)
-
-    # Step 2: Date filter
-    jobs = _filter_by_date(jobs, date_filter)
+    # ── Step 2: Date filter ───────────────────────────────────────
+    jobs = _filter_by_date(all_jobs, date_filter)
     after_date = len(jobs)
 
-    # Step 3: Profile filter (the big optimization)
+    # ── Step 3: Profile filter ────────────────────────────────────
     profile_stats = None
     if use_profile:
         jobs, profile_stats = filter_jobs_by_profile(jobs)
     after_profile = len(jobs)
 
-    # Cap at limit
-    jobs = jobs[:limit]
-
     if not jobs:
         return {
             "status": "no_matching_jobs",
-            "message": f"No jobs match your filters. {total_before_filters} total → {after_date} after date → {after_profile} after profile filter.",
+            "message": f"No jobs match your filters. {total_fetched} fetched → {after_date} after date → {after_profile} after profile.",
             "matches": [],
-            "filter_stats": {
-                "total_fetched": total_before_filters,
-                "after_date_filter": after_date,
-                "after_profile_filter": after_profile,
-                "date_filter": date_filter,
-                "profile_applied": use_profile,
-                "profile_stats": profile_stats,
+            "stats": {
+                "total_fetched": total_fetched,
+                "after_date": after_date,
+                "after_profile": after_profile,
+                "processed": 0,
             },
         }
 
-    # Step 4: Dedup against already-processed jobs
+    # ── Step 4: Dedup against already-processed ───────────────────
     match_store = _load_json(MATCHES_FILE, DEFAULT_MATCHES_STORE)
     seen_ids = set(match_store.get("seen_job_ids", []))
 
     new_jobs = [j for j in jobs if j["job_id"] not in seen_ids]
-    if not new_jobs:
-        existing = match_store.get("matches", [])
-        # Apply current filters to show relevant cached results
-        if company_filter:
-            existing = [m for m in existing if m["company"].lower() == company_filter.lower()]
-        if title_filter:
-            tf = title_filter.lower()
-            existing = [m for m in existing if tf in m["job_title"].lower()]
-        return {
-            "status": "no_new_jobs",
-            "message": f"All {len(jobs)} filtered jobs already processed. Showing cached results.",
-            "matches": sorted(existing, key=lambda x: x["score"], reverse=True),
-            "total_processed": len(seen_ids),
-            "filter_stats": {
-                "total_fetched": total_before_filters,
-                "after_date_filter": after_date,
-                "after_profile_filter": after_profile,
-                "processing": len(jobs),
-            },
-        }
+
+    # Cap new jobs to process (the expensive RACK pipeline)
+    new_jobs = new_jobs[:limit]
 
     logger.info(
-        f"[AutoMatch] Pipeline: {total_before_filters} total → {after_date} after date "
+        f"[Refresh] Pipeline: {total_fetched} total → {after_date} after date "
         f"→ {after_profile} after profile → {len(new_jobs)} new to process"
     )
 
-    # Step 5: Run RACK pipeline on each filtered job
+    # ── Step 5: Run RACK pipeline on new jobs ─────────────────────
     new_matches = []
     errors = 0
 
@@ -354,7 +352,7 @@ async def run_auto_match(
         try:
             jd_text = job.get("description_text", "")
             if not jd_text or len(jd_text.strip()) < 50:
-                logger.warning(f"[AutoMatch] Skipping {job['job_id']} — description too short")
+                logger.warning(f"[Refresh] Skipping {job['job_id']} — description too short")
                 seen_ids.add(job["job_id"])
                 continue
 
@@ -362,9 +360,12 @@ async def run_auto_match(
 
             matches = result.get("results", [])
             jd_parsed = result.get("jd_parsed", {})
-            pipeline_time = result.get("meta", {}).get("pipeline_time_seconds", 0)
 
-            for match in matches:
+            # ── KEY CHANGE: pick BEST resume for this job ─────────
+            if matches:
+                # Sort by raw_score descending, take the best one
+                best = max(matches, key=lambda m: m.get("raw_score", 0))
+
                 match_entry = {
                     "job_id": job["job_id"],
                     "job_title": job["title"],
@@ -374,30 +375,41 @@ async def run_auto_match(
                     "source": job["source"],
                     "posted_at": job.get("posted_at"),
                     "department": job.get("department", ""),
-                    "resume_name": match.get("resume_name", ""),
-                    "resume_id": match.get("resume_id", ""),
-                    "score": match.get("final_score", 0),
-                    "score_breakdown": match.get("score_breakdown", {}),
-                    "matched_skills": match.get("matched_skills", []),
-                    "missing_skills": match.get("missing_skills", []),
-                    "gap_summary": match.get("gap_analysis", {}).get("summary", ""),
-                    "critical_gaps": match.get("gap_analysis", {}).get("critical_gaps", []),
-                    "jd_skills": jd_parsed.get("skills", []),
+                    # Best resume info
+                    "resume_name": best.get("name", ""),
+                    "resume_id": best.get("resume_id", ""),
+                    "score": best.get("score", 0),
+                    "raw_score": best.get("raw_score", 0),
+                    "components": best.get("components", {}),
+                    "matched_skills": best.get("matched_skills", []),
+                    "missing_skills": best.get("missing_skills", []),
+                    "matched_preferred": best.get("matched_preferred", []),
+                    "gap_analysis": best.get("gap_analysis", {}),
+                    "critical_gaps": best.get("gap_analysis", {}).get("critical_gaps", []),
+                    "coverage": best.get("gap_analysis", {}).get("coverage", {}),
+                    # JD parsed info
                     "jd_title": jd_parsed.get("title", ""),
+                    "jd_required_skills": jd_parsed.get("required_skills", []),
+                    "jd_preferred_skills": jd_parsed.get("preferred_skills", []),
+                    "jd_domains": jd_parsed.get("domains", []),
+                    "jd_min_years": jd_parsed.get("min_years"),
+                    # Meta
                     "matched_at": datetime.now(timezone.utc).isoformat(),
-                    "pipeline_time": pipeline_time,
+                    "total_resumes_scored": len(matches),
                 }
                 new_matches.append(match_entry)
 
             seen_ids.add(job["job_id"])
 
         except Exception as e:
-            logger.error(f"[AutoMatch] Error processing job {job.get('title', '?')}: {e}")
+            logger.error(f"[Refresh] Error processing job {job.get('title', '?')}: {e}")
             errors += 1
             seen_ids.add(job["job_id"])
 
-    # Save results
-    all_matches = match_store.get("matches", []) + new_matches
+    # ── Step 6: Merge with existing and save ──────────────────────
+    existing_matches = match_store.get("matches", [])
+    all_matches = existing_matches + new_matches
+
     match_store = {
         "matches": all_matches,
         "seen_job_ids": list(seen_ids),
@@ -405,28 +417,46 @@ async def run_auto_match(
     }
     _save_json(MATCHES_FILE, match_store)
 
-    # Sort and return
-    all_sorted = sorted(new_matches, key=lambda x: x["score"], reverse=True)
-    above = [m for m in all_sorted if m["score"] >= min_score]
+    # ── Step 7: Return top matches (all, sorted by score) ─────────
+    # Apply profile filter to cached matches too (re-filter on title)
+    all_sorted = sorted(all_matches, key=lambda x: x.get("score", 0), reverse=True)
+
+    pipeline_time = round(time.time() - pipeline_start, 1)
 
     return {
-        "status": "matched",
-        "new_jobs_processed": len(new_jobs),
-        "new_matches_found": len(new_matches),
-        "above_threshold": len(above),
-        "min_score_threshold": min_score,
+        "status": "ok",
+        "matches": all_sorted[:50],  # Top 50 for the UI
+        "new_processed": len(new_jobs),
+        "new_matches": len(new_matches),
         "errors": errors,
-        "matches": all_sorted,
-        "filter_stats": {
-            "total_fetched": total_before_filters,
-            "after_date_filter": after_date,
-            "after_profile_filter": after_profile,
-            "processed": len(new_jobs),
-            "date_filter": date_filter,
-            "profile_applied": use_profile,
-            "profile_stats": profile_stats,
+        "pipeline_time_seconds": pipeline_time,
+        "stats": {
+            "total_fetched": total_fetched,
+            "after_date": after_date,
+            "after_profile": after_profile,
+            "new_processed": len(new_jobs),
+            "cached_matches": len(existing_matches),
+            "total_matches": len(all_sorted),
+            "fetched_fresh": fetch_stats is not None,
         },
     }
+
+
+# ── Legacy auto-match (kept for backward compat) ───────────────────
+async def run_auto_match(
+    title_filter: Optional[str] = None,
+    company_filter: Optional[str] = None,
+    date_filter: Optional[str] = None,
+    use_profile: bool = True,
+    limit: int = 20,
+) -> dict:
+    """Legacy endpoint — now wraps refresh_pipeline."""
+    return await refresh_pipeline(
+        date_filter=date_filter,
+        use_profile=use_profile,
+        limit=limit,
+        force_fetch=False,
+    )
 
 
 def get_match_results(
@@ -440,9 +470,9 @@ def get_match_results(
     if company:
         matches = [m for m in matches if m["company"].lower() == company.lower()]
     if min_score is not None:
-        matches = [m for m in matches if m["score"] >= min_score]
+        matches = [m for m in matches if m.get("score", 0) >= min_score]
 
-    matches.sort(key=lambda x: x["score"], reverse=True)
+    matches.sort(key=lambda x: x.get("score", 0), reverse=True)
     return matches[:limit]
 
 
@@ -457,7 +487,7 @@ def get_watchlist_stats() -> dict:
     match_store = _load_json(MATCHES_FILE, DEFAULT_MATCHES_STORE)
 
     matches = match_store.get("matches", [])
-    high_matches = [m for m in matches if m["score"] >= 60]
+    high_matches = [m for m in matches if m.get("score", 0) >= 60]
 
     return {
         "companies_tracked": len(wl["companies"]),
