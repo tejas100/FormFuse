@@ -378,6 +378,7 @@ async def refresh_pipeline(
                     # Best resume info
                     "resume_name": best.get("name", ""),
                     "resume_id": best.get("resume_id", ""),
+                    "file_ext": best.get("file_ext", ""),
                     "score": best.get("score", 0),
                     "raw_score": best.get("raw_score", 0),
                     "components": best.get("components", {}),

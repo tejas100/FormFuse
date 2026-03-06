@@ -1,7 +1,11 @@
 """
 routers/tracking.py — Job watchlist & auto-match API endpoints.
 
-UPDATED v4: New /refresh endpoint for fully automated pipeline.
+UPDATED v5:
+  - /auto/refresh  → fully automatic pipeline (Remotive by target_roles)
+  - /auto/matches  → load stored auto match results
+  - /auto/meta     → last fetch time + stats
+  All previous endpoints unchanged.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -20,6 +24,12 @@ from services.watchlist import (
     get_match_results,
     clear_match_history,
     get_watchlist_stats,
+)
+from services.auto_match import (
+    run_auto_pipeline,
+    _load_auto_results,
+    _load_auto_meta,
+    DISPLAY_CAP,
 )
 
 router = APIRouter(prefix="/api/tracking", tags=["tracking"])
@@ -50,6 +60,10 @@ class RefreshRequest(BaseModel):
     use_profile: bool = True
     limit: int = 20
     force_fetch: bool = False
+
+
+class AutoRefreshRequest(BaseModel):
+    force: bool = False
 
 
 class SettingsRequest(BaseModel):
@@ -100,12 +114,11 @@ async def fetch():
     return await fetch_watchlist_jobs(force=True)
 
 
-# ── NEW: Refresh pipeline (fetch + filter + match in ONE call) ──────
+# ── Custom: Refresh pipeline (fetch + filter + match in ONE call) ───
 @router.post("/refresh")
 async def refresh(req: RefreshRequest):
     """
-    The primary endpoint for the Tracking page.
-    Does everything: fetch (if stale) → filter → match → return top jobs.
+    Custom Search tab: fetch watchlist companies → filter → match → return top jobs.
     """
     return await refresh_pipeline(
         date_filter=req.date_filter,
@@ -113,6 +126,29 @@ async def refresh(req: RefreshRequest):
         limit=req.limit,
         force_fetch=req.force_fetch,
     )
+
+
+# ── Auto Matches: fully automatic pipeline ──────────────────────────
+@router.post("/auto/refresh")
+async def auto_refresh(req: AutoRefreshRequest):
+    """
+    Auto Matches tab: Remotive search by target_roles → filter 24h → score → return.
+    Long-running: ~30-120s depending on number of target roles and jobs to score.
+    """
+    return await run_auto_pipeline(force=req.force)
+
+
+@router.get("/auto/matches")
+async def auto_matches(limit: int = DISPLAY_CAP):
+    """Return stored auto match results without re-fetching."""
+    results = _load_auto_results()
+    return results[:limit]
+
+
+@router.get("/auto/meta")
+async def auto_meta():
+    """Return metadata about the last auto fetch (last_fetch_at, seen count, etc.)."""
+    return _load_auto_meta()
 
 
 # ── Legacy auto-match (backward compat) ────────────────────────────
@@ -127,7 +163,7 @@ async def match(req: MatchRequest):
     )
 
 
-# ── Match results ──────────────────────────────────────────────────
+# ── Match results (Custom tab) ──────────────────────────────────────
 @router.get("/matches")
 async def matches(
     company: Optional[str] = None,
