@@ -13,3 +13,4 @@ uploads/resumes/*
 **/uploads/
 
 .env
+.DS_Store
