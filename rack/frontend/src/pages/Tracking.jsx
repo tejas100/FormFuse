@@ -19,6 +19,15 @@ function scoreGradient(s) {
   return "linear-gradient(90deg, #f87171, #fb923c)";
 }
 
+function recommendationStyle(rec) {
+  switch (rec) {
+    case "Strong Match": return { background: "rgba(52,211,153,0.12)", color: "#34d399", border: "1px solid rgba(52,211,153,0.25)" };
+    case "Good Match":   return { background: "rgba(232,255,107,0.1)", color: "var(--accent)", border: "1px solid rgba(232,255,107,0.22)" };
+    case "Partial Match":return { background: "rgba(251,146,60,0.1)", color: "#fb923c", border: "1px solid rgba(251,146,60,0.22)" };
+    default:             return { background: "rgba(248,113,113,0.1)", color: "var(--danger)", border: "1px solid rgba(248,113,113,0.22)" };
+  }
+}
+
 function sourceBadge(source) {
   const map = {
     greenhouse: { c: "var(--accent3)", label: "GREENHOUSE" },
@@ -133,8 +142,9 @@ function TabSwitcher({ activeTab, onSwitch, autoCount, customCount }) {
    MATCH CARD — shared between both tabs
    ══════════════════════════════════════════════════════════════════ */
 function MatchCard({ match, index, expanded, onToggle, isAuto }) {
-  const sc = scoreColor(match.score);
-  const pct = Math.min(match.score, 100);
+  const displayScore = match.llm_score ?? match.score ?? 0;
+  const sc = scoreColor(displayScore);
+  const pct = Math.min(displayScore, 100);
   const [downloading, setDownloading] = useState(false);
 
   const handleDownload = async (e) => {
@@ -197,13 +207,33 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
           </div>
 
           <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{
-              fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800,
-              color: sc, letterSpacing: "-1px", lineHeight: 1,
-            }}>
-              {match.score}%
+            <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end", marginBottom: 4 }}>
+              {match.scoring_method === "llm+hybrid" && (
+                <span style={{
+                  fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 20,
+                  background: "rgba(232,255,107,0.12)", color: "var(--accent)",
+                  border: "1px solid rgba(232,255,107,0.25)", letterSpacing: "0.08em", textTransform: "uppercase",
+                }}>AI</span>
+              )}
+              <div style={{
+                fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800,
+                color: sc, letterSpacing: "-1px", lineHeight: 1,
+              }}>
+                {match.llm_score ?? match.score}%
+              </div>
             </div>
-            <div style={{ marginTop: 4 }}>{sourceBadge(match.source)}</div>
+            {match.llm_recommendation && match.scoring_method === "llm+hybrid" && (
+              <div style={{ marginBottom: 4 }}>
+                <span style={{
+                  fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+                  letterSpacing: "0.06em", textTransform: "uppercase",
+                  ...recommendationStyle(match.llm_recommendation),
+                }}>
+                  {match.llm_recommendation}
+                </span>
+              </div>
+            )}
+            <div>{sourceBadge(match.source)}</div>
           </div>
         </div>
 
@@ -268,8 +298,93 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
         {expanded && (
           <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)", animation: "fadeUp 0.2s ease both" }}>
 
-            {/* Component scores */}
-            {match.components && Object.keys(match.components).length > 0 && (
+            {/* ── AI Analysis block ────────────────────────────── */}
+            {match.scoring_method === "llm+hybrid" && match.llm_reasoning && (
+              <div style={{
+                marginBottom: 18,
+                background: "var(--surface2)",
+                border: "1px solid var(--border)",
+                borderLeft: "3px solid var(--accent)",
+                borderRadius: 10,
+                padding: "14px 16px",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.8 }}>AI Analysis</span>
+                  <span style={{
+                    fontSize: 8, fontWeight: 700, padding: "1px 6px", borderRadius: 20,
+                    background: "rgba(232,255,107,0.1)", color: "var(--accent)",
+                    border: "1px solid rgba(232,255,107,0.2)", letterSpacing: "0.08em", textTransform: "uppercase",
+                  }}>GPT-4o-mini</span>
+                </div>
+
+                {/* Reasoning */}
+                <p style={{
+                  fontSize: 12, color: "var(--text-mid)", fontStyle: "italic",
+                  lineHeight: 1.65, marginBottom: 12, margin: "0 0 12px 0",
+                }}>
+                  "{match.llm_reasoning}"
+                </p>
+
+                {/* Strengths + gaps */}
+                {((match.llm_key_strengths || []).length > 0 || (match.llm_key_gaps || []).length > 0) && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {(match.llm_key_strengths || []).map((s, i) => (
+                      <div key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start" }}>
+                        <span style={{ color: "var(--accent3)", fontSize: 11, lineHeight: 1.5, flexShrink: 0 }}>✓</span>
+                        <span style={{ fontSize: 11, color: "var(--text-mid)", lineHeight: 1.5 }}>{s}</span>
+                      </div>
+                    ))}
+                    {(match.llm_key_gaps || []).map((g, i) => (
+                      <div key={i} style={{ display: "flex", gap: 7, alignItems: "flex-start" }}>
+                        <span style={{ color: "var(--danger)", fontSize: 11, lineHeight: 1.5, flexShrink: 0 }}>✗</span>
+                        <span style={{ fontSize: 11, color: "var(--text-mid)", lineHeight: 1.5 }}>{g}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── LLM component score bars (primary) ──────────── */}
+            {match.llm_components && match.scoring_method === "llm+hybrid" && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-dim)", marginBottom: 10 }}>
+                  AI Score Breakdown
+                </div>
+                {[
+                  { key: "skills_fit", label: "Skills Fit" },
+                  { key: "experience_fit", label: "Experience Fit" },
+                  { key: "trajectory_fit", label: "Career Trajectory" },
+                ].map(({ key, label }) => {
+                  const val = match.llm_components[key] ?? 0;
+                  return (
+                    <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                      <span style={{ width: 110, fontSize: 11, color: "var(--text-dim)" }}>{label}</span>
+                      <div style={{ flex: 1, height: 5, background: "var(--surface2)", borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ width: `${Math.min(val, 100)}%`, height: "100%", background: scoreGradient(val), borderRadius: 4, transition: "width 0.7s cubic-bezier(0.22,1,0.36,1)" }} />
+                      </div>
+                      <span style={{ width: 26, fontSize: 11, color: "var(--text-mid)", textAlign: "right", fontFamily: "var(--font-display)", fontWeight: 700 }}>{val}</span>
+                    </div>
+                  );
+                })}
+
+                {/* Hybrid baseline — small, dim reference */}
+                {match.hybrid_score != null && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ width: 110, fontSize: 10, color: "var(--text-dim)", opacity: 0.6 }}>Keyword/Semantic baseline</span>
+                      <div style={{ flex: 1, height: 3, background: "var(--surface2)", borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ width: `${Math.min(match.hybrid_score, 100)}%`, height: "100%", background: "rgba(255,255,255,0.15)", borderRadius: 4 }} />
+                      </div>
+                      <span style={{ width: 26, fontSize: 10, color: "var(--text-dim)", textAlign: "right", fontFamily: "var(--font-display)", fontWeight: 600, opacity: 0.6 }}>{match.hybrid_score}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Fallback: hybrid component bars (when no LLM) ── */}
+            {(!match.llm_components || match.scoring_method !== "llm+hybrid") && match.components && Object.keys(match.components).length > 0 && (
               <div style={{ marginBottom: 18 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-dim)", marginBottom: 10 }}>
                   Score Breakdown
@@ -279,7 +394,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
                   const display = Math.round(pctVal * 100);
                   return (
                     <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 5 }}>
-                      <span style={{ width: 75, fontSize: 11, color: "var(--text-dim)", textTransform: "capitalize" }}>{key}</span>
+                      <span style={{ width: 110, fontSize: 11, color: "var(--text-dim)", textTransform: "capitalize" }}>{key.replace(/_/g, " ")}</span>
                       <div style={{ flex: 1, height: 4, background: "var(--surface2)", borderRadius: 4, overflow: "hidden" }}>
                         <div style={{ width: `${Math.min(display, 100)}%`, height: "100%", background: scoreColor(display), borderRadius: 4, transition: "width 0.6s ease" }} />
                       </div>
@@ -290,7 +405,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
               </div>
             )}
 
-            {/* Coverage */}
+            {/* ── Coverage stats ───────────────────────────────── */}
             {match.coverage && (
               <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
                 {[
@@ -311,7 +426,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
               </div>
             )}
 
-            {/* All skills */}
+            {/* ── Full skill match ─────────────────────────────── */}
             {((match.matched_skills || []).length > 4 || (match.missing_skills || []).length > 2) && (
               <div style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-dim)", marginBottom: 8 }}>
@@ -332,7 +447,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
               </div>
             )}
 
-            {/* Critical gaps */}
+            {/* ── Critical gaps ────────────────────────────────── */}
             {match.critical_gaps && match.critical_gaps.length > 0 && (
               <div style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--danger)", marginBottom: 8 }}>
@@ -351,7 +466,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
               </div>
             )}
 
-            {/* Action row: Apply button + Download resume */}
+            {/* ── Action row ───────────────────────────────────── */}
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               {match.job_url && (
                 <a
@@ -781,6 +896,8 @@ function ArchiveModal({ onClose }) {
     () => localStorage.getItem("rack_archive_autoclean") === "true"
   );
   const [expandedId, setExpandedId] = useState(null);
+  const [confirmApplied, setConfirmApplied] = useState(new Set()); // jobs pending "did you apply?" confirm
+  const [downloading, setDownloading] = useState(null); // job_id being downloaded
 
   const toggleAutoClean = () => {
     const next = !autoClean;
@@ -794,6 +911,10 @@ function ArchiveModal({ onClose }) {
   const markApplied = (id) => {
     const u = archive.map(j => j.job_id === id ? { ...j, applied: true } : j);
     setArchive(u); saveArchive(u);
+    setConfirmApplied(prev => { const n = new Set(prev); n.delete(id); return n; });
+  };
+  const toggleConfirmApplied = (id) => {
+    setConfirmApplied(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
   const deleteSelected = () => {
     const u = archive.filter(j => !selected.has(j.job_id));
@@ -810,10 +931,10 @@ function ArchiveModal({ onClose }) {
 
   return (
     <div style={{
-      position: "fixed", inset: 0, zIndex: 1000,
+      position: "fixed", inset: 0, zIndex: 9999,
       background: "rgba(0,0,0,0.78)", backdropFilter: "blur(6px)",
       display: "flex", alignItems: "flex-start", justifyContent: "center",
-      padding: "40px 16px", overflowY: "auto",
+      padding: "110px 16px 40px", overflowY: "auto",
     }} onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={{
         width: "100%", maxWidth: 700,
@@ -948,6 +1069,7 @@ function ArchiveModal({ onClose }) {
                 </div>
                 {isExpanded && (
                   <div style={{ padding: "10px 14px 14px", borderTop: "1px solid rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.2)", animation: "fadeUp 0.15s ease both" }}>
+                    {/* Skills */}
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 10 }}>
                       {(job.matched_skills || []).slice(0, 5).map(s => (
                         <span key={s} style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: "rgba(52,211,153,0.1)", color: "#34d399", fontWeight: 600 }}>✓ {s}</span>
@@ -956,20 +1078,77 @@ function ArchiveModal({ onClose }) {
                         <span key={s} style={{ fontSize: 9, padding: "2px 7px", borderRadius: 20, background: "rgba(248,113,113,0.08)", color: "var(--danger)", fontWeight: 600 }}>✗ {s}</span>
                       ))}
                     </div>
+
+                    {/* Resume matched */}
+                    {job.resume_name && (
+                      <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 10, display: "flex", alignItems: "center", gap: 6, ...mono }}>
+                        <span style={{ opacity: 0.5 }}>matched resume:</span>
+                        <button
+                          disabled={downloading === job.job_id}
+                          onClick={async () => {
+                            if (!job.resume_id || downloading) return;
+                            setDownloading(job.job_id);
+                            await downloadResume(job.resume_id, job.resume_name, job.file_ext);
+                            setDownloading(null);
+                          }}
+                          style={{
+                            background: "none", border: "none", padding: "1px 6px",
+                            borderRadius: 6, cursor: job.resume_id ? "pointer" : "default",
+                            color: "var(--accent)", fontWeight: 600, fontSize: 11,
+                            fontFamily: "var(--font-body)",
+                            display: "inline-flex", alignItems: "center", gap: 4,
+                            opacity: downloading === job.job_id ? 0.5 : 1,
+                            textDecoration: job.resume_id ? "underline" : "none",
+                            textDecorationStyle: "dotted", textUnderlineOffset: 2,
+                          }}
+                        >
+                          {downloading === job.job_id ? "Downloading…" : `${job.resume_name}${job.resume_id ? " ↓" : ""}`}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* "Did you apply?" confirmation row */}
+                    {!job.applied && (
+                      <div style={{
+                        marginBottom: 10, padding: "8px 12px", borderRadius: 10,
+                        background: confirmApplied.has(job.job_id) ? "rgba(52,211,153,0.06)" : "rgba(255,255,255,0.02)",
+                        border: `1px solid ${confirmApplied.has(job.job_id) ? "rgba(52,211,153,0.2)" : "rgba(255,255,255,0.06)"}`,
+                        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                        transition: "all 0.2s",
+                      }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", flex: 1 }}>
+                          <div
+                            onClick={() => toggleConfirmApplied(job.job_id)}
+                            style={{
+                              width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                              border: `1px solid ${confirmApplied.has(job.job_id) ? "#34d399" : "var(--border)"}`,
+                              background: confirmApplied.has(job.job_id) ? "rgba(52,211,153,0.2)" : "transparent",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              cursor: "pointer", fontSize: 10, color: "#34d399", transition: "all 0.15s",
+                            }}
+                          >{confirmApplied.has(job.job_id) ? "✓" : ""}</div>
+                          <span style={{ fontSize: 11, color: confirmApplied.has(job.job_id) ? "#34d399" : "var(--text-dim)", ...mono }}>
+                            I applied for this job
+                          </span>
+                        </label>
+                        {confirmApplied.has(job.job_id) && (
+                          <button onClick={() => markApplied(job.job_id)} style={{
+                            fontSize: 11, padding: "5px 14px", borderRadius: 20,
+                            border: "1px solid rgba(52,211,153,0.4)", background: "rgba(52,211,153,0.12)",
+                            color: "#34d399", cursor: "pointer", fontWeight: 700, ...mono,
+                            animation: "fadeUp 0.15s ease both",
+                          }}>✓ confirm applied</button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Action buttons */}
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {job.job_url && (
                         <a href={job.job_url} target="_blank" rel="noopener noreferrer"
-                          onClick={() => !job.applied && markApplied(job.job_id)}
                           style={{ fontSize: 11, padding: "6px 14px", borderRadius: 20, background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, textDecoration: "none" }}>
                           Apply →
                         </a>
-                      )}
-                      {!job.applied && (
-                        <button onClick={() => markApplied(job.job_id)} style={{
-                          fontSize: 11, padding: "6px 14px", borderRadius: 20,
-                          border: "1px solid rgba(52,211,153,0.25)", background: "rgba(52,211,153,0.06)",
-                          color: "#34d399", cursor: "pointer", ...mono,
-                        }}>✓ mark applied</button>
                       )}
                       <button onClick={() => deleteOne(job.job_id)} style={{
                         fontSize: 11, padding: "6px 14px", borderRadius: 20,
@@ -991,7 +1170,7 @@ function ArchiveModal({ onClose }) {
 /* ══════════════════════════════════════════════════════════════════
    AUTO MATCHES TAB
    ══════════════════════════════════════════════════════════════════ */
-const PAGE_SIZE = 7;
+const PAGE_SIZE = 10;
 
 function AutoMatchesTab({ profile }) {
   const [matches, setMatches]       = useState([]);
@@ -1090,7 +1269,7 @@ function AutoMatchesTab({ profile }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
-            {matches.length > 0 ? `${matches.length} top matches · scored by resume fit + recency` : "Automatically finds and scores your best-fit jobs from top tech companies"}
+            {matches.length > 0 ? `${matches.length} top matches · AI-scored by resume fit + recency` : "Automatically finds and AI-scores your best-fit jobs from top tech companies"}
             {meta?.last_fetch_at && !loading && <span> · updated {timeAgo(meta.last_fetch_at)}</span>}
           </div>
           {profile?.target_roles?.length > 0 && (
@@ -1121,8 +1300,14 @@ function AutoMatchesTab({ profile }) {
       </div>
 
       {stats && !stats.from_cache && stats.new_processed > 0 && (
-        <div style={{ background: "rgba(52,211,153,0.05)", border: "1px solid rgba(52,211,153,0.12)", borderRadius: 12, padding: "9px 16px", fontSize: 12, color: "var(--accent3)", marginBottom: 14, animation: "fadeUp 0.3s ease both", display: "flex", alignItems: "center", gap: 8 }}>
-          <span>✦</span><span>{stats.total_pool} jobs fetched → {stats.role_matched} role-matched → {stats.new_processed} above threshold</span>
+        <div style={{ background: "rgba(52,211,153,0.05)", border: "1px solid rgba(52,211,153,0.12)", borderRadius: 12, padding: "9px 16px", fontSize: 12, color: "var(--accent3)", marginBottom: 14, animation: "fadeUp 0.3s ease both", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span>✦</span>
+          <span>{stats.total_pool} jobs fetched → {stats.role_matched} role-matched → {stats.new_processed} matched</span>
+          {stats.llm_scored > 0 && (
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--accent)", background: "rgba(232,255,107,0.08)", border: "1px solid rgba(232,255,107,0.2)", borderRadius: 20, padding: "2px 9px", fontWeight: 600 }}>
+              ✦ {stats.llm_scored} AI-scored
+            </span>
+          )}
         </div>
       )}
       {error && (

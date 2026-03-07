@@ -9,32 +9,39 @@ Job source: Greenhouse Job Board API (~80 curated tech companies)
   - Real companies users actually want to work at
   - Fan out ~80 boards in parallel with asyncio semaphore
 
-Design decisions:
-  - NO hard 24h filter — goal is always 20 good matches, not "20 from today"
-  - Recency as tiebreaker (15% of rank) — quality first, freshness nudges
-  - seen_job_ids rolling dedup — never re-show a job once scored
-  - Daily pool refresh (STALE_HOURS=24) — re-fetch once/day
-  - LLM off for bulk speed — marginal gain vs latency not worth it
+Two-phase scoring pipeline:
+  Phase 1 — FAISS + Hybrid scorer (existing, fast, use_llm=False)
+    → Filters 150-200 Greenhouse jobs down to qualifying (job × resume) pairs
+    → All resumes scored per job, pairs above PHASE2_THRESHOLD kept
+    → Fast: no LLM calls, runs in seconds
 
-Ranking formula:
-  rank_score = (raw_score × SCORE_WEIGHT) + (recency_score × RECENCY_WEIGHT)
+  Phase 2 — LLM Deep Scorer (new, accurate, concurrent)
+    → Each qualifying (job × resume) pair sent to GPT-4o-mini
+    → Holistic scoring: skills_fit + experience_fit + trajectory_fit
+    → Returns reasoning + recommendation + key strengths/gaps
+    → Concurrent: up to 8 calls at once, ~25-40s for 30-50 pairs
+    → Graceful fallback: if LLM fails, hybrid score kept
+
+Ranking formula (post Phase 2):
+  rank_score = (llm_score × SCORE_WEIGHT) + (recency_score × RECENCY_WEIGHT)
   recency_score = 2^(-age_days / RECENCY_HALF_LIFE_DAYS)
   → Today = 1.0, 7 days ago = 0.5, 30 days ago ≈ 0.09
 
 Pipeline steps:
-  1. Load uploads/user_profile.json → get target_roles
-  2. If pool stale or force=True → fan out ~80 Greenhouse boards in parallel
-     - asyncio.gather with semaphore=MAX_CONCURRENT
-     - Save raw pool → auto_job_pool.json
-  3. Filter pool by target_role (ROLE_MATCH_RATIO word-overlap)
-  4. Remove seen_job_ids
-  5. If all seen → reset seen list (user gets fresh results automatically)
-  6. Sort unseen by posted_at descending (score freshest first)
-  7. Score each: match_resumes(desc, use_llm=False) → pick best resume
-  8. Compute rank_score
-  9. Merge with existing, sort by rank_score, keep top STORE_CAP
-  10. Save → auto_match_results.json, update seen_job_ids in meta
-  11. Return top DISPLAY_CAP
+  1.  Load uploads/user_profile.json → get target_roles
+  2.  If pool stale or force=True → fan out ~80 Greenhouse boards in parallel
+  3.  Filter pool by target_role (ROLE_MATCH_RATIO word-overlap on title)
+  4.  Remove seen_job_ids
+  5.  If all seen → reset seen list
+  6.  Sort unseen by posted_at descending
+  7.  Phase 1: match_resumes(desc, use_llm=False) for each job → collect ALL
+      resumes above PHASE2_THRESHOLD per job (not just the best one)
+  8.  Phase 2: LLM deep score all qualifying (job × resume) pairs concurrently
+  9.  Per job: pick best LLM-scored resume as the display entry
+  10. Compute rank_score using llm_score
+  11. Merge with existing, sort by rank_score, keep top STORE_CAP
+  12. Save → auto_match_results.json, update seen_job_ids in meta
+  13. Return top DISPLAY_CAP
 """
 
 import asyncio
@@ -59,10 +66,17 @@ AUTO_POOL_PATH    = os.path.join(WATCHLIST_DIR, "auto_job_pool.json")
 # ── Tunables ─────────────────────────────────────────────────────────
 DISPLAY_CAP             = 20    # Jobs shown to user
 STORE_CAP               = 50    # Jobs persisted in results file
-SCORE_WEIGHT            = 0.85  # RACK match score weight in rank formula
+SCORE_WEIGHT            = 0.85  # LLM score weight in rank formula
 RECENCY_WEIGHT          = 0.15  # Recency weight in rank formula
 RECENCY_HALF_LIFE_DAYS  = 7     # Recency decay: 7 days → score halved
-MIN_SCORE               = 30    # Min match % to surface a job
+MIN_SCORE               = 30    # Min hybrid % to even attempt LLM scoring
+PHASE2_THRESHOLD        = 60    # Min hybrid % to qualify for Phase 2 LLM scoring
+                                 # 45% → ~2500 pairs (way too many)
+                                 # 55% → ~165 pairs (still scores weak matches)
+                                 # 60% → ~40-80 pairs (only genuine candidates)
+PHASE1_JOB_CAP          = 100   # Max jobs scored per refresh. Prevents 580-job blowouts
+                                 # on first run. Sorted by recency — newest jobs first.
+                                 # Remaining jobs are picked up on next refresh.
 MIN_DESC_LEN            = 100   # Skip jobs with short descriptions
 STALE_HOURS             = 24    # Pool refresh interval
 MAX_CONCURRENT          = 15    # Parallel Greenhouse requests (semaphore)
@@ -71,9 +85,6 @@ ROLE_MATCH_RATIO        = 0.6   # Word overlap threshold for role filtering
 FETCH_TIMEOUT           = 15.0  # Seconds per Greenhouse request
 
 # ── Greenhouse company board tokens ──────────────────────────────────
-# These are the URL tokens used in:
-# https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true
-# Curated ~80 real tech companies that use Greenhouse.
 GREENHOUSE_COMPANIES = [
     # AI / ML
     "anthropic", "openai", "cohere", "mistral", "perplexity-ai",
@@ -171,10 +182,6 @@ async def _fetch_greenhouse(board_token: str, semaphore: asyncio.Semaphore) -> l
 
 # ── Role matching ─────────────────────────────────────────────────────
 def _role_matches_title(title: str, target_roles: list[str]) -> bool:
-    """
-    Check if a job title matches any of the user's target roles.
-    Uses word-overlap ratio >= ROLE_MATCH_RATIO.
-    """
     title_words = set(re.split(r"[\s\-/,]+", title.lower()))
     title_words = {w for w in title_words if len(w) > 1}
 
@@ -191,11 +198,6 @@ def _role_matches_title(title: str, target_roles: list[str]) -> bool:
 
 # ── Recency scoring ───────────────────────────────────────────────────
 def _recency_score(posted_at: Optional[str]) -> float:
-    """
-    Exponential decay: score = 2^(-age_days / half_life)
-    Today = 1.0, 7 days ago = 0.5, 30 days ago ≈ 0.09
-    No posted_at → 0.1 (neutral-low)
-    """
     if not posted_at:
         return 0.1
     try:
@@ -266,7 +268,6 @@ def _is_pool_stale(meta: dict) -> bool:
 
 
 def _is_results_stale(meta: dict) -> bool:
-    """For cache serving — are stored match results still fresh?"""
     last = meta.get("last_fetch_at")
     if not last:
         return True
@@ -292,6 +293,8 @@ async def run_auto_pipeline(force: bool = False) -> dict:
         }
     """
     from services.matcher import match_resumes
+    from services.ingestion import get_resume_by_id
+    from services.llm_scorer import llm_score_batch, rerank_by_llm_score
 
     # ── Load user profile ─────────────────────────────────────────────
     _profile_path = os.path.join("uploads", "user_profile.json")
@@ -365,7 +368,6 @@ async def run_auto_pipeline(force: bool = False) -> dict:
     unseen = [j for j in role_matched if j["job_id"] not in seen_ids]
     logger.info(f"[AutoMatch] {len(unseen)} unseen jobs (filtered {len(role_matched) - len(unseen)} seen)")
 
-    # If everything has been seen, reset so user gets fresh results
     if len(role_matched) > 0 and len(unseen) == 0:
         logger.info("[AutoMatch] All jobs seen — resetting seen_job_ids for fresh results")
         seen_ids = set()
@@ -373,7 +375,6 @@ async def run_auto_pipeline(force: bool = False) -> dict:
         meta["seen_job_ids"] = []
 
     if not unseen:
-        # No role-matched jobs at all in the pool
         existing = _load_auto_results()
         meta["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
         _save_auto_meta(meta)
@@ -389,7 +390,7 @@ async def run_auto_pipeline(force: bool = False) -> dict:
             "from_cache": False,
         }
 
-    # ── Step 4: Sort by recency (score freshest first) ────────────────
+    # ── Step 4: Sort by recency ───────────────────────────────────────
     def _posted_sort_key(j):
         try:
             dt = datetime.fromisoformat((j.get("posted_at") or "").replace("Z", "+00:00"))
@@ -399,84 +400,176 @@ async def run_auto_pipeline(force: bool = False) -> dict:
 
     unseen_sorted = sorted(unseen, key=_posted_sort_key, reverse=True)
 
-    # ── Step 5: Score each candidate ─────────────────────────────────
-    new_entries = []
-    scored_count = 0
+    # Cap Phase 1 to newest N jobs — prevents first-run / reset from scoring
+    # 500+ jobs at once and generating thousands of LLM pairs.
+    if len(unseen_sorted) > PHASE1_JOB_CAP:
+        logger.info(
+            f"[AutoMatch] Capping Phase 1 to {PHASE1_JOB_CAP} most-recent jobs "
+            f"({len(unseen_sorted) - PHASE1_JOB_CAP} deferred to next run)"
+        )
+        unseen_sorted = unseen_sorted[:PHASE1_JOB_CAP]
+
+    # ── Step 5: Phase 1 — FAISS + Hybrid scoring ─────────────────────
+    # Score ALL resumes per job, collect pairs above PHASE2_THRESHOLD
+    phase1_pairs = []    # (job × resume) pairs qualifying for Phase 2
+    scored_count  = 0
+    parsed_jd_cache = {}  # job_id → parsed_jd (reused in Phase 2)
+
+    logger.info(f"[AutoMatch] Phase 1: scoring {len(unseen_sorted)} jobs with hybrid scorer…")
 
     for job in unseen_sorted:
         desc = job.get("description_text", "").strip()
         if len(desc) < MIN_DESC_LEN:
+            seen_ids.add(job["job_id"])
             continue
 
         try:
             result = await match_resumes(jd_text=desc, use_llm=False)
         except Exception as e:
-            logger.error(f"[AutoMatch] Scoring error for '{job.get('title')}': {e}")
+            logger.error(f"[AutoMatch] Phase 1 scoring error for '{job.get('title')}': {e}")
             continue
 
         scored_count += 1
         matches = result.get("results", [])
+        parsed_jd = result.get("jd_parsed", {})
+        parsed_jd_cache[job["job_id"]] = parsed_jd
+
         if not matches:
-            seen_ids.add(job["job_id"])  # mark seen even if no resume match
-            continue
-
-        best = max(matches, key=lambda m: m.get("raw_score", 0))
-        raw_score = best.get("raw_score", 0)
-        score_pct = round(raw_score * 100)
-
-        if score_pct < MIN_SCORE:
             seen_ids.add(job["job_id"])
             continue
 
-        # Compute recency-weighted rank score
-        rec = _recency_score(job.get("posted_at"))
-        rank_score = (raw_score * SCORE_WEIGHT) + (rec * RECENCY_WEIGHT)
+        # Collect ALL resumes above PHASE2_THRESHOLD for this job
+        qualifying = [
+            m for m in matches
+            if round(m.get("raw_score", 0) * 100) >= PHASE2_THRESHOLD
+        ]
 
-        new_entries.append({
-            "job_id":           job["job_id"],
-            "source":           job["source"],
-            "board_token":      job.get("board_token", ""),
-            "job_title":        job["title"],
-            "company":          job["company"],
-            "location":         job.get("location", "Not specified"),
-            "job_url":          job.get("url", ""),
-            "posted_at":        job.get("posted_at"),
-            "department":       job.get("department", ""),
-            # Best resume
-            "resume_id":        best.get("resume_id", ""),
-            "resume_name":      best.get("name", ""),
-            "file_ext":         best.get("file_ext", ""),
-            # Scores
-            "score":            score_pct,
-            "raw_score":        raw_score,
-            "rank_score":       round(rank_score, 6),
-            "recency_score":    round(rec, 4),
-            "components":       best.get("components", {}),
-            "matched_skills":   best.get("matched_skills", []),
-            "missing_skills":   best.get("missing_skills", []),
-            "matched_preferred": best.get("matched_preferred", []),
-            "coverage":         best.get("gap_analysis", {}).get("coverage", {}),
-            "critical_gaps":    best.get("gap_analysis", {}).get("critical_gaps", []),
-            # Meta
-            "auto_matched":     True,
-            "matched_at":       datetime.now(timezone.utc).isoformat(),
-        })
+        if not qualifying:
+            # Best resume still below threshold — skip job entirely
+            seen_ids.add(job["job_id"])
+            continue
+
+        # Build pair entries for Phase 2
+        for resume_match in qualifying:
+            hybrid_score = round(resume_match.get("raw_score", 0) * 100)
+            resume_id = resume_match.get("resume_id", "")
+            full_resume = get_resume_by_id(resume_id)
+            if not full_resume:
+                continue
+
+            phase1_pairs.append({
+                # Job context
+                "job_id":          job["job_id"],
+                "job_title":       job["title"],
+                "company":         job["company"],
+                "location":        job.get("location", "Not specified"),
+                "job_url":         job.get("url", ""),
+                "source":          job["source"],
+                "board_token":     job.get("board_token", ""),
+                "posted_at":       job.get("posted_at"),
+                "department":      job.get("department", ""),
+                # Resume context
+                "resume_id":       resume_id,
+                "resume_name":     resume_match.get("name", ""),
+                "file_ext":        resume_match.get("file_ext", ""),
+                # Hybrid scores (Phase 1)
+                "hybrid_score":    hybrid_score,
+                "hybrid_raw":      resume_match.get("raw_score", 0),
+                "hybrid_components": resume_match.get("components", {}),
+                "matched_skills":  resume_match.get("matched_skills", []),
+                "missing_skills":  resume_match.get("missing_skills", []),
+                "matched_preferred": resume_match.get("matched_preferred", []),
+                "coverage":        resume_match.get("gap_analysis", {}).get("coverage", {}),
+                "critical_gaps":   resume_match.get("gap_analysis", {}).get("critical_gaps", []),
+                # Phase 2 inputs
+                "job":             job,
+                "resume":          full_resume,
+                "parsed_jd":       parsed_jd,
+            })
+
         seen_ids.add(job["job_id"])
 
-    logger.info(f"[AutoMatch] Scored {scored_count} jobs → {len(new_entries)} above {MIN_SCORE}% threshold")
+    logger.info(f"[AutoMatch] Phase 1 complete: {scored_count} jobs scored → {len(phase1_pairs)} pairs qualify for Phase 2")
 
-    # ── Step 6: Merge with existing, sort by rank_score, keep top STORE_CAP ──
+    # ── Step 6: Phase 2 — LLM deep scoring ───────────────────────────
+    logger.info(f"[AutoMatch] Phase 2: LLM scoring {len(phase1_pairs)} (job × resume) pairs…")
+
+    llm_scored_pairs = await llm_score_batch(phase1_pairs)
+
+    # ── Step 7: Per job, pick best LLM-scored resume ──────────────────
+    # Group by job_id, pick the pair with highest llm_score
+    by_job: dict[str, dict] = {}
+    for pair in llm_scored_pairs:
+        jid = pair["job_id"]
+        if jid not in by_job or pair.get("llm_score", 0) > by_job[jid].get("llm_score", 0):
+            by_job[jid] = pair
+
+    # ── Step 8: Build final entries with rank_score ───────────────────
+    new_entries = []
+    for jid, pair in by_job.items():
+        llm_score = pair.get("llm_score", pair.get("hybrid_score", 0))
+
+        # Guard: if llm_score is still below MIN_SCORE, skip
+        if llm_score < MIN_SCORE:
+            continue
+
+        rec = _recency_score(pair.get("posted_at"))
+        rank_score = (llm_score / 100 * SCORE_WEIGHT) + (rec * RECENCY_WEIGHT)
+
+        new_entries.append({
+            # Job info
+            "job_id":          pair["job_id"],
+            "source":          pair["source"],
+            "board_token":     pair.get("board_token", ""),
+            "job_title":       pair["job_title"],
+            "company":         pair["company"],
+            "location":        pair["location"],
+            "job_url":         pair["job_url"],
+            "posted_at":       pair.get("posted_at"),
+            "department":      pair.get("department", ""),
+            # Best resume
+            "resume_id":       pair["resume_id"],
+            "resume_name":     pair["resume_name"],
+            "file_ext":        pair.get("file_ext", ""),
+            # Primary score — LLM (what the UI shows prominently)
+            "score":           llm_score,
+            "llm_score":       llm_score,
+            "llm_components":  pair.get("llm_components", {}),
+            "llm_reasoning":   pair.get("llm_reasoning", ""),
+            "llm_recommendation": pair.get("llm_recommendation", ""),
+            "llm_key_strengths": pair.get("llm_key_strengths", []),
+            "llm_key_gaps":    pair.get("llm_key_gaps", []),
+            "scoring_method":  pair.get("scoring_method", "hybrid_only"),
+            # Hybrid score — kept for reference (shown minimally in UI)
+            "hybrid_score":    pair.get("hybrid_score", 0),
+            "hybrid_components": pair.get("hybrid_components", {}),
+            # Skill signals from hybrid (still useful for UI pills)
+            "matched_skills":  pair.get("matched_skills", []),
+            "missing_skills":  pair.get("missing_skills", []),
+            "matched_preferred": pair.get("matched_preferred", []),
+            "coverage":        pair.get("coverage", {}),
+            "critical_gaps":   pair.get("critical_gaps", []),
+            # Ranking
+            "rank_score":      round(rank_score, 6),
+            "recency_score":   round(rec, 4),
+            # Meta
+            "auto_matched":    True,
+            "matched_at":      datetime.now(timezone.utc).isoformat(),
+        })
+
+    logger.info(f"[AutoMatch] Phase 2 complete: {len(new_entries)} final entries after LLM scoring")
+
+    # ── Step 9: Merge with existing, sort, keep top STORE_CAP ─────────
     existing = _load_auto_results()
     merged = {r["job_id"]: r for r in existing}
     for e in new_entries:
         merged[e["job_id"]] = e
 
-    final = sorted(merged.values(), key=lambda x: x.get("rank_score", x.get("raw_score", 0)), reverse=True)
+    final = sorted(merged.values(), key=lambda x: x.get("rank_score", 0), reverse=True)
     final = final[:STORE_CAP]
     _save_auto_results(final)
 
-    # ── Step 7: Persist meta ──────────────────────────────────────────
-    # Cap seen_ids to avoid unbounded growth
+    # ── Step 10: Persist meta ─────────────────────────────────────────
     seen_list = list(seen_ids)
     if len(seen_list) > SEEN_ID_CAP:
         seen_list = seen_list[-SEEN_ID_CAP:]
@@ -484,18 +577,23 @@ async def run_auto_pipeline(force: bool = False) -> dict:
     meta["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
     _save_auto_meta(meta)
 
-    logger.info(f"[AutoMatch] Complete: {len(new_entries)} new, {len(final)} total stored, showing top {DISPLAY_CAP}")
+    llm_count = sum(1 for e in new_entries if e.get("scoring_method") == "llm+hybrid")
+    logger.info(
+        f"[AutoMatch] Complete: {len(new_entries)} new entries "
+        f"({llm_count} LLM-scored), {len(final)} total stored, showing top {DISPLAY_CAP}"
+    )
 
     return {
         "matches": final[:DISPLAY_CAP],
         "stats": {
-            "from_cache":    False,
-            "total_pool":    len(raw_pool),
-            "role_matched":  len(role_matched),
-            "total_scored":  scored_count,
-            "new_processed": len(new_entries),
-            "total_shown":   len(final[:DISPLAY_CAP]),
-            "target_roles":  target_roles,
+            "from_cache":       False,
+            "total_pool":       len(raw_pool),
+            "role_matched":     len(role_matched),
+            "phase1_pairs":     len(phase1_pairs),
+            "llm_scored":       llm_count,
+            "new_processed":    len(new_entries),
+            "total_shown":      len(final[:DISPLAY_CAP]),
+            "target_roles":     target_roles,
         },
         "from_cache": False,
     }

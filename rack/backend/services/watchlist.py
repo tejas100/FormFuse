@@ -344,8 +344,12 @@ async def refresh_pipeline(
         f"→ {after_profile} after profile → {len(new_jobs)} new to process"
     )
 
-    # ── Step 5: Run RACK pipeline on new jobs ─────────────────────
-    new_matches = []
+    # ── Step 5a: Phase 1 — FAISS + Hybrid scoring ────────────────
+    # Score ALL resumes per job, collect qualifying pairs for Phase 2
+    from services.ingestion import get_resume_by_id
+    from services.llm_scorer import llm_score_batch, PHASE2_THRESHOLD
+
+    phase1_pairs = []   # (job × resume) pairs qualifying for Phase 2 LLM scoring
     errors = 0
 
     for job in new_jobs:
@@ -356,49 +360,71 @@ async def refresh_pipeline(
                 seen_ids.add(job["job_id"])
                 continue
 
-            result = await match_resumes(jd_text, use_llm=use_llm)
-
+            # Phase 1: always use use_llm=False for hybrid scoring.
+            # Phase 2 (LLM scorer) handles the holistic scoring separately.
+            # Using use_llm=True here triggers hybrid_scorer Pass 3 which has
+            # a known suppression bug and also extracts more skills → lower scores.
+            result = await match_resumes(jd_text, use_llm=False)
             matches = result.get("results", [])
             jd_parsed = result.get("jd_parsed", {})
 
-            # ── KEY CHANGE: pick BEST resume for this job ─────────
-            if matches:
-                # Sort by raw_score descending, take the best one
-                best = max(matches, key=lambda m: m.get("raw_score", 0))
+            if not matches:
+                seen_ids.add(job["job_id"])
+                continue
 
-                match_entry = {
-                    "job_id": job["job_id"],
-                    "job_title": job["title"],
-                    "company": job["company"],
-                    "location": job["location"],
-                    "job_url": job["url"],
-                    "source": job["source"],
-                    "posted_at": job.get("posted_at"),
-                    "department": job.get("department", ""),
-                    # Best resume info
-                    "resume_name": best.get("name", ""),
-                    "resume_id": best.get("resume_id", ""),
-                    "file_ext": best.get("file_ext", ""),
-                    "score": best.get("score", 0),
-                    "raw_score": best.get("raw_score", 0),
-                    "components": best.get("components", {}),
-                    "matched_skills": best.get("matched_skills", []),
-                    "missing_skills": best.get("missing_skills", []),
-                    "matched_preferred": best.get("matched_preferred", []),
-                    "gap_analysis": best.get("gap_analysis", {}),
-                    "critical_gaps": best.get("gap_analysis", {}).get("critical_gaps", []),
-                    "coverage": best.get("gap_analysis", {}).get("coverage", {}),
+            # Collect all resumes above Phase 2 threshold for this job
+            qualifying = [
+                m for m in matches
+                if round(m.get("raw_score", 0) * 100) >= PHASE2_THRESHOLD
+            ]
+
+            if not qualifying:
+                seen_ids.add(job["job_id"])
+                continue
+
+            for resume_match in qualifying:
+                hybrid_score = round(resume_match.get("raw_score", 0) * 100)
+                resume_id = resume_match.get("resume_id", "")
+                full_resume = get_resume_by_id(resume_id)
+                if not full_resume:
+                    continue
+
+                phase1_pairs.append({
+                    # Job context
+                    "job_id":          job["job_id"],
+                    "job_title":       job["title"],
+                    "company":         job["company"],
+                    "location":        job["location"],
+                    "job_url":         job["url"],
+                    "source":          job["source"],
+                    "posted_at":       job.get("posted_at"),
+                    "department":      job.get("department", ""),
                     # JD parsed info
-                    "jd_title": jd_parsed.get("title", ""),
+                    "jd_title":        jd_parsed.get("title", ""),
                     "jd_required_skills": jd_parsed.get("required_skills", []),
                     "jd_preferred_skills": jd_parsed.get("preferred_skills", []),
-                    "jd_domains": jd_parsed.get("domains", []),
-                    "jd_min_years": jd_parsed.get("min_years"),
-                    # Meta
-                    "matched_at": datetime.now(timezone.utc).isoformat(),
+                    "jd_domains":      jd_parsed.get("domains", []),
+                    "jd_min_years":    jd_parsed.get("min_years"),
+                    # Resume context
+                    "resume_id":       resume_id,
+                    "resume_name":     resume_match.get("name", ""),
+                    "file_ext":        resume_match.get("file_ext", ""),
+                    # Hybrid scores
+                    "hybrid_score":    hybrid_score,
+                    "hybrid_raw":      resume_match.get("raw_score", 0),
+                    "hybrid_components": resume_match.get("components", {}),
+                    "matched_skills":  resume_match.get("matched_skills", []),
+                    "missing_skills":  resume_match.get("missing_skills", []),
+                    "matched_preferred": resume_match.get("matched_preferred", []),
+                    "gap_analysis":    resume_match.get("gap_analysis", {}),
+                    "critical_gaps":   resume_match.get("gap_analysis", {}).get("critical_gaps", []),
+                    "coverage":        resume_match.get("gap_analysis", {}).get("coverage", {}),
                     "total_resumes_scored": len(matches),
-                }
-                new_matches.append(match_entry)
+                    # Phase 2 inputs
+                    "job":             job,
+                    "resume":          full_resume,
+                    "parsed_jd":       jd_parsed,
+                })
 
             seen_ids.add(job["job_id"])
 
@@ -406,6 +432,69 @@ async def refresh_pipeline(
             logger.error(f"[Refresh] Error processing job {job.get('title', '?')}: {e}")
             errors += 1
             seen_ids.add(job["job_id"])
+
+    logger.info(f"[Refresh] Phase 1 complete: {len(phase1_pairs)} qualifying (job × resume) pairs")
+
+    # ── Step 5b: Phase 2 — LLM deep scoring ──────────────────────
+    logger.info(f"[Refresh] Phase 2: LLM scoring {len(phase1_pairs)} pairs…")
+    llm_scored_pairs = await llm_score_batch(phase1_pairs)
+
+    # Per job: pick best LLM-scored resume
+    by_job: dict = {}
+    for pair in llm_scored_pairs:
+        jid = pair["job_id"]
+        if jid not in by_job or pair.get("llm_score", 0) > by_job[jid].get("llm_score", 0):
+            by_job[jid] = pair
+
+    # Build final match entries
+    new_matches = []
+    for jid, pair in by_job.items():
+        llm_score = pair.get("llm_score", pair.get("hybrid_score", 0))
+        match_entry = {
+            "job_id":          pair["job_id"],
+            "job_title":       pair["job_title"],
+            "company":         pair["company"],
+            "location":        pair["location"],
+            "job_url":         pair["job_url"],
+            "source":          pair["source"],
+            "posted_at":       pair.get("posted_at"),
+            "department":      pair.get("department", ""),
+            # Best resume
+            "resume_name":     pair["resume_name"],
+            "resume_id":       pair["resume_id"],
+            "file_ext":        pair.get("file_ext", ""),
+            # Primary score — LLM
+            "score":           llm_score,
+            "llm_score":       llm_score,
+            "llm_components":  pair.get("llm_components", {}),
+            "llm_reasoning":   pair.get("llm_reasoning", ""),
+            "llm_recommendation": pair.get("llm_recommendation", ""),
+            "llm_key_strengths": pair.get("llm_key_strengths", []),
+            "llm_key_gaps":    pair.get("llm_key_gaps", []),
+            "scoring_method":  pair.get("scoring_method", "hybrid_only"),
+            # Hybrid reference
+            "hybrid_score":    pair.get("hybrid_score", 0),
+            "hybrid_components": pair.get("hybrid_components", {}),
+            # Skill signals
+            "matched_skills":  pair.get("matched_skills", []),
+            "missing_skills":  pair.get("missing_skills", []),
+            "matched_preferred": pair.get("matched_preferred", []),
+            "gap_analysis":    pair.get("gap_analysis", {}),
+            "critical_gaps":   pair.get("critical_gaps", []),
+            "coverage":        pair.get("coverage", {}),
+            # JD parsed
+            "jd_title":        pair.get("jd_title", ""),
+            "jd_required_skills": pair.get("jd_required_skills", []),
+            "jd_preferred_skills": pair.get("jd_preferred_skills", []),
+            "jd_domains":      pair.get("jd_domains", []),
+            "jd_min_years":    pair.get("jd_min_years"),
+            # Meta
+            "matched_at":      datetime.now(timezone.utc).isoformat(),
+            "total_resumes_scored": pair.get("total_resumes_scored", 1),
+        }
+        new_matches.append(match_entry)
+
+    logger.info(f"[Refresh] Phase 2 complete: {len(new_matches)} final matches")
 
     # ── Step 6: Merge with existing and save ──────────────────────
     existing_matches = match_store.get("matches", [])
@@ -418,9 +507,8 @@ async def refresh_pipeline(
     }
     _save_json(MATCHES_FILE, match_store)
 
-    # ── Step 7: Return top matches (all, sorted by score) ─────────
-    # Apply profile filter to cached matches too (re-filter on title)
-    all_sorted = sorted(all_matches, key=lambda x: x.get("score", 0), reverse=True)
+    # ── Step 7: Return top matches sorted by llm_score ────────────
+    all_sorted = sorted(all_matches, key=lambda x: x.get("llm_score", x.get("score", 0)), reverse=True)
 
     pipeline_time = round(time.time() - pipeline_start, 1)
 
@@ -429,6 +517,7 @@ async def refresh_pipeline(
         "matches": all_sorted[:50],  # Top 50 for the UI
         "new_processed": len(new_jobs),
         "new_matches": len(new_matches),
+        "llm_scored": sum(1 for m in new_matches if m.get("scoring_method") == "llm+hybrid"),
         "errors": errors,
         "pipeline_time_seconds": pipeline_time,
         "stats": {
