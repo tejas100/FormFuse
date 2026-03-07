@@ -27,6 +27,7 @@ from services.watchlist import (
 )
 from services.auto_match import (
     run_auto_pipeline,
+    archive_jobs,
     _load_auto_results,
     _load_auto_meta,
     DISPLAY_CAP,
@@ -64,6 +65,10 @@ class RefreshRequest(BaseModel):
 
 class AutoRefreshRequest(BaseModel):
     force: bool = False
+
+
+class AutoArchiveRequest(BaseModel):
+    job_ids: list[str]
 
 
 class SettingsRequest(BaseModel):
@@ -149,6 +154,17 @@ async def auto_matches(limit: int = DISPLAY_CAP):
 async def auto_meta():
     """Return metadata about the last auto fetch (last_fetch_at, seen count, etc.)."""
     return _load_auto_meta()
+
+
+@router.post("/auto/archive")
+async def auto_archive(req: AutoArchiveRequest):
+    """
+    Permanently archive job IDs — they will never resurface in Auto Matches,
+    even after seen_job_ids resets. Also removes them from stored results immediately.
+    """
+    if not req.job_ids:
+        raise HTTPException(status_code=400, detail="job_ids list cannot be empty")
+    return archive_jobs(req.job_ids)
 
 
 # ── Legacy auto-match (backward compat) ────────────────────────────

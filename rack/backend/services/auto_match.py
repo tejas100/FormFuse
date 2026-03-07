@@ -267,6 +267,48 @@ def _is_pool_stale(meta: dict) -> bool:
         return True
 
 
+def _load_archived_ids() -> set:
+    """Load the permanent set of archived job IDs from meta."""
+    meta = _load_auto_meta()
+    return set(meta.get("archived_job_ids", []))
+
+
+def _save_archived_ids(archived_ids: set):
+    """Persist archived job IDs into meta (never reset by the pipeline)."""
+    meta = _load_auto_meta()
+    meta["archived_job_ids"] = list(archived_ids)
+    _save_auto_meta(meta)
+
+
+def archive_jobs(job_ids: list) -> dict:
+    """
+    Mark job IDs as permanently archived:
+      1. Merge into archived_job_ids in meta (never reset).
+      2. Remove those jobs from auto_match_results.json so they
+         disappear from the display immediately.
+
+    Called by POST /api/tracking/auto/archive.
+    """
+    if not job_ids:
+        return {"archived": 0, "total_archived": len(_load_archived_ids())}
+
+    archived = _load_archived_ids()
+    new_count = sum(1 for jid in job_ids if jid not in archived)
+    archived.update(job_ids)
+    _save_archived_ids(archived)
+
+    # Remove from stored results immediately so UI refreshes correctly
+    existing = _load_auto_results()
+    filtered = [r for r in existing if r["job_id"] not in archived]
+    _save_auto_results(filtered)
+
+    logger.info(
+        f"[AutoMatch] Archived {new_count} new job(s). "
+        f"Total archived: {len(archived)}. Removed from results: {len(existing) - len(filtered)}"
+    )
+    return {"archived": new_count, "total_archived": len(archived)}
+
+
 def _is_results_stale(meta: dict) -> bool:
     last = meta.get("last_fetch_at")
     if not last:
@@ -363,15 +405,44 @@ async def run_auto_pipeline(force: bool = False) -> dict:
     ]
     logger.info(f"[AutoMatch] {len(role_matched)} jobs matched target roles from pool of {len(raw_pool)}")
 
-    # ── Step 3: Remove already-seen jobs ─────────────────────────────
-    seen_ids = set(meta.get("seen_job_ids", []))
-    unseen = [j for j in role_matched if j["job_id"] not in seen_ids]
-    logger.info(f"[AutoMatch] {len(unseen)} unseen jobs (filtered {len(role_matched) - len(unseen)} seen)")
+    # ── Step 2b: Filter by preferred locations ───────────────────────
+    # Uses country-aware matching. "Remote" means remote-within-your-country —
+    # NOT a worldwide remote pass. "Remote – UK" is excluded for a US-based user.
+    # If the user has set no preferred_locations, this step is skipped entirely.
+    preferred_locations = profile.get("preferred_locations", [])
+    if preferred_locations:
+        from services.user_profile import matches_any_preferred_location
+        before = len(role_matched)
+        role_matched = [
+            j for j in role_matched
+            if matches_any_preferred_location(j.get("location", ""), preferred_locations)
+        ]
+        logger.info(
+            f"[AutoMatch] {len(role_matched)} jobs after location filter "
+            f"({before - len(role_matched)} excluded) "
+            f"prefs={preferred_locations}"
+        )
 
-    if len(role_matched) > 0 and len(unseen) == 0:
-        logger.info("[AutoMatch] All jobs seen — resetting seen_job_ids for fresh results")
+    # ── Step 3: Remove already-seen and permanently-archived jobs ───────
+    seen_ids     = set(meta.get("seen_job_ids", []))
+    archived_ids = _load_archived_ids()
+
+    # Archived jobs are excluded permanently — never resurface them
+    non_archived = [j for j in role_matched if j["job_id"] not in archived_ids]
+    unseen       = [j for j in non_archived  if j["job_id"] not in seen_ids]
+
+    logger.info(
+        f"[AutoMatch] {len(unseen)} unseen jobs "
+        f"(filtered {len(role_matched) - len(non_archived)} archived, "
+        f"{len(non_archived) - len(unseen)} seen)"
+    )
+
+    # Reset seen_job_ids only when ALL non-archived jobs have been seen —
+    # never bring back archived jobs even after a reset.
+    if len(non_archived) > 0 and len(unseen) == 0:
+        logger.info("[AutoMatch] All non-archived jobs seen — resetting seen_job_ids for fresh cycle")
         seen_ids = set()
-        unseen = role_matched
+        unseen = non_archived          # archived jobs are still excluded
         meta["seen_job_ids"] = []
 
     if not unseen:

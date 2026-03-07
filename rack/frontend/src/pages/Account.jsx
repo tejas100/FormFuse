@@ -286,6 +286,16 @@ export default function Account() {
             placeholder="Type a location and press Enter…"
             accent="var(--accent2)"
           />
+          <div style={{
+            marginTop: 10, padding: "9px 13px", borderRadius: 10,
+            background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)",
+            fontSize: 11, color: "var(--text-dim)", lineHeight: 1.6,
+          }}>
+            <span style={{ color: "var(--accent2)", fontWeight: 600 }}>💡 Tip:</span>{" "}
+            Use a <strong style={{ color: "var(--text-mid)" }}>country</strong> (e.g. "United States") to match all cities
+            and remote jobs within that country. Adding "Remote" alone only shows remote jobs
+            in countries you've already added.
+          </div>
         </Section>
 
         <Section
@@ -394,12 +404,12 @@ export default function Account() {
             Instead of scoring 100+ jobs, we narrow to only relevant roles — faster results, less noise.
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-            {["100 fetched", "→ date", "→ roles", "→ ~10", "→ RACK"].map((s, i) => (
+            {["4k+ fetched", "→ roles", "→ location", "→ ~20", "→ LLM", "→ RACK"].map((s, i) => (
               <span key={s} style={{
                 fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 20,
-                background: i === 4 ? "rgba(232,255,107,0.12)" : "var(--surface2)",
-                color: i === 4 ? "var(--accent)" : "var(--text-dim)",
-                border: i === 4 ? "1px solid rgba(232,255,107,0.2)" : "1px solid var(--border)",
+                background: i === 5 ? "rgba(232,255,107,0.12)" : "var(--surface2)",
+                color: i === 5 ? "var(--accent)" : "var(--text-dim)",
+                border: i === 5 ? "1px solid rgba(232,255,107,0.2)" : "1px solid var(--border)",
               }}>{s}</span>
             ))}
           </div>

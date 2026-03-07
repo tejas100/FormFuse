@@ -1205,11 +1205,27 @@ function AutoMatchesTab({ profile }) {
     })();
   }, [hasProfile]);
 
-  const handleRefreshWithArchive = () => {
+  const handleRefreshWithArchive = async () => {
     if (matches.length > 0) {
+      // 1. Save to localStorage archive (for UI display in the Archive modal)
       const updated = archiveJobs(matches, loadArchive());
       saveArchive(updated);
       setArchiveCount(updated.length);
+
+      // 2. Tell the backend — these IDs will never resurface in Auto Matches,
+      //    even after seen_job_ids resets. Fire-and-forget (don't block refresh).
+      const jobIds = matches.map(m => m.job_id).filter(Boolean);
+      if (jobIds.length > 0) {
+        try {
+          await fetch(`${API}/auto/archive`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ job_ids: jobIds }),
+          });
+        } catch (e) {
+          console.warn("[Archive] Backend archive call failed — continuing with refresh", e);
+        }
+      }
     }
     handleRefresh(true);
   };
