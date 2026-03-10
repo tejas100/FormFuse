@@ -129,7 +129,7 @@ export default function Resumes() {
     <div style={{
       position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'flex-start',
-      padding: '20px 48px', paddingTop: '100px', paddingBottom: '40px',
+      padding: '20px 48px', paddingTop: 'var(--page-padding-top)', paddingBottom: 'var(--page-padding-bottom)',
       overflowY: 'auto', animation: 'fadeUp 0.4s ease both'
     }}>
 

@@ -76,31 +76,24 @@ export default function App() {
           opacity: 0;
         }
 
-        /* Diagonal lines — staggered fade+draw in */
         .ml-1  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 0.2s forwards, linePulse 6s ease-in-out 2.6s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
         .ml-2  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 0.5s forwards, linePulse 6s ease-in-out 2.9s infinite; stroke-dasharray: 1400; stroke-dashoffset: 1400; }
         .ml-3  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 0.8s forwards, linePulse 7s ease-in-out 3.2s infinite; stroke-dasharray: 1600; stroke-dashoffset: 1600; }
         .ml-4  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 1.0s forwards, linePulse 8s ease-in-out 3.4s infinite; stroke-dasharray: 1400; stroke-dashoffset: 1400; }
         .ml-5  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 1.2s forwards, linePulse 7s ease-in-out 3.6s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
 
-        /* Horizontal lines */
         .ml-h1 { stroke-width: 0.4; animation: lineReveal 2s ease 1.4s forwards, linePulse 9s ease-in-out 3.4s infinite; stroke-dasharray: 800; stroke-dashoffset: 800; }
         .ml-h2 { stroke-width: 0.4; animation: lineReveal 2s ease 1.6s forwards, linePulse 9s ease-in-out 3.6s infinite; stroke-dasharray: 900; stroke-dashoffset: 900; }
 
-        /* Arcs */
         .ml-arc1 { stroke-width: 0.5; stroke-opacity: 0.5; animation: lineReveal 3s cubic-bezier(0.22,1,0.36,1) 0.4s forwards, linePulse 10s ease-in-out 3.4s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
         .ml-arc2 { stroke-width: 0.5; stroke-opacity: 0.5; animation: lineReveal 3s cubic-bezier(0.22,1,0.36,1) 0.7s forwards, linePulse 10s ease-in-out 3.7s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
 
-        /* Dots */
         .ml-dot1 { fill: #e8ff6b; stroke: none; animation: dotPop 0.6s ease 1.8s forwards; }
         .ml-dot2 { fill: #e8ff6b; stroke: none; animation: dotPop 0.6s ease 2.0s forwards; }
         .ml-dot3 { fill: #e8ff6b; stroke: none; animation: dotPop 0.6s ease 2.2s forwards; }
 
         @keyframes lineReveal {
-          to {
-            stroke-dashoffset: 0;
-            opacity: 0.60;
-          }
+          to { stroke-dashoffset: 0; opacity: 0.60; }
         }
         @keyframes linePulse {
           0%, 100% { opacity: 0.60; }
@@ -114,14 +107,30 @@ export default function App() {
 
         /* ── Logo ── */
         .logo {
-          position:fixed;top:32px;left:40px;
-          font-family:var(--font-display);font-size:22px;font-weight:800;
-          letter-spacing:-0.5px;color:var(--text);z-index:100;
-          display:flex;align-items:center;gap:8px;
+          position: fixed;
+          top: 32px;
+          left: 40px;
+          font-family: var(--font-display);
+          font-size: 22px;
+          font-weight: 800;
+          letter-spacing: -0.5px;
+          color: var(--text);
+          z-index: 100;
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
         .logo-dot {
-          width:8px;height:8px;background:var(--accent);
-          border-radius:50%;animation:pulse-ring 2.5s ease infinite;
+          width: 8px; height: 8px;
+          background: var(--accent);
+          border-radius: 50%;
+          animation: pulse-ring 2.5s ease infinite;
+        }
+
+        /* ── Mobile overrides ── */
+        @media (max-width: 600px) {
+          /* Hide logo — nav is at the bottom, top is free for content */
+          .logo { display: none; }
         }
       `}</style>
     </div>

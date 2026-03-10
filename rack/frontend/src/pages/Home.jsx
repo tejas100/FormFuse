@@ -448,8 +448,10 @@ export default function Home() {
       position: 'absolute', inset: 0, display: 'flex',
       flexDirection: 'column', alignItems: 'center',
       justifyContent: 'flex-start',
-      padding: '20px', paddingBottom: '40px', overflowY: 'auto',
-      paddingTop: '100px',
+      padding: '20px',
+      paddingTop: 'var(--page-padding-top)',
+      paddingBottom: 'var(--page-padding-bottom)',
+      overflowY: 'auto',
       animation: 'fadeUp 0.4s ease both'
     }}>
       {!results && !error && (

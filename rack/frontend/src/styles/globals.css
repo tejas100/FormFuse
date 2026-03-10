@@ -17,6 +17,22 @@
   --tab-radius: 40px;
   --font-display: 'Syne', sans-serif;
   --font-body: 'DM Sans', sans-serif;
+
+  /*
+    Page layout helpers — consumed by every page's outer wrapper.
+    Desktop: pill nav is ~68px tall sitting at top:28px, so 100px clears it.
+    Bottom just needs a little breathing room.
+  */
+  --page-padding-top: 100px;
+  --page-padding-bottom: 40px;
+}
+
+/* Mobile: nav moves to the bottom bar (~68px), top is free. */
+@media (max-width: 600px) {
+  :root {
+    --page-padding-top: 28px;
+    --page-padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 html, body, #root {
