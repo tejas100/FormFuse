@@ -1,5 +1,18 @@
 import { useState, useRef, useEffect } from 'react'
 
+const mobileCardStyles = `
+  @media (max-width: 600px) {
+    .rack-card-collapsed-skills { display: none !important; }
+    .rack-card-rank { font-size: 16px !important; min-width: 28px !important; }
+    .rack-card-name { font-size: 14px !important; }
+    .rack-card-score-num { font-size: 22px !important; }
+    .rack-card-score-label { font-size: 11px !important; }
+    .rack-card-badges { gap: 5px !important; margin-bottom: 5px !important; }
+    .rack-card-row { gap: 10px !important; }
+    .rack-card-padding { padding: 13px 14px !important; border-radius: 12px !important; }
+  }
+`
+
 function scoreColor(score) {
   if (score >= 85) return 'linear-gradient(90deg,#e8ff6b,#a3e635)'
   if (score >= 65) return 'linear-gradient(90deg,#60a5fa,#818cf8)'
@@ -399,6 +412,7 @@ export default function Home() {
       {/* Results */}
       {results && results.length > 0 && (
         <div style={{ width: '100%', maxWidth: '720px', marginTop: '16px', animation: 'matchReveal 0.5s ease both' }}>
+          <style>{mobileCardStyles}</style>
           <div style={{ fontFamily:'var(--font-display)', fontSize:'13px', fontWeight:600, letterSpacing:'0.1em', textTransform:'uppercase', color:'var(--text-dim)', marginBottom:'12px', paddingLeft:'4px' }}>
             Ranked Results — {results.length} resume{results.length !== 1 ? 's' : ''}
           </div>
@@ -410,7 +424,7 @@ export default function Home() {
             const recStyle = rec ? recommendationStyle(rec) : null
 
             return (
-              <div key={r.resume_id} style={{
+              <div key={r.resume_id} className="rack-card-padding" style={{
                 background: i === 0 ? 'rgba(232,255,107,0.04)' : 'var(--surface)',
                 border: `1px solid ${i === 0 ? 'rgba(232,255,107,0.3)' : 'var(--border-bright)'}`,
                 borderRadius: '14px', padding: '18px 22px', marginBottom: '10px',
@@ -421,14 +435,14 @@ export default function Home() {
               onClick={() => setExpandedId(isExpanded ? null : r.resume_id)}
               >
                 {/* Collapsed row */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
-                  <div style={{ fontFamily:'var(--font-display)', fontSize:'24px', fontWeight:800, color: i===0 ? 'var(--accent)' : 'rgba(255,255,255,0.15)', minWidth:'36px' }}>
+                <div className="rack-card-row" style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+                  <div className="rack-card-rank" style={{ fontFamily:'var(--font-display)', fontSize:'24px', fontWeight:800, color: i===0 ? 'var(--accent)' : 'rgba(255,255,255,0.15)', minWidth:'36px' }}>
                     #{i+1}
                   </div>
                   <div style={{ flex:1, minWidth:0 }}>
                     {/* Name + badges */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
-                      <span style={{ fontFamily:'var(--font-display)', fontSize:'16px', fontWeight:600, color:'var(--text)' }}>{r.name}</span>
+                    <div className="rack-card-badges" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                      <span className="rack-card-name" style={{ fontFamily:'var(--font-display)', fontSize:'16px', fontWeight:600, color:'var(--text)' }}>{r.name}</span>
                       <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '6px', background: 'rgba(255,255,255,0.06)', color: 'var(--text-dim)', fontWeight: 500 }}>
                         {r.file_ext?.replace('.', '').toUpperCase()}
                       </span>
@@ -447,8 +461,8 @@ export default function Home() {
                     <div style={{ height:'4px', background:'rgba(255,255,255,0.08)', borderRadius:'4px', overflow:'hidden' }}>
                       <div style={{ height:'100%', borderRadius:'4px', background: scoreColor(displayScore), width:`${displayScore}%`, transition:'width 1s cubic-bezier(0.22,1,0.36,1)' }} />
                     </div>
-                    {/* Skill pills */}
-                    <div style={{ display:'flex', gap:'6px', marginTop:'8px', flexWrap:'wrap' }}>
+                    {/* Skill pills — hidden on mobile in collapsed state */}
+                    <div className="rack-card-collapsed-skills" style={{ display:'flex', gap:'6px', marginTop:'8px', flexWrap:'wrap' }}>
                       {(r.matched_skills || []).slice(0,4).map(t => (
                         <span key={t} style={{ fontSize:'11px', fontWeight:500, padding:'3px 10px', borderRadius:'20px', background:'rgba(52,211,153,0.1)', color:'var(--accent3)', border:'1px solid rgba(52,211,153,0.2)' }}>✓ {t}</span>
                       ))}
@@ -458,8 +472,8 @@ export default function Home() {
                     </div>
                   </div>
                   <div style={{ textAlign:'right', minWidth:'60px' }}>
-                    <div style={{ fontFamily:'var(--font-display)', fontSize:'28px', fontWeight:800, letterSpacing:'-1px', color: i===0 ? 'var(--accent)' : 'var(--text)' }}>{displayScore}</div>
-                    <div style={{ fontSize:'14px', color:'var(--text-dim)', fontWeight:300 }}>match</div>
+                    <div className="rack-card-score-num" style={{ fontFamily:'var(--font-display)', fontSize:'28px', fontWeight:800, letterSpacing:'-1px', color: i===0 ? 'var(--accent)' : 'var(--text)' }}>{displayScore}</div>
+                    <div className="rack-card-score-label" style={{ fontSize:'14px', color:'var(--text-dim)', fontWeight:300 }}>match</div>
                   </div>
                 </div>
 
