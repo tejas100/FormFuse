@@ -541,319 +541,147 @@ function PresetChips({ presets, onAdd, loading }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   AUTO MATCH LOADING — ASCII pixel-style pipeline animation
+   AUTO MATCH LOADING — minimal ASCII pipeline status
    ══════════════════════════════════════════════════════════════════ */
-const PIPELINE_STAGES = [
-  {
-    id: "fetch", label: "FETCHING BOARDS", detail: "Connecting to Greenhouse API", icon: "◈",
-    ascii: [
-      "┌─────────────────────────────┐",
-      "│  GET /boards/{token}/jobs   │",
-      "│  ░░░░░░░░░░░░░░░░░░░░░░░░  │",
-      "│  boards: 80 · parallel: 15  │",
-      "└─────────────────────────────┘",
-    ],
-    logLines: [
-      "→ anthropic       [████████] 43 jobs",
-      "→ openai          [████████] 61 jobs",
-      "→ stripe          [████████] 89 jobs",
-      "→ figma           [███████░] 34 jobs",
-      "→ vercel          [████████] 27 jobs",
-      "→ supabase        [██████░░] 18 jobs",
-      "→ datadog         [████████] 55 jobs",
-      "→ cloudflare      [███████░] 72 jobs",
-    ],
-  },
-  {
-    id: "filter", label: "ROLE FILTERING", detail: "Matching titles to your target roles", icon: "◉",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  pool: 3,847 jobs                │",
-      "│  target_roles: [                 │",
-      "│    'Software Engineer',          │",
-      "│    'ML Engineer', ...            │",
-      "│  ]                               │",
-      "│  overlap_threshold: 0.60         │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "✓ Senior Software Engineer @ stripe",
-      "✓ ML Engineer, Inference @ openai",
-      "✓ Backend Engineer @ anthropic",
-      "✗ Marketing Manager @ notion  (skip)",
-      "✓ Staff Engineer, Infra @ cloudflare",
-      "✗ Sales Development Rep @ hubspot  (skip)",
-      "✓ AI Engineer @ cohere",
-      "✓ Software Engineer, Platform @ linear",
-    ],
-  },
-  {
-    id: "embed", label: "EMBEDDING JDs", detail: "Encoding job descriptions into vectors", icon: "⬡",
-    ascii: [
-      "┌───────────────────────────────────┐",
-      "│  model: all-MiniLM-L6-v2          │",
-      "│  dim:   384                        │",
-      "│                                   │",
-      "│  JD text ──► tokenize             │",
-      "│            ──► encode             │",
-      "│            ──► vec[384]           │",
-      "└───────────────────────────────────┘",
-    ],
-    logLines: [
-      "tokenizing: 'Senior Software Engineer...'",
-      "tokens: 247  |  chunks: 3",
-      "encoding chunk 1/3  ▓▓▓▓▓▓░░░░",
-      "encoding chunk 2/3  ▓▓▓▓▓▓▓▓░░",
-      "encoding chunk 3/3  ▓▓▓▓▓▓▓▓▓▓",
-      "vec[0..5]: [0.231, -0.087, 0.412...]",
-      "FAISS index: 2,341 vectors loaded",
-      "cosine search: top_k=20 chunks",
-    ],
-  },
-  {
-    id: "score", label: "RACK SCORING", detail: "Running hybrid 4-component scorer", icon: "◎",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  semantic_sim  ×0.40  → 0.731   │",
-      "│  skill_overlap ×0.30  → 0.680   │",
-      "│  exp_match     ×0.20  → 0.750   │",
-      "│  kw_position   ×0.10  → 0.610   │",
-      "│  ─────────────────────────────  │",
-      "│  raw_score            → 0.714   │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "pass 1: canonical skill match",
-      "  matched: Python, FastAPI, Docker ✓",
-      "  missing: Kubernetes, Terraform",
-      "pass 2: text fallback scan",
-      "  found 'k8s' → Kubernetes ✓",
-      "pass 3: LLM semantic (off)",
-      "gap_analysis: 1 critical gap",
-      "rank_score = 0.714×0.85 + 0.91×0.15",
-    ],
-  },
-  {
-    id: "rank", label: "RANKING RESULTS", detail: "Sorting by score × recency", icon: "◆",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  rank = score×0.85 + rec×0.15   │",
-      "│                                  │",
-      "│  #1  0.847  stripe · SWE        │",
-      "│  #2  0.831  anthropic · BE      │",
-      "│  #3  0.819  openai · ML Eng     │",
-      "│  #4  0.802  vercel · Platform   │",
-      "│  ...                            │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "recency half-life: 7 days",
-      "job posted 1d ago  → rec=0.906",
-      "job posted 5d ago  → rec=0.612",
-      "job posted 14d ago → rec=0.250",
-      "merging with stored results...",
-      "deduping seen_job_ids: 247 filtered",
-      "top_50 saved → auto_match_results.json",
-      "serving top_20 to UI ✓",
-    ],
-  },
+const PIPELINE_STEPS = [
+  { id: "fetch",  label: "Fetching job boards",         detail: "~80 Greenhouse boards · parallel fetch" },
+  { id: "filter", label: "Filtering by role",           detail: "title overlap ≥ 0.60 · location match"  },
+  { id: "embed",  label: "Embedding & FAISS search",    detail: "all-MiniLM-L6-v2 · 384-dim cosine"      },
+  { id: "score",  label: "Hybrid scoring",              detail: "semantic + skills + experience + kw"    },
+  { id: "rank",   label: "LLM deep score + ranking",    detail: "GPT-4o-mini · score×0.85 + recency×0.15"},
 ];
 
-const CURSOR_FRAMES  = ["█", "▓", "░", " "];
-const SPINNER_FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-const PROGRESS_CHARS = ["░","▒","▓","█"];
+const SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 
 function AutoMatchLoadingAnimation() {
-  const [stageIdx, setStageIdx]    = useState(0);
-  const [logIdx, setLogIdx]        = useState(0);
-  const [cursorFrame, setCursor]   = useState(0);
-  const [spinnerFrame, setSpinner] = useState(0);
-  const [progressPct, setProgress] = useState(0);
-  const [asciiLine, setAsciiLine]  = useState(0);
-  const [glitchCol, setGlitchCol]  = useState(-1);
+  const [stepIdx,  setStep]    = useState(0);
+  const [spinner,  setSpinner] = useState(0);
+  const [elapsed,  setElapsed] = useState(0);
+  const [cursor,   setCursor]  = useState(true);
 
-  const stage      = PIPELINE_STAGES[stageIdx];
-  const totalStages = PIPELINE_STAGES.length;
+  // Spinner tick
+  useEffect(() => {
+    const t = setInterval(() => setSpinner(f => (f + 1) % SPINNER.length), 80);
+    return () => clearInterval(t);
+  }, []);
 
   // Cursor blink
   useEffect(() => {
-    const t = setInterval(() => setCursor(f => (f + 1) % CURSOR_FRAMES.length), 530);
+    const t = setInterval(() => setCursor(c => !c), 530);
     return () => clearInterval(t);
   }, []);
 
-  // Spinner
+  // Elapsed seconds counter
   useEffect(() => {
-    const t = setInterval(() => setSpinner(f => (f + 1) % SPINNER_FRAMES.length), 80);
+    const t = setInterval(() => setElapsed(e => e + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
-  // Progress fills up per stage, then advances
+  // Step advances on a realistic cadence matching actual pipeline timing
   useEffect(() => {
-    setProgress(0); setLogIdx(0); setAsciiLine(0);
-    const t = setInterval(() => {
-      setProgress(p => { if (p >= 100) { clearInterval(t); return 100; } return p + (Math.random() * 4 + 1); });
-    }, 90);
-    return () => clearInterval(t);
-  }, [stageIdx]);
-
-  useEffect(() => {
-    if (progressPct >= 100 && stageIdx < totalStages - 1) {
-      const t = setTimeout(() => setStageIdx(s => s + 1), 420);
-      return () => clearTimeout(t);
-    }
-  }, [progressPct]);
-
-  // Log lines ticker
-  useEffect(() => {
-    const t = setInterval(() => {
-      setLogIdx(i => Math.min(i + 1, stage.logLines.length - 1));
-    }, 350);
-    return () => clearInterval(t);
-  }, [stageIdx]);
-
-  // ASCII art line-by-line reveal
-  useEffect(() => {
-    setAsciiLine(0);
-    const t = setInterval(() => {
-      setAsciiLine(l => { if (l >= stage.ascii.length - 1) { clearInterval(t); return l; } return l + 1; });
-    }, 95);
-    return () => clearInterval(t);
-  }, [stageIdx]);
-
-  // Occasional random character glitch
-  useEffect(() => {
-    const t = setInterval(() => {
-      setGlitchCol(Math.floor(Math.random() * 34));
-      setTimeout(() => setGlitchCol(-1), 80);
-    }, 2400);
-    return () => clearInterval(t);
-  }, []);
-
-  const pct    = Math.min(100, Math.round(progressPct));
-  const barLen = 28;
-  const filled = Math.round((pct / 100) * barLen);
-  const stageBar = Array.from({ length: barLen }, (_, i) => {
-    if (i < filled - 1) return "█";
-    if (i === filled - 1) return PROGRESS_CHARS[2];
-    if (i === filled)     return PROGRESS_CHARS[1];
-    return "░";
-  }).join("");
-
-  const overallPct = Math.round(((stageIdx + pct / 100) / totalStages) * 100);
-  const oLen   = 60;
-  const oFilled = Math.round((overallPct / 100) * oLen);
-  const pipeBar = Array.from({ length: oLen }, (_, i) => i < oFilled ? "▪" : "·").join("");
+    const STEP_DURATIONS = [6000, 3000, 5000, 8000, 12000]; // ms per step
+    if (stepIdx >= PIPELINE_STEPS.length - 1) return;
+    const t = setTimeout(() => setStep(s => s + 1), STEP_DURATIONS[stepIdx]);
+    return () => clearTimeout(t);
+  }, [stepIdx]);
 
   const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
   const acc  = "var(--accent)";
   const grn  = "#34d399";
   const dim  = "rgba(255,255,255,0.28)";
-  const red  = "#f87171";
+
+  // ASCII progress bar: [████████░░░░]
+  const BAR_LEN  = 24;
+  const filled   = Math.round(((stepIdx + 0.5) / PIPELINE_STEPS.length) * BAR_LEN);
+  const bar      = Array.from({ length: BAR_LEN }, (_, i) => i < filled ? "█" : "░").join("");
+  const overallPct = Math.round(((stepIdx + 0.5) / PIPELINE_STEPS.length) * 100);
 
   return (
-    <div style={{ padding: "32px 0 24px", animation: "fadeUp 0.35s ease both" }}>
-
-      {/* Stage strip */}
-      <div style={{ display: "flex", gap: 0, marginBottom: 24, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-        {PIPELINE_STAGES.map((s, i) => {
-          const done   = i < stageIdx;
-          const active = i === stageIdx;
-          return (
-            <div key={s.id} style={{
-              flex: 1, padding: "8px 4px", textAlign: "center",
-              background: active ? "rgba(232,255,107,0.06)" : done ? "rgba(52,211,153,0.04)" : "transparent",
-              borderRight: i < totalStages - 1 ? "1px solid var(--border)" : "none",
-              transition: "background 0.4s",
-            }}>
-              <div style={{ fontSize: 15, marginBottom: 2, color: done ? grn : active ? acc : dim, transition: "color 0.4s" }}>
-                {done ? "✓" : active ? s.icon : "○"}
-              </div>
-              <div style={{ ...mono, fontSize: 8, fontWeight: 700, letterSpacing: "0.08em", color: done ? grn : active ? acc : dim, transition: "color 0.4s" }}>
-                {s.id.toUpperCase()}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Terminal window */}
-      <div style={{ background: "#0a0a0a", border: "1px solid rgba(232,255,107,0.18)", borderRadius: 12, overflow: "hidden", boxShadow: "0 0 40px rgba(232,255,107,0.04)" }}>
+    <div style={{ padding: "28px 0 20px", animation: "fadeUp 0.3s ease both" }}>
+      <div style={{
+        background: "#0a0a0a",
+        border: "1px solid rgba(232,255,107,0.14)",
+        borderRadius: 12,
+        overflow: "hidden",
+        maxWidth: 520,
+        margin: "0 auto",
+      }}>
 
         {/* Title bar */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: "rgba(255,255,255,0.03)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "9px 14px",
+          background: "rgba(255,255,255,0.025)",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+        }}>
           <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ff5f56" }} />
           <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ffbd2e" }} />
           <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#27c93f" }} />
-          <div style={{ ...mono, fontSize: 10, color: dim, marginLeft: 8, letterSpacing: "0.05em" }}>rack-auto-pipeline — bash</div>
-          <div style={{ marginLeft: "auto", ...mono, fontSize: 10, color: acc }}>{SPINNER_FRAMES[spinnerFrame]} running</div>
+          <span style={{ ...mono, fontSize: 10, color: dim, marginLeft: 8, letterSpacing: "0.05em" }}>
+            rack-auto-pipeline
+          </span>
+          <span style={{ ...mono, fontSize: 10, color: acc, marginLeft: "auto" }}>
+            {SPINNER[spinner]} {elapsed}s
+          </span>
         </div>
 
-        {/* Two-column body */}
-        <div style={{ display: "flex", minHeight: 250 }}>
+        {/* Step list */}
+        <div style={{ padding: "16px 20px 14px" }}>
+          {PIPELINE_STEPS.map((step, i) => {
+            const done    = i < stepIdx;
+            const active  = i === stepIdx;
+            const pending = i > stepIdx;
+            return (
+              <div key={step.id} style={{
+                display: "flex", alignItems: "flex-start", gap: 12,
+                padding: "7px 0",
+                borderBottom: i < PIPELINE_STEPS.length - 1
+                  ? "1px solid rgba(255,255,255,0.04)" : "none",
+                opacity: pending ? 0.35 : 1,
+                transition: "opacity 0.4s ease",
+              }}>
+                {/* Status glyph */}
+                <span style={{
+                  ...mono, fontSize: 12, lineHeight: "20px", minWidth: 14,
+                  color: done ? grn : active ? acc : dim,
+                }}>
+                  {done ? "✓" : active ? SPINNER[spinner] : "·"}
+                </span>
 
-          {/* Left — ASCII box art */}
-          <div style={{ flex: "0 0 44%", padding: "18px 16px", borderRight: "1px solid rgba(255,255,255,0.05)" }}>
-            <div style={{ ...mono, fontSize: 10, color: dim, marginBottom: 10, letterSpacing: "0.1em" }}>{stage.icon} {stage.label}</div>
-            <div style={{ ...mono, fontSize: 11, lineHeight: 1.75 }}>
-              {stage.ascii.map((line, li) => (
-                <div key={li} style={{ color: li <= asciiLine ? (li === asciiLine ? acc : "rgba(232,255,107,0.5)") : "transparent", transition: "color 0.15s", whiteSpace: "pre" }}>
-                  {line.split("").map((ch, ci) => (
-                    <span key={ci} style={{ color: glitchCol === ci && li === Math.floor(stage.ascii.length / 2) ? red : undefined }}>{ch}</span>
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Right — scrolling log */}
-          <div style={{ flex: 1, padding: "18px 16px", overflow: "hidden" }}>
-            <div style={{ ...mono, fontSize: 10, color: dim, marginBottom: 10, letterSpacing: "0.1em" }}>▸ LOG STREAM</div>
-            <div style={{ ...mono, fontSize: 11, lineHeight: 1.9 }}>
-              {stage.logLines.map((line, li) => {
-                const visible   = li <= logIdx;
-                const isCurrent = li === logIdx;
-                const isSkip    = line.includes("skip");
-                const isMatch   = line.startsWith("✓") || line.startsWith("→");
-                return (
-                  <div key={`${stageIdx}-${li}`} style={{ opacity: visible ? 1 : 0, transition: "opacity 0.2s", color: isSkip ? dim : isMatch ? "rgba(232,255,107,0.8)" : "rgba(255,255,255,0.55)", display: "flex", alignItems: "baseline", gap: 5 }}>
-                    <span style={{ color: dim, userSelect: "none", fontSize: 9, minWidth: 16 }}>{String(li + 1).padStart(2, "0")}</span>
-                    <span>{line}</span>
-                    {isCurrent && visible && <span style={{ color: acc, marginLeft: 2, fontSize: 13, lineHeight: 1 }}>{CURSOR_FRAMES[cursorFrame]}</span>}
+                {/* Label + detail */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    ...mono, fontSize: 12, fontWeight: 600,
+                    color: done ? grn : active ? acc : dim,
+                    marginBottom: 1,
+                  }}>
+                    {step.label}
+                    {active && <span style={{ opacity: cursor ? 1 : 0, marginLeft: 4 }}>▌</span>}
                   </div>
-                );
-              })}
-            </div>
-          </div>
+                  <div style={{
+                    ...mono, fontSize: 10,
+                    color: done ? "rgba(52,211,153,0.45)" : active ? "rgba(232,255,107,0.45)" : "transparent",
+                    transition: "color 0.3s",
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}>
+                    {step.detail}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        {/* Bottom — progress bars */}
-        <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.35)" }}>
-          {/* Stage info + percent */}
-          <div style={{ display: "flex", alignItems: "center", marginBottom: 7 }}>
-            <span style={{ ...mono, fontSize: 10, color: acc, letterSpacing: "0.04em" }}>{stage.detail}</span>
-            <span style={{ ...mono, fontSize: 10, color: dim, marginLeft: "auto" }}>stage {stageIdx + 1}/{totalStages} · {overallPct}%</span>
-          </div>
-
-          {/* Chunky stage bar  [████████░░░░]  */}
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <span style={{ ...mono, fontSize: 13, color: acc, whiteSpace: "pre", letterSpacing: "-0.02em", textShadow: "0 0 14px rgba(232,255,107,0.55)" }}>
-              [{stageBar}]
-            </span>
-            <span style={{ ...mono, fontSize: 10, color: acc, minWidth: 32, textAlign: "right" }}>{pct}%</span>
-          </div>
-
-          {/* Dotted overall pipeline bar  pipeline ▪▪▪▪···· 40%  */}
-          <div style={{ ...mono, fontSize: 9, color: "rgba(255,255,255,0.2)", whiteSpace: "pre", letterSpacing: "0.01em" }}>
-            {"pipeline  "}{pipeBar}{"  "}{overallPct}%
+        {/* Progress bar footer */}
+        <div style={{
+          padding: "10px 20px 12px",
+          borderTop: "1px solid rgba(255,255,255,0.05)",
+          background: "rgba(0,0,0,0.3)",
+        }}>
+          <div style={{ ...mono, fontSize: 11, color: acc, whiteSpace: "pre", letterSpacing: "-0.01em" }}>
+            [{bar}] {String(overallPct).padStart(3, " ")}%
           </div>
         </div>
-      </div>
-
-      {/* Footer label */}
-      <div style={{ textAlign: "center", marginTop: 14, ...mono, fontSize: 11, color: dim, letterSpacing: "0.1em" }}>
-        {SPINNER_FRAMES[spinnerFrame]}&nbsp;&nbsp;
-        <span style={{ color: acc }}>{stage.label}</span>
-        &nbsp;—&nbsp;{stage.detail.toLowerCase()}
       </div>
     </div>
   );

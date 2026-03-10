@@ -28,374 +28,149 @@ function componentBar(label, value, color) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   JD MATCH PIPELINE ANIMATION — updated with LLM stage
+   JD MATCH PIPELINE ANIMATION — minimal ASCII pipeline status
    ══════════════════════════════════════════════════════════════════ */
-const JD_STAGES = [
-  {
-    id: "parse", label: "PARSING JD", icon: "◈",
-    detail: "Extracting role, skills, experience requirements",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  POST /api/match                 │",
-      "│  body: { job_description, ... }  │",
-      "│                                  │",
-      "│  jd_parser.py                    │",
-      "│    ├─ rule_extractor()           │",
-      "│    └─ llm_extractor()  ← hybrid  │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "→ received JD  (1,842 chars)",
-      "→ cleaning: strip HTML / whitespace",
-      "→ rule pass: title='Senior SWE'",
-      "  min_years: 3  |  level: senior",
-      "→ skills regex: 14 candidates",
-      "  Python ✓  FastAPI ✓  Docker ✓",
-      "  Kubernetes ✓  PostgreSQL ✓",
-      "→ llm pass: confirming + filling gaps",
-    ],
-  },
-  {
-    id: "embed", label: "FAISS LOOKUP", icon: "◎",
-    detail: "Encoding JD → 384-dim vector → cosine search",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  model: all-MiniLM-L6-v2         │",
-      "│  dim:   384                      │",
-      "│                                  │",
-      "│  JD text ──► tokenize            │",
-      "│           ──► encode             │",
-      "│           ──► vec[384]           │",
-      "│  FAISS.search(vec, top_k=20)     │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "→ tokenizing JD text...",
-      "  tokens: 312  |  truncated: no",
-      "→ encoding  [████████████████████]",
-      "  vec[0..4]: [0.231,-0.087,0.412…]",
-      "  vec norm:  0.9997",
-      "→ FAISS index: 18 vectors loaded",
-      "→ cosine search  top_k=20",
-      "  top hit: 0.871 · resume_a chunk 2",
-    ],
-  },
-  {
-    id: "hybrid", label: "HYBRID SCORE", icon: "◆",
-    detail: "4-component weighted scorer per resume",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  semantic_sim  × 0.40  → 0.848  │",
-      "│  skill_overlap × 0.30  → 0.733  │",
-      "│  exp_match     × 0.20  → 0.800  │",
-      "│  kw_position   × 0.10  → 0.690  │",
-      "│  ────────────────────────────── │",
-      "│  hybrid_score          → 0.791  │",
-      "│  qualifies for Phase 2 ✓        │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "→ resume_a: skill pass 1 (canonical)",
-      "  ✓ Python  ✓ FastAPI  ✓ Docker",
-      "  ✗ Terraform  ✗ Kubernetes",
-      "→ skill pass 2 (text fallback scan)",
-      "  'k8s' alias → Kubernetes ✓",
-      "→ exp_match: 5yr vs 3yr req → 1.0",
-      "→ hybrid_score: 79%",
-      "  → Phase 2 LLM queue ✓",
-    ],
-  },
-  {
-    id: "llm", label: "LLM SCORING", icon: "✦",
-    detail: "GPT-4o-mini deep scorer · holistic fit analysis",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  model: gpt-4o-mini              │",
-      "│  concurrency: 8 parallel calls   │",
-      "│                                  │",
-      "│  skills_fit:      85             │",
-      "│  experience_fit:  72             │",
-      "│  trajectory_fit:  65             │",
-      "│  llm_score:  ──►  78            │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "→ building JD + resume context",
-      "  jd_summary: ~310 tokens",
-      "  resume_summary: ~390 tokens",
-      "→ calling gpt-4o-mini...",
-      "  hybrid anchor: 79%",
-      "→ response received (0.8s)",
-      "  llm_score: 78  recommendation: Good Match",
-      "✓ AI analysis complete",
-    ],
-  },
-  {
-    id: "rank", label: "RANKING", icon: "▲",
-    detail: "Re-ranking by LLM score · building response",
-    ascii: [
-      "┌──────────────────────────────────┐",
-      "│  ranked by llm_score (primary)   │",
-      "│                                  │",
-      "│  #1  llm: 78  resume_a  ← best  │",
-      "│  #2  llm: 64  resume_c           │",
-      "│  #3  llm: 51  resume_b           │",
-      "│                                  │",
-      "│  payload → UI  ✓                 │",
-      "└──────────────────────────────────┘",
-    ],
-    logLines: [
-      "→ ranked 3 resumes by llm_score",
-      "  #1 resume_a  78%  Strong Match",
-      "  #2 resume_c  64%  Partial Match",
-      "  #3 resume_b  51%  Weak Match",
-      "→ attaching AI analysis blocks...",
-      "→ attaching hybrid baseline...",
-      "→ serialising response payload",
-      "✓ done · pipeline complete",
-    ],
-  },
+const JD_STEPS = [
+  { id: "parse",  label: "Parsing job description",      detail: "rule extractor + LLM hybrid · jd_parser.py"    },
+  { id: "embed",  label: "Embedding & FAISS search",     detail: "all-MiniLM-L6-v2 · 384-dim · top_k=20"         },
+  { id: "hybrid", label: "Hybrid scoring",               detail: "semantic + skills + experience + kw · 4-component" },
+  { id: "llm",    label: "LLM deep score",               detail: "GPT-4o-mini · skills_fit / exp_fit / trajectory" },
+  { id: "rank",   label: "Ranking results",              detail: "re-rank by llm_score · building response"       },
 ];
 
-const J_CURSOR  = ["█","▓","░"," "];
-const J_SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-const J_PROGCH  = ["░","▒","▓","█"];
+const JD_SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+// LLM step gets purple accent, rest get yellow-green
+const JD_STEP_COLOR = { llm: "#a78bfa" };
 
 function JDPipelineAnimation() {
-  const [stageIdx, setStageIdx]   = useState(0);
-  const [logIdx,   setLogIdx]     = useState(0);
-  const [cursor,   setCursor]     = useState(0);
-  const [spinner,  setSpinner]    = useState(0);
-  const [progress, setProgress]   = useState(0);
-  const [asciiLine,setAsciiLine]  = useState(0);
-  const [glitchCol,setGlitchCol]  = useState(-1);
-  const [glitchRow,setGlitchRow]  = useState(-1);
+  const [stepIdx, setStep]    = useState(0);
+  const [spinner, setSpinner] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  const [cursor,  setCursor]  = useState(true);
 
-  const totalStages = JD_STAGES.length;
-  const safeIdx = Math.min(stageIdx, totalStages - 1);
-  const stage   = JD_STAGES[safeIdx];
-
+  // Spinner tick
   useEffect(() => {
-    const t = setInterval(() => setCursor(f => (f+1) % J_CURSOR.length), 520);
+    const t = setInterval(() => setSpinner(f => (f + 1) % JD_SPINNER.length), 75);
     return () => clearInterval(t);
   }, []);
 
+  // Cursor blink
   useEffect(() => {
-    const t = setInterval(() => setSpinner(f => (f+1) % J_SPINNER.length), 75);
+    const t = setInterval(() => setCursor(c => !c), 520);
     return () => clearInterval(t);
   }, []);
 
+  // Elapsed seconds
   useEffect(() => {
-    setProgress(0); setLogIdx(0); setAsciiLine(0);
-    const t = setInterval(() => {
-      setProgress(p => {
-        if (p >= 100) { clearInterval(t); return 100; }
-        return Math.min(100, p + (Math.random() * 4.5 + 1.2));
-      });
-    }, 85);
+    const t = setInterval(() => setElapsed(e => e + 1), 1000);
     return () => clearInterval(t);
-  }, [stageIdx]);
+  }, []);
 
+  // Step durations calibrated to actual pipeline timing
   useEffect(() => {
-    if (progress >= 100 && stageIdx < totalStages - 1) {
-      const t = setTimeout(() => setStageIdx(s => Math.min(s + 1, totalStages - 1)), 380);
-      return () => clearTimeout(t);
-    }
-  }, [progress, stageIdx, totalStages]);
+    const STEP_MS = [2500, 3000, 3500, 8000, 1500]; // parse, embed, hybrid, llm, rank
+    if (stepIdx >= JD_STEPS.length - 1) return;
+    const t = setTimeout(() => setStep(s => s + 1), STEP_MS[stepIdx]);
+    return () => clearTimeout(t);
+  }, [stepIdx]);
 
-  useEffect(() => {
-    setLogIdx(0);
-    const lines = JD_STAGES[Math.min(stageIdx, totalStages-1)].logLines;
-    const t = setInterval(() => {
-      setLogIdx(i => {
-        if (i >= lines.length - 1) { clearInterval(t); return i; }
-        return i + 1;
-      });
-    }, 320);
-    return () => clearInterval(t);
-  }, [stageIdx]);
-
-  useEffect(() => {
-    setAsciiLine(0);
-    const lines = JD_STAGES[Math.min(stageIdx, totalStages-1)].ascii;
-    const t = setInterval(() => {
-      setAsciiLine(l => {
-        if (l >= lines.length - 1) { clearInterval(t); return l; }
-        return l + 1;
-      });
-    }, 90);
-    return () => clearInterval(t);
-  }, [stageIdx]);
-
-  useEffect(() => {
-    const asciiLen = JD_STAGES[Math.min(stageIdx, totalStages-1)].ascii.length;
-    const t = setInterval(() => {
-      const row = Math.floor(Math.random() * asciiLen);
-      const col = Math.floor(Math.random() * 36);
-      setGlitchCol(col); setGlitchRow(row);
-      setTimeout(() => { setGlitchCol(-1); setGlitchRow(-1); }, 75);
-    }, 2200);
-    return () => clearInterval(t);
-  }, [stageIdx]);
-
-  const pct     = Math.min(100, Math.round(progress));
-  const barLen  = 26;
-  const filled  = Math.round((pct/100) * barLen);
-  const stageBar = Array.from({length: barLen}, (_, i) => {
-    if (i < filled-1) return "█";
-    if (i === filled-1) return J_PROGCH[2];
-    if (i === filled)   return J_PROGCH[1];
-    return "░";
-  }).join("");
-
-  const overallPct = Math.round(((stageIdx + pct/100) / totalStages) * 100);
-  const oLen       = 50;
-  const oFilled    = Math.round((overallPct/100) * oLen);
-  const pipeBar    = Array.from({length: oLen}, (_, i) => i < oFilled ? "▪" : "·").join("");
-
-  const mono = { fontFamily:"'JetBrains Mono','Fira Code','Courier New',monospace" };
+  const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
   const acc  = "var(--accent)";
   const grn  = "#34d399";
   const dim  = "rgba(255,255,255,0.28)";
-  const mid  = "rgba(255,255,255,0.55)";
-  const red  = "#f87171";
-  const ylw  = "rgba(232,255,107,0.82)";
-  const isLLMStage = stage.id === "llm";
+
+  const BAR_LEN    = 24;
+  const filled     = Math.round(((stepIdx + 0.5) / JD_STEPS.length) * BAR_LEN);
+  const bar        = Array.from({ length: BAR_LEN }, (_, i) => i < filled ? "█" : "░").join("");
+  const overallPct = Math.round(((stepIdx + 0.5) / JD_STEPS.length) * 100);
 
   return (
-    <div style={{ width:"100%", maxWidth:"720px", margin:"0 auto", padding:"28px 0 8px", animation:"fadeUp 0.35s ease both" }}>
-
-      {/* Stage strip */}
-      <div style={{ display:"flex", gap:0, marginBottom:20, border:"1px solid var(--border)", borderRadius:10, overflow:"hidden" }}>
-        {JD_STAGES.map((s,i) => {
-          const done   = i < stageIdx;
-          const active = i === stageIdx;
-          const isLLM  = s.id === "llm";
-          const activeColor = isLLM ? "#a78bfa" : acc;
-          return (
-            <div key={s.id} style={{
-              flex:1, padding:"8px 2px", textAlign:"center",
-              background: active ? (isLLM ? "rgba(167,139,250,0.06)" : "rgba(232,255,107,0.06)") : done ? "rgba(52,211,153,0.04)" : "transparent",
-              borderRight: i < totalStages-1 ? "1px solid var(--border)" : "none",
-              transition:"background 0.4s",
-            }}>
-              <div style={{ fontSize:14, marginBottom:2, color: done?grn : active?activeColor : dim, transition:"color 0.4s" }}>
-                {done ? "✓" : active ? s.icon : "○"}
-              </div>
-              <div style={{ ...mono, fontSize:8, fontWeight:700, letterSpacing:"0.06em", color: done?grn : active?activeColor : dim, transition:"color 0.4s" }}>
-                {s.id.toUpperCase()}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Terminal window */}
+    <div style={{ width: "100%", maxWidth: "520px", margin: "0 auto", padding: "28px 0 8px", animation: "fadeUp 0.35s ease both" }}>
       <div style={{
-        background:"#080808",
-        border:`1px solid ${isLLMStage ? "rgba(167,139,250,0.2)" : "rgba(232,255,107,0.16)"}`,
-        borderRadius:13, overflow:"hidden",
-        boxShadow: isLLMStage
-          ? "0 0 48px rgba(167,139,250,0.06), 0 16px 60px rgba(0,0,0,0.6)"
-          : "0 0 48px rgba(232,255,107,0.04), 0 16px 60px rgba(0,0,0,0.6)",
-        transition:"border-color 0.4s, box-shadow 0.4s",
+        background: "#0a0a0a",
+        border: "1px solid rgba(232,255,107,0.14)",
+        borderRadius: 12,
+        overflow: "hidden",
       }}>
 
         {/* Title bar */}
-        <div style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 14px", background:"rgba(255,255,255,0.025)", borderBottom:"1px solid rgba(255,255,255,0.06)" }}>
-          <div style={{ width:9, height:9, borderRadius:"50%", background:"#ff5f56" }}/>
-          <div style={{ width:9, height:9, borderRadius:"50%", background:"#ffbd2e" }}/>
-          <div style={{ width:9, height:9, borderRadius:"50%", background:"#27c93f" }}/>
-          <div style={{ ...mono, fontSize:10, color:dim, marginLeft:8, letterSpacing:"0.05em" }}>rack-match-pipeline — bash</div>
-          <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
-            <span style={{ ...mono, fontSize:10, color: isLLMStage ? "#a78bfa" : acc }}>{J_SPINNER[spinner]}</span>
-            <span style={{ ...mono, fontSize:10, color:dim }}>running</span>
-          </div>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "9px 14px",
+          background: "rgba(255,255,255,0.025)",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+        }}>
+          <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ff5f56" }} />
+          <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ffbd2e" }} />
+          <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#27c93f" }} />
+          <span style={{ ...mono, fontSize: 10, color: dim, marginLeft: 8, letterSpacing: "0.05em" }}>
+            rack-match-pipeline
+          </span>
+          <span style={{ ...mono, fontSize: 10, color: acc, marginLeft: "auto" }}>
+            {JD_SPINNER[spinner]} {elapsed}s
+          </span>
         </div>
 
-        {/* Two-column body */}
-        <div style={{ display:"flex", minHeight:220 }}>
+        {/* Step list */}
+        <div style={{ padding: "16px 20px 14px" }}>
+          {JD_STEPS.map((step, i) => {
+            const done    = i < stepIdx;
+            const active  = i === stepIdx;
+            const pending = i > stepIdx;
+            const color   = JD_STEP_COLOR[step.id] || acc;
+            return (
+              <div key={step.id} style={{
+                display: "flex", alignItems: "flex-start", gap: 12,
+                padding: "7px 0",
+                borderBottom: i < JD_STEPS.length - 1
+                  ? "1px solid rgba(255,255,255,0.04)" : "none",
+                opacity: pending ? 0.35 : 1,
+                transition: "opacity 0.4s ease",
+              }}>
+                {/* Status glyph */}
+                <span style={{
+                  ...mono, fontSize: 12, lineHeight: "20px", minWidth: 14,
+                  color: done ? grn : active ? color : dim,
+                }}>
+                  {done ? "✓" : active ? JD_SPINNER[spinner] : "·"}
+                </span>
 
-          {/* Left — ASCII box art */}
-          <div style={{ flex:"0 0 46%", padding:"16px 16px", borderRight:"1px solid rgba(255,255,255,0.05)" }}>
-            <div style={{ ...mono, fontSize:9, color:dim, marginBottom:10, letterSpacing:"0.1em", textTransform:"uppercase" }}>
-              {stage.icon}  {stage.label}
-            </div>
-            <div style={{ ...mono, fontSize:11, lineHeight:1.8 }}>
-              {stage.ascii.map((line, li) => {
-                const revealed = li <= asciiLine;
-                const isCur    = li === asciiLine;
-                const lineAcc  = isLLMStage ? "#a78bfa" : acc;
-                const lineRevealedColor = isLLMStage ? "rgba(167,139,250,0.45)" : "rgba(232,255,107,0.45)";
-                return (
-                  <div key={li} style={{ color: revealed ? (isCur ? lineAcc : lineRevealedColor) : "transparent", transition:"color 0.12s", whiteSpace:"pre" }}>
-                    {line.split("").map((ch, ci) => (
-                      <span key={ci} style={{
-                        color: (glitchCol===ci && glitchRow===li) ? red : undefined,
-                        transition: "color 0.05s",
-                      }}>{ch}</span>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Right — log stream */}
-          <div style={{ flex:1, padding:"16px 16px", overflow:"hidden" }}>
-            <div style={{ ...mono, fontSize:9, color:dim, marginBottom:10, letterSpacing:"0.1em" }}>▸ LOG STREAM</div>
-            <div style={{ ...mono, fontSize:11, lineHeight:2.0 }}>
-              {stage.logLines.map((line, li) => {
-                const visible   = li <= logIdx;
-                const isCurrent = li === logIdx;
-                const isSkip    = line.includes("skip") || line.startsWith("  ✗");
-                const isBright  = line.startsWith("✓") || line.startsWith("→") || line.includes("✓");
-                const isIndent  = line.startsWith("  ");
-                const lineColor = isSkip ? dim : isBright ? ylw : isIndent ? mid : "rgba(255,255,255,0.60)";
-                const cursorColor = isLLMStage ? "#a78bfa" : acc;
-                return (
-                  <div key={`${stageIdx}-${li}`} style={{
-                    opacity: visible ? 1 : 0, transition:"opacity 0.18s",
-                    color: lineColor,
-                    display:"flex", alignItems:"baseline", gap:5,
+                {/* Label + detail */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    ...mono, fontSize: 12, fontWeight: 600,
+                    color: done ? grn : active ? color : dim,
+                    marginBottom: 1,
                   }}>
-                    <span style={{ color:dim, userSelect:"none", fontSize:9, minWidth:16, flexShrink:0 }}>
-                      {String(li+1).padStart(2,"0")}
-                    </span>
-                    <span style={{ whiteSpace:"pre" }}>{line}</span>
-                    {isCurrent && visible && (
-                      <span style={{ color:cursorColor, marginLeft:2, fontSize:13, lineHeight:1 }}>
-                        {J_CURSOR[cursor]}
-                      </span>
-                    )}
+                    {step.label}
+                    {active && <span style={{ opacity: cursor ? 1 : 0, marginLeft: 4 }}>▌</span>}
                   </div>
-                );
-              })}
-            </div>
-          </div>
+                  <div style={{
+                    ...mono, fontSize: 10,
+                    color: done
+                      ? "rgba(52,211,153,0.45)"
+                      : active
+                        ? (JD_STEP_COLOR[step.id] ? "rgba(167,139,250,0.45)" : "rgba(232,255,107,0.45)")
+                        : "transparent",
+                    transition: "color 0.3s",
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}>
+                    {step.detail}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        {/* Progress bars */}
-        <div style={{ padding:"12px 16px 14px", borderTop:"1px solid rgba(255,255,255,0.05)", background:"rgba(0,0,0,0.4)" }}>
-          <div style={{ display:"flex", alignItems:"center", marginBottom:8 }}>
-            <span style={{ ...mono, fontSize:10, color: isLLMStage ? "#a78bfa" : acc, letterSpacing:"0.03em" }}>
-              {J_SPINNER[spinner]}&nbsp;&nbsp;{stage.detail}
-            </span>
-            <span style={{ ...mono, fontSize:10, color:dim, marginLeft:"auto" }}>
-              stage {stageIdx+1}/{totalStages} · {overallPct}%
-            </span>
-          </div>
-
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:7 }}>
-            <span style={{ ...mono, fontSize:12, color: isLLMStage ? "#a78bfa" : acc, whiteSpace:"pre", letterSpacing:"-0.01em",
-              textShadow: isLLMStage ? "0 0 16px rgba(167,139,250,0.6)" : "0 0 16px rgba(232,255,107,0.6)" }}>
-              [{stageBar}]
-            </span>
-            <span style={{ ...mono, fontSize:10, color: isLLMStage ? "#a78bfa" : acc, minWidth:30, textAlign:"right" }}>{pct}%</span>
-          </div>
-
-          <div style={{ ...mono, fontSize:9, color:"rgba(255,255,255,0.18)", whiteSpace:"pre", letterSpacing:"0.01em" }}>
-            {"pipeline  "}{pipeBar}{"  "}{overallPct}%
+        {/* Progress bar footer */}
+        <div style={{
+          padding: "10px 20px 12px",
+          borderTop: "1px solid rgba(255,255,255,0.05)",
+          background: "rgba(0,0,0,0.3)",
+        }}>
+          <div style={{ ...mono, fontSize: 11, color: acc, whiteSpace: "pre", letterSpacing: "-0.01em" }}>
+            [{bar}] {String(overallPct).padStart(3, " ")}%
           </div>
         </div>
       </div>
