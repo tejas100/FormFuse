@@ -189,7 +189,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
             <div style={{
               fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 700,
               color: "var(--text)", letterSpacing: "-0.3px",
-              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              wordBreak: "break-word", overflowWrap: "break-word",
             }}>
               {match.job_title}
             </div>
@@ -879,7 +879,7 @@ function ArchiveModal({ onClose }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{
                       fontSize: 13, fontWeight: 600, fontFamily: "var(--font-display)",
-                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                      wordBreak: "break-word", overflowWrap: "break-word",
                       textDecoration: job.applied ? "line-through" : "none", opacity: job.applied ? 0.5 : 1,
                     }}>{job.job_title}</div>
                     <div style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", gap: 6, marginTop: 2, flexWrap: "wrap" }}>
