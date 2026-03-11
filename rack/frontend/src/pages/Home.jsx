@@ -1,7 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
 
 const mobileCardStyles = `
+  @keyframes smoothExpand {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
   @media (max-width: 600px) {
+    /* Result cards */
     .rack-card-collapsed-skills { display: none !important; }
     .rack-card-rank { font-size: 16px !important; min-width: 28px !important; }
     .rack-card-name { font-size: 14px !important; }
@@ -10,8 +16,67 @@ const mobileCardStyles = `
     .rack-card-badges { gap: 5px !important; margin-bottom: 5px !important; }
     .rack-card-row { gap: 10px !important; }
     .rack-card-padding { padding: 13px 14px !important; border-radius: 12px !important; }
+
+    /* Input box stretch: fills remaining height when no results */
+    .rack-input-box-stretch {
+      flex: 1 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      min-height: 0 !important;
+      max-height: none !important;
+    }
+
+    /* Input box: completely hidden on mobile when results are present — MUST be after stretch rule */
+    .rack-input-hide-mobile { display: none !important; }
+
+    /* JD Analysis: single scrollable row of chips */
+    .rack-jd-chips {
+      flex-wrap: nowrap !important;
+      overflow-x: auto !important;
+      -webkit-overflow-scrolling: touch !important;
+      scrollbar-width: none !important;
+      padding-bottom: 2px !important;
+    }
+    .rack-jd-chips::-webkit-scrollbar { display: none !important; }
+    .rack-jd-chip {
+      font-size: 10px !important;
+      padding: 2px 8px !important;
+      white-space: nowrap !important;
+      flex-shrink: 0 !important;
+    }
+
+    /* Desktop job title above JD block: hide on mobile (title pill handles it) */
+    .rack-jd-desktop-title { display: none !important; }
+
+    /* Page root: flex column so input can stretch */
+    .rack-page-root { overflow-y: hidden !important; }
+    .rack-page-root.rack-no-results {
+      display: flex !important;
+      flex-direction: column !important;
+    }
+    .rack-page-root.rack-has-results {
+      overflow-y: auto !important;
+    }
+    .rack-hero-block { flex-shrink: 0; }
+    .rack-textarea-stretch {
+      flex: 1 !important;
+      min-height: 0 !important;
+      max-height: none !important;
+      height: 100% !important;
+    }
   }
-`
+
+  @media (min-width: 601px) {
+    /* Mobile title pill: hidden on desktop */
+    .rack-mobile-title-pill { display: none !important; }
+    /* Legacy mobile header: hidden on desktop */
+    .rack-input-job-header { display: none !important; }
+  }
+
+  /* Smooth expand panel */
+  .rack-expand-panel {
+    animation: smoothExpand 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }`
 
 function scoreColor(score) {
   if (score >= 85) return 'linear-gradient(90deg,#e8ff6b,#a3e635)'
@@ -199,9 +264,19 @@ export default function Home() {
   const [meta, setMeta] = useState(null)
   const [error, setError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
+  const [resumeCount, setResumeCount] = useState(null)
+  const [resumeWarning, setResumeWarning] = useState(false)
+
+  useEffect(() => {
+    fetch('http://localhost:8000/api/resumes')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setResumeCount(Array.isArray(data) ? data.length : 0))
+      .catch(() => setResumeCount(0))
+  }, [])
 
   const handleMatch = async () => {
     if (!jd.trim() || loading) return
+    if (resumeCount === 0) { setResumeWarning(true); return }
     setLoading(true)
     setResults(null)
     setJdParsed(null)
@@ -232,18 +307,21 @@ export default function Home() {
   }
 
   return (
-    <div style={{
-      position: 'absolute', inset: 0, display: 'flex',
+    <div className={`rack-page-root${!results && !error ? ' rack-no-results' : ' rack-has-results'}`} style={{
+      position: 'fixed', inset: 0,
+      display: 'flex',
       flexDirection: 'column', alignItems: 'center',
       justifyContent: 'flex-start',
       padding: '20px',
       paddingTop: 'var(--page-padding-top)',
       paddingBottom: 'var(--page-padding-bottom)',
       overflowY: 'auto',
-      animation: 'fadeUp 0.4s ease both'
+      animation: 'fadeUp 0.4s ease both',
+      height: '100dvh',
     }}>
+      <style>{mobileCardStyles}</style>
       {!results && !error && (
-        <div style={{ textAlign: 'center', marginBottom: '40px', animation: 'fadeUp 0.5s ease 0.1s both' }}>
+        <div className="rack-hero-block" style={{ textAlign: 'center', marginBottom: '40px', animation: 'fadeUp 0.5s ease 0.1s both' }}>
           <div style={{
             fontSize: '11px', fontWeight: 500, letterSpacing: '0.18em',
             textTransform: 'uppercase', color: 'var(--accent)', marginBottom: '14px',
@@ -270,15 +348,54 @@ export default function Home() {
         </div>
       )}
 
-      {/* Input box */}
-      <div style={{
+      {/* Mobile: clean job title pill shown INSTEAD of input box after results load */}
+      {results && jdParsed?.title && (
+        <div className="rack-mobile-title-pill" style={{
+          display: 'none', /* shown via CSS on mobile only */
+          width: '100%', maxWidth: '720px',
+          alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+          marginBottom: '4px',
+          animation: 'fadeUp 0.3s ease both',
+        }}>
+          <span style={{
+            fontFamily: 'var(--font-display)', fontSize: '18px', fontWeight: 800,
+            color: 'var(--accent)', letterSpacing: '-0.5px',
+            flex: 1, lineHeight: 1.2,
+            wordBreak: 'break-word', overflowWrap: 'break-word',
+          }}>
+            {jdParsed.title}
+          </span>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
+            {jdParsed.min_years && (
+              <span style={{
+                fontSize: '11px', padding: '3px 9px', borderRadius: '20px',
+                background: 'rgba(232,255,107,0.1)', color: 'var(--accent)',
+                border: '1px solid rgba(232,255,107,0.25)', fontWeight: 600,
+              }}>
+                {jdParsed.min_years}+ yrs
+              </span>
+            )}
+            <button onClick={() => { setResults(null); setJdParsed(null); setMeta(null) }} style={{
+              fontSize: '10px', padding: '3px 9px', borderRadius: '20px',
+              background: 'rgba(255,255,255,0.06)', color: 'var(--text-dim)',
+              border: '1px solid var(--border)', fontWeight: 500, cursor: 'pointer',
+            }}>
+              ✕ new
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Input box — hidden on mobile when results are present */}
+      <div className={`rack-input-box-stretch${results ? ' rack-input-hide-mobile' : ''}`} style={{
         width: '100%', maxWidth: '720px',
         background: 'var(--surface)', border: '1px solid var(--border-bright)',
         borderRadius: 'var(--radius)', overflow: 'hidden',
         boxShadow: '0 24px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
         animation: 'fadeUp 0.5s ease 0.2s both'
       }}>
-        <div style={{
+        {/* Desktop: macOS dots bar */}
+        <div className="rack-input-dots-bar" style={{
           display: 'flex', alignItems: 'center', gap: '10px',
           padding: '14px 18px', borderBottom: '1px solid var(--border)',
           background: 'rgba(255,255,255,0.02)'
@@ -292,6 +409,7 @@ export default function Home() {
         </div>
 
         <textarea
+          className="rack-textarea-stretch"
           style={{
             width: '100%', minHeight: results ? '80px' : '180px', maxHeight: '320px',
             background: 'transparent', border: 'none', outline: 'none',
@@ -302,17 +420,19 @@ export default function Home() {
           }}
           placeholder="Paste the job description here… (⌘+Enter to match)"
           value={jd}
-          onChange={e => setJd(e.target.value)}
+          onChange={e => { setJd(e.target.value); setResumeWarning(false) }}
           onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleMatch() }}
         />
 
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '12px 16px', borderTop: '1px solid var(--border)',
-          background: 'rgba(255,255,255,0.015)'
+          background: 'rgba(255,255,255,0.015)', flexWrap: 'wrap', gap: '8px'
         }}>
-          <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-            {jd.length > 0 ? `${jd.length} chars` : 'Empty'}
+          <span style={{ fontSize: '12px', color: resumeWarning ? '#fbbf24' : 'var(--text-dim)', transition: 'color 0.2s' }}>
+            {resumeWarning
+              ? '⚠ Upload at least one resume in the Resumes tab first.'
+              : jd.length > 0 ? `${jd.length} chars` : 'Empty'}
           </span>
           <button onClick={handleMatch} disabled={!jd.trim() || loading} style={{
             display: 'flex', alignItems: 'center', gap: '10px',
@@ -350,69 +470,90 @@ export default function Home() {
 
       {/* JD Parse Summary */}
       {jdParsed && results && (
-        <div style={{
-          width: '100%', maxWidth: '720px', marginTop: '20px',
-          padding: '14px 18px', borderRadius: '12px',
-          background: 'rgba(232,255,107,0.03)', border: '1px solid rgba(232,255,107,0.12)',
-          animation: 'fadeUp 0.3s ease both',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent)' }}>
-              JD Analysis
-            </span>
-            <span style={{
-              fontSize: '10px', padding: '2px 8px', borderRadius: '10px',
-              background: jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.12)' : 'rgba(255,255,255,0.06)',
-              color: jdParsed.extraction_method === 'hybrid' ? 'var(--accent3)' : 'var(--text-dim)',
-              border: `1px solid ${jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.08)'}`,
-              fontWeight: 600,
+        <>
+          {/* Desktop: job title above the JD analysis block */}
+          {jdParsed.title && (
+            <div className="rack-jd-desktop-title" style={{
+              width: '100%', maxWidth: '720px', marginTop: '20px',
+              display: 'flex', alignItems: 'baseline', gap: '10px',
             }}>
-              {jdParsed.extraction_method === 'hybrid' ? 'Rule + LLM' : 'Rule-based'}
-            </span>
-            {meta?.llm_scored > 0 && (
               <span style={{
-                fontSize: '10px', padding: '2px 8px', borderRadius: '10px',
-                background: 'rgba(167,139,250,0.12)', color: '#a78bfa',
-                border: '1px solid rgba(167,139,250,0.22)', fontWeight: 600,
+                fontFamily: 'var(--font-display)', fontSize: '18px', fontWeight: 700,
+                color: 'var(--text)', letterSpacing: '-0.3px',
               }}>
-                ✦ {meta.llm_scored} AI-scored
-              </span>
-            )}
-            {meta && (
-              <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-dim)' }}>
-                {meta.pipeline_time_ms}ms
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-            {jdParsed.title && (
-              <span style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', borderRadius: '20px', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', border: '1px solid var(--border)' }}>
                 {jdParsed.title}
               </span>
-            )}
-            {jdParsed.min_years && (
-              <span style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', borderRadius: '20px', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', border: '1px solid var(--border)' }}>
-                {jdParsed.min_years}+ yrs
+              {jdParsed.min_years && (
+                <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 400 }}>
+                  · {jdParsed.min_years}+ yrs exp required
+                </span>
+              )}
+            </div>
+          )}
+
+          <div style={{
+            width: '100%', maxWidth: '720px', marginTop: jdParsed.title ? '8px' : '20px',
+            padding: '12px 16px', borderRadius: '12px',
+            background: 'rgba(232,255,107,0.03)', border: '1px solid rgba(232,255,107,0.12)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent)' }}>
+                JD Analysis
               </span>
-            )}
-            {(jdParsed.required_skills || []).slice(0, 6).map(s => (
-              <span key={s} style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', borderRadius: '20px', background: 'rgba(232,255,107,0.06)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.15)' }}>
-                {s}
+              <span style={{
+                fontSize: '10px', padding: '2px 8px', borderRadius: '10px',
+                background: jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.12)' : 'rgba(255,255,255,0.06)',
+                color: jdParsed.extraction_method === 'hybrid' ? 'var(--accent3)' : 'var(--text-dim)',
+                border: `1px solid ${jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.08)'}`,
+                fontWeight: 600,
+              }}>
+                {jdParsed.extraction_method === 'hybrid' ? 'Rule + LLM' : 'Rule-based'}
               </span>
-            ))}
-            {(jdParsed.required_skills || []).length > 6 && (
-              <span style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', color: 'var(--text-dim)' }}>
-                +{jdParsed.required_skills.length - 6} more
-              </span>
-            )}
+              {meta?.llm_scored > 0 && (
+                <span style={{
+                  fontSize: '10px', padding: '2px 8px', borderRadius: '10px',
+                  background: 'rgba(167,139,250,0.12)', color: '#a78bfa',
+                  border: '1px solid rgba(167,139,250,0.22)', fontWeight: 600,
+                }}>
+                  ✦ {meta.llm_scored} AI-scored
+                </span>
+              )}
+              {meta && (
+                <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-dim)' }}>
+                  {meta.pipeline_time_ms}ms
+                </span>
+              )}
+            </div>
+            {/* Chips row: wraps on desktop, scrolls horizontally on mobile */}
+            <div className="rack-jd-chips" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {jdParsed.title && (
+                <span className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', borderRadius: '20px', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                  {jdParsed.title}
+                </span>
+              )}
+              {jdParsed.min_years && (
+                <span className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', borderRadius: '20px', background: 'rgba(255,255,255,0.06)', color: 'var(--text)', border: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                  {jdParsed.min_years}+ yrs
+                </span>
+              )}
+              {(jdParsed.required_skills || []).slice(0, 6).map(s => (
+                <span key={s} className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', borderRadius: '20px', background: 'rgba(232,255,107,0.06)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.15)', whiteSpace: 'nowrap' }}>
+                  {s}
+                </span>
+              ))}
+              {(jdParsed.required_skills || []).length > 6 && (
+                <span className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '3px 10px', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                  +{jdParsed.required_skills.length - 6} more
+                </span>
+              )}
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* Results */}
       {results && results.length > 0 && (
         <div style={{ width: '100%', maxWidth: '720px', marginTop: '16px', animation: 'matchReveal 0.5s ease both' }}>
-          <style>{mobileCardStyles}</style>
           <div style={{ fontFamily:'var(--font-display)', fontSize:'13px', fontWeight:600, letterSpacing:'0.1em', textTransform:'uppercase', color:'var(--text-dim)', marginBottom:'12px', paddingLeft:'4px' }}>
             Ranked Results — {results.length} resume{results.length !== 1 ? 's' : ''}
           </div>
@@ -479,10 +620,9 @@ export default function Home() {
 
                 {/* Expanded panel */}
                 {isExpanded && (
-                  <div style={{
+                  <div className="rack-expand-panel" style={{
                     marginTop: '16px', paddingTop: '16px',
                     borderTop: '1px solid var(--border)',
-                    animation: 'fadeUp 0.25s ease both',
                   }}>
 
                     {/* AI Analysis block */}

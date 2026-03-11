@@ -27,16 +27,17 @@
   --page-padding-bottom: 40px;
 }
 
-/* Mobile: nav moves to the bottom bar (~68px), top is free. */
+/* Mobile: nav at bottom (~68px), top bar at top (52px) */
 @media (max-width: 600px) {
   :root {
-    --page-padding-top: 28px;
+    --page-padding-top: calc(52px + 16px);
     --page-padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
   }
 }
 
 html, body, #root {
   height: 100%;
+  height: 100dvh; /* dynamic viewport height — accounts for browser chrome on iOS Chrome/Safari */
   width: 100%;
   background: var(--bg);
   color: var(--text);

@@ -129,10 +129,69 @@ export default function App() {
 
         /* ── Mobile overrides ── */
         @media (max-width: 600px) {
-          /* Hide logo — nav is at the bottom, top is free for content */
+          /* Hide the desktop top-left logo */
           .logo { display: none; }
+
+          /* Show mobile centered header */
+          .mobile-header { display: flex !important; }
+        }
+
+        /* Mobile top bar — hidden on desktop */
+        .mobile-header {
+          display: none;
+          position: fixed;
+          top: 0; left: 0; right: 0;
+          z-index: 200;
+          height: 52px;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(
+            to bottom,
+            rgba(8,8,8,0.96) 0%,
+            rgba(8,8,8,0.85) 60%,
+            rgba(8,8,8,0.0) 100%
+          );
+          /* No border, no backdrop-filter — pure gradient fade */
+        }
+        /* Extend the fade zone below the bar */
+        .mobile-header::after {
+          content: '';
+          position: absolute;
+          top: 100%;
+          left: 0; right: 0;
+          height: 28px;
+          background: linear-gradient(
+            to bottom,
+            rgba(8,8,8,0.25) 0%,
+            rgba(8,8,8,0.0) 100%
+          );
+          pointer-events: none;
+        }
+        .mobile-header-logo {
+          font-family: var(--font-display);
+          font-size: 20px;
+          font-weight: 800;
+          letter-spacing: -0.5px;
+          color: var(--text);
+          display: flex;
+          align-items: center;
+          gap: 7px;
+        }
+        .mobile-header-dot {
+          width: 7px; height: 7px;
+          background: var(--accent);
+          border-radius: 50%;
+          animation: pulse-ring 2.5s ease infinite;
         }
       `}</style>
+
+      {/* Mobile top bar with centered Rack logo */}
+      <div className="mobile-header">
+        <div className="mobile-header-logo">
+          <div className="mobile-header-dot" />
+          Rack
+        </div>
+      </div>
     </div>
   )
 }
