@@ -11,7 +11,9 @@ Two-phase architecture (mirrors auto_match.py / watchlist.py):
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+import json
+from typing import Optional, List
+from pathlib import Path
 
 from services.matcher import match_resumes
 
@@ -115,3 +117,94 @@ def _get_full_resume(resume_id: str):
         return get_resume_by_id(resume_id)
     except Exception:
         return None
+    
+
+# ── Paste this block into match.py ──────
+ 
+PREVIEW_MIN_SCORE = 0.45   # ~45% — lower threshold for preview (show more matches)
+PREVIEW_TOP_JOBS = 3       # How many job titles to preview per resume
+PREVIEW_MAX_DISPLAY = 20   # Cap on match count shown (even if more match)
+ 
+# Path to the cached job pool (same file auto_match.py uses)
+_JOB_POOL_PATH = Path(__file__).parent.parent / "data" / "auto_job_pool.json"
+ 
+ 
+class PreviewResume(BaseModel):
+    id: str
+    name: str
+    text: str   # raw resume text extracted on the frontend or sent from Home
+ 
+ 
+class PreviewJobsRequest(BaseModel):
+    resumes: List[PreviewResume]
+ 
+ 
+@router.post("/preview-jobs")
+async def preview_jobs(body: PreviewJobsRequest):
+    """
+    Score anonymous resumes against the cached job pool.
+    No auth required. Used for the post-match sign-in prompt on Home.
+    """
+    if not _JOB_POOL_PATH.exists():
+        # Job pool not yet populated — return empty gracefully
+        return {"previews": []}
+ 
+    try:
+        with open(_JOB_POOL_PATH, "r") as f:
+            job_pool = json.load(f)
+    except Exception:
+        return {"previews": []}
+ 
+    if not job_pool:
+        return {"previews": []}
+ 
+    previews = []
+ 
+    for resume in body.resumes:
+        if not resume.text or not resume.text.strip():
+            continue
+ 
+        try:
+            # Use existing hybrid scorer with use_llm=False (fast, no OpenAI cost)
+            from services.hybrid_scorer import score_resume_against_jobs
+ 
+            matches = score_resume_against_jobs(
+                resume_text=resume.text,
+                jobs=job_pool,
+                use_llm=False,
+                min_score=PREVIEW_MIN_SCORE,
+            )
+ 
+            # Sort by score descending
+            matches.sort(key=lambda m: m.get("score", 0), reverse=True)
+ 
+            match_count = min(len(matches), PREVIEW_MAX_DISPLAY)
+            top_jobs = [
+                {
+                    "title": m.get("job_title", "Software Engineer"),
+                    "company": m.get("company", ""),
+                }
+                for m in matches[:PREVIEW_TOP_JOBS]
+            ]
+ 
+            previews.append({
+                "resume_id": resume.id,
+                "resume_name": resume.name,
+                "match_count": match_count,
+                "top_jobs": top_jobs,
+            })
+ 
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Preview scoring failed for resume '{resume.name}': {e}"
+            )
+            # Return a graceful fallback for this resume
+            previews.append({
+                "resume_id": resume.id,
+                "resume_name": resume.name,
+                "match_count": 0,
+                "top_jobs": [],
+            })
+ 
+    return {"previews": previews}

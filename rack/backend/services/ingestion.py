@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
+import tempfile
 
 from services.text_extractor import extract_text
 from services.section_parser import parse_sections
@@ -212,3 +213,37 @@ def delete_resume(resume_id: str) -> bool:
     metadata["resumes"] = [r for r in metadata["resumes"] if r["id"] != resume_id]
     _save_metadata(metadata)
     return True
+
+
+def ingest_resume_bytes(content: bytes, original_filename: str) -> dict:
+    """
+    Wrapper around ingest_resume() that accepts raw bytes instead of a file path.
+    
+    Writes content to a temp file, runs the full ingestion pipeline,
+    then cleans up. Returns the same dict as ingest_resume().
+    
+    Used by:
+    - resumes.py upload endpoint (anonymous + authenticated paths)
+    - AuthContext.jsx migration flow (localStorage → DB)
+    """
+    ext = Path(original_filename).suffix.lower()
+    
+    # Write to a named temp file so existing pipeline can read it
+    with tempfile.NamedTemporaryFile(
+        suffix=ext,
+        delete=False,
+        prefix="rack_ingest_"
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    
+    try:
+        result = ingest_resume(tmp_path, original_filename)
+        return result
+    finally:
+        # Always clean up the temp file
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+ 

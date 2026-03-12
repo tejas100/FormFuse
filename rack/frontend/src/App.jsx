@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { AuthProvider, useAuth } from './context/AuthContext'
 import TabBar from './components/TabBar'
 import Home from './pages/Home'
 import Resumes from './pages/Resumes'
@@ -7,9 +8,14 @@ import Account from './pages/Account'
 
 const PAGE_MAP = { Home, Resumes, Tracking, Account }
 
-export default function App() {
+// Tabs that require authentication
+const AUTH_REQUIRED_TABS = ['Tracking']
+
+// ── Inner app — has access to AuthContext ─────────────────────────────────────
+function AppInner() {
   const [active, setActive] = useState('Home')
   const [pageKey, setPageKey] = useState(0)
+  const { user, authLoading, signInWithGoogle } = useAuth()
 
   const switchTab = (tab) => {
     setActive(tab)
@@ -17,6 +23,9 @@ export default function App() {
   }
 
   const ActivePage = PAGE_MAP[active]
+
+  // Is this tab gated and the user is not signed in?
+  const isGated = AUTH_REQUIRED_TABS.includes(active) && !user && !authLoading
 
   return (
     <div className="app">
@@ -31,7 +40,12 @@ export default function App() {
       </div>
 
       <TabBar active={active} onSwitch={switchTab} />
-      <ActivePage key={pageKey} />
+
+      {isGated ? (
+        <GateScreen tab={active} onSignIn={signInWithGoogle} />
+      ) : (
+        <ActivePage key={pageKey} />
+      )}
 
       <style>{`
         .app {
@@ -58,53 +72,6 @@ export default function App() {
           background-size:128px;
         }
 
-        /* ── Motion lines ── */
-        .motion-lines {
-          position: fixed;
-          inset: 0;
-          width: 100vw;
-          height: 100vh;
-          pointer-events: none;
-          z-index: 0;
-          overflow: visible;
-        }
-
-        .ml {
-          stroke: #e8ff6b;
-          stroke-width: 0.6;
-          fill: none;
-          opacity: 0;
-        }
-
-        .ml-1  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 0.2s forwards, linePulse 6s ease-in-out 2.6s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
-        .ml-2  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 0.5s forwards, linePulse 6s ease-in-out 2.9s infinite; stroke-dasharray: 1400; stroke-dashoffset: 1400; }
-        .ml-3  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 0.8s forwards, linePulse 7s ease-in-out 3.2s infinite; stroke-dasharray: 1600; stroke-dashoffset: 1600; }
-        .ml-4  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 1.0s forwards, linePulse 8s ease-in-out 3.4s infinite; stroke-dasharray: 1400; stroke-dashoffset: 1400; }
-        .ml-5  { animation: lineReveal 2.4s cubic-bezier(0.22,1,0.36,1) 1.2s forwards, linePulse 7s ease-in-out 3.6s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
-
-        .ml-h1 { stroke-width: 0.4; animation: lineReveal 2s ease 1.4s forwards, linePulse 9s ease-in-out 3.4s infinite; stroke-dasharray: 800; stroke-dashoffset: 800; }
-        .ml-h2 { stroke-width: 0.4; animation: lineReveal 2s ease 1.6s forwards, linePulse 9s ease-in-out 3.6s infinite; stroke-dasharray: 900; stroke-dashoffset: 900; }
-
-        .ml-arc1 { stroke-width: 0.5; stroke-opacity: 0.5; animation: lineReveal 3s cubic-bezier(0.22,1,0.36,1) 0.4s forwards, linePulse 10s ease-in-out 3.4s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
-        .ml-arc2 { stroke-width: 0.5; stroke-opacity: 0.5; animation: lineReveal 3s cubic-bezier(0.22,1,0.36,1) 0.7s forwards, linePulse 10s ease-in-out 3.7s infinite; stroke-dasharray: 1200; stroke-dashoffset: 1200; }
-
-        .ml-dot1 { fill: #e8ff6b; stroke: none; animation: dotPop 0.6s ease 1.8s forwards; }
-        .ml-dot2 { fill: #e8ff6b; stroke: none; animation: dotPop 0.6s ease 2.0s forwards; }
-        .ml-dot3 { fill: #e8ff6b; stroke: none; animation: dotPop 0.6s ease 2.2s forwards; }
-
-        @keyframes lineReveal {
-          to { stroke-dashoffset: 0; opacity: 0.60; }
-        }
-        @keyframes linePulse {
-          0%, 100% { opacity: 0.60; }
-          50%       { opacity: 0.08; }
-        }
-        @keyframes dotPop {
-          0%   { opacity: 0; transform: scale(0); }
-          60%  { opacity: 1; transform: scale(1.4); }
-          100% { opacity: 0.5; transform: scale(1); }
-        }
-
         /* ── Logo ── */
         .logo {
           position: fixed;
@@ -129,14 +96,11 @@ export default function App() {
 
         /* ── Mobile overrides ── */
         @media (max-width: 600px) {
-          /* Hide the desktop top-left logo */
           .logo { display: none; }
-
-          /* Show mobile centered header */
           .mobile-header { display: flex !important; }
         }
 
-        /* Mobile top bar — hidden on desktop */
+        /* Mobile top bar */
         .mobile-header {
           display: none;
           position: fixed;
@@ -151,9 +115,7 @@ export default function App() {
             rgba(8,8,8,0.85) 60%,
             rgba(8,8,8,0.0) 100%
           );
-          /* No border, no backdrop-filter — pure gradient fade */
         }
-        /* Extend the fade zone below the bar */
         .mobile-header::after {
           content: '';
           position: absolute;
@@ -183,9 +145,97 @@ export default function App() {
           border-radius: 50%;
           animation: pulse-ring 2.5s ease infinite;
         }
+
+        /* ── Gate screen ── */
+        .gate-screen {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 40px 24px;
+          animation: fadeUp 0.4s ease both;
+          z-index: 10;
+        }
+        .gate-card {
+          width: 100%;
+          max-width: 400px;
+          background: var(--surface);
+          border: 1px solid var(--border-bright);
+          border-radius: var(--radius);
+          padding: 36px 32px;
+          text-align: center;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0;
+        }
+        .gate-icon {
+          font-size: 36px;
+          margin-bottom: 16px;
+        }
+        .gate-title {
+          font-family: var(--font-display);
+          font-size: 20px;
+          font-weight: 700;
+          color: var(--text);
+          letter-spacing: -0.3px;
+          margin-bottom: 10px;
+        }
+        .gate-subtitle {
+          font-size: 13px;
+          color: var(--text-dim);
+          line-height: 1.6;
+          margin-bottom: 28px;
+          max-width: 300px;
+        }
+        .gate-btn-google {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 13px 28px;
+          border-radius: 30px;
+          border: 1px solid var(--border-bright);
+          background: var(--surface2);
+          color: var(--text);
+          font-family: var(--font-body);
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+          width: 100%;
+          justify-content: center;
+          margin-bottom: 12px;
+        }
+        .gate-btn-google:hover {
+          background: rgba(255,255,255,0.07);
+          border-color: rgba(255,255,255,0.2);
+        }
+        .gate-perks {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          margin-top: 20px;
+          width: 100%;
+          text-align: left;
+        }
+        .gate-perk {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          font-size: 12px;
+          color: var(--text-dim);
+        }
+        .gate-perk-dot {
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+          background: var(--accent);
+          flex-shrink: 0;
+        }
       `}</style>
 
-      {/* Mobile top bar with centered Rack logo */}
       <div className="mobile-header">
         <div className="mobile-header-logo">
           <div className="mobile-header-dot" />
@@ -193,5 +243,75 @@ export default function App() {
         </div>
       </div>
     </div>
+  )
+}
+
+// ── Gate screen — shown for auth-required tabs when signed out ────────────────
+function GateScreen({ tab, onSignIn }) {
+  const gateContent = {
+    Tracking: {
+      icon: '📋',
+      title: 'Track your applications',
+      subtitle: 'Sign in to save jobs, track your application status, and never lose track of an opportunity.',
+      perks: [
+        'Save jobs from Auto Matches with one click',
+        'Track status: Applied → Interview → Offer',
+        'Notes and reminders per application',
+      ],
+    },
+  }
+
+  const content = gateContent[tab] || {
+    icon: '🔒',
+    title: 'Sign in to continue',
+    subtitle: 'This feature requires an account.',
+    perks: [],
+  }
+
+  return (
+    <div className="gate-screen">
+      <div className="gate-card">
+        <div className="gate-icon">{content.icon}</div>
+        <div className="gate-title">{content.title}</div>
+        <div className="gate-subtitle">{content.subtitle}</div>
+
+        <button className="gate-btn-google" onClick={onSignIn}>
+          <GoogleIcon />
+          Continue with Google
+        </button>
+
+        {content.perks.length > 0 && (
+          <div className="gate-perks">
+            {content.perks.map(p => (
+              <div key={p} className="gate-perk">
+                <div className="gate-perk-dot" />
+                {p}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Google SVG icon ───────────────────────────────────────────────────────────
+function GoogleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path d="M17.64 9.205c0-.639-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615Z" fill="#4285F4"/>
+      <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18Z" fill="#34A853"/>
+      <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332Z" fill="#FBBC05"/>
+      <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58Z" fill="#EA4335"/>
+    </svg>
+  )
+}
+
+// ── Root export — wraps everything in AuthProvider ────────────────────────────
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
   )
 }
