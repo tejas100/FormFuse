@@ -8,14 +8,11 @@ load_dotenv()
 
 import logging
 logging.basicConfig(level=logging.INFO)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import resumes, match
-
-from routers import resumes, match, tracking, account
-
-
+from routers import resumes, match, tracking, account, auth
 
 app = FastAPI(
     title="Rack — Career Intelligence API",
@@ -36,7 +33,8 @@ app.add_middleware(
 app.include_router(resumes.router)
 app.include_router(match.router)
 app.include_router(tracking.router)
-app.include_router(account.router)  
+app.include_router(account.router)
+app.include_router(auth.router)
 
 
 @app.get("/")
