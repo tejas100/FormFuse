@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useAuth } from '../context/AuthContext'
 
 const mobileCardStyles = `
   @keyframes smoothExpand {
@@ -117,14 +118,19 @@ const JD_STEPS = [
 ];
 
 const JD_SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-// LLM step gets purple accent, rest get yellow-green
 const JD_STEP_COLOR = { llm: "#a78bfa" };
 
-function JDPipelineAnimation() {
+// uploadQueue: [{ name: string, status: 'queued'|'processing'|'done'|'error' }]
+// When empty (authenticated users / no uploads needed), renders only the match pipeline — unchanged behaviour.
+function JDPipelineAnimation({ uploadQueue = [] }) {
   const [stepIdx, setStep]    = useState(0);
   const [spinner, setSpinner] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [cursor,  setCursor]  = useState(true);
+
+  // Only start pipeline steps once all uploads are done (or if no uploads)
+  const uploadsActive = uploadQueue.length > 0 && uploadQueue.some(f => f.status !== 'done' && f.status !== 'error');
+  const uploadsAllDone = uploadQueue.length === 0 || uploadQueue.every(f => f.status === 'done' || f.status === 'error');
 
   // Spinner tick
   useEffect(() => {
@@ -144,23 +150,31 @@ function JDPipelineAnimation() {
     return () => clearInterval(t);
   }, []);
 
-  // Step durations calibrated to actual pipeline timing
+  // Pipeline steps — only advance when uploads are done
   useEffect(() => {
-    const STEP_MS = [2500, 3000, 3500, 8000, 1500]; // parse, embed, hybrid, llm, rank
+    if (!uploadsAllDone) return;
+    const STEP_MS = [2500, 3000, 3500, 8000, 1500];
     if (stepIdx >= JD_STEPS.length - 1) return;
     const t = setTimeout(() => setStep(s => s + 1), STEP_MS[stepIdx]);
     return () => clearTimeout(t);
-  }, [stepIdx]);
+  }, [stepIdx, uploadsAllDone]);
 
   const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
   const acc  = "var(--accent)";
   const grn  = "#34d399";
+  const red  = "#f87171";
   const dim  = "rgba(255,255,255,0.28)";
 
-  const BAR_LEN    = 24;
-  const filled     = Math.round(((stepIdx + 0.5) / JD_STEPS.length) * BAR_LEN);
+  // Progress bar: upload slots + pipeline steps
+  const totalSlots  = uploadQueue.length + JD_STEPS.length;
+  const doneUploads = uploadQueue.filter(f => f.status === 'done').length;
+  const BAR_LEN     = 24;
+  const progressNumerator = uploadsAllDone
+    ? uploadQueue.length + stepIdx + 0.5
+    : doneUploads + (uploadQueue.findIndex(f => f.status === 'processing') >= 0 ? 0.5 : 0);
+  const filled     = Math.round((progressNumerator / totalSlots) * BAR_LEN);
   const bar        = Array.from({ length: BAR_LEN }, (_, i) => i < filled ? "█" : "░").join("");
-  const overallPct = Math.round(((stepIdx + 0.5) / JD_STEPS.length) * 100);
+  const overallPct = Math.round((progressNumerator / totalSlots) * 100);
 
   return (
     <div style={{ width: "100%", maxWidth: "520px", margin: "0 auto", padding: "28px 0 8px", animation: "fadeUp 0.35s ease both" }}>
@@ -189,12 +203,102 @@ function JDPipelineAnimation() {
           </span>
         </div>
 
-        {/* Step list */}
         <div style={{ padding: "16px 20px 14px" }}>
+
+          {/* ── Act 1: Upload phase (only when files were queued) ── */}
+          {uploadQueue.length > 0 && (
+            <>
+              {/* Upload section header */}
+              <div style={{
+                ...mono, fontSize: 10, color: "rgba(255,255,255,0.22)",
+                letterSpacing: "0.12em", textTransform: "uppercase",
+                marginBottom: 8, paddingBottom: 6,
+                borderBottom: "1px solid rgba(255,255,255,0.04)",
+              }}>
+                ingesting resumes
+              </div>
+
+              {uploadQueue.map((f, i) => {
+                const isDone       = f.status === 'done';
+                const isProcessing = f.status === 'processing';
+                const isError      = f.status === 'error';
+                const isQueued     = f.status === 'queued';
+
+                // Progress bar fill per file
+                const fileFill = isDone ? 100 : isProcessing ? 55 : 0;
+                const fileColor = isDone ? grn : isError ? red : acc;
+
+                return (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "6px 0",
+                    borderBottom: "1px solid rgba(255,255,255,0.03)",
+                    opacity: isQueued ? 0.38 : 1,
+                    transition: "opacity 0.3s ease",
+                  }}>
+                    {/* Status glyph */}
+                    <span style={{ ...mono, fontSize: 12, minWidth: 14, color: fileColor }}>
+                      {isDone ? "✓" : isError ? "✗" : isProcessing ? JD_SPINNER[spinner] : "·"}
+                    </span>
+
+                    {/* Filename — truncated */}
+                    <span style={{
+                      ...mono, fontSize: 11, color: isDone ? grn : isError ? red : isProcessing ? acc : dim,
+                      flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      transition: "color 0.3s",
+                    }}>
+                      {f.name}
+                    </span>
+
+                    {/* Mini progress bar */}
+                    <div style={{
+                      width: 60, height: 3, background: "rgba(255,255,255,0.06)",
+                      borderRadius: 3, overflow: "hidden", flexShrink: 0,
+                    }}>
+                      <div style={{
+                        height: "100%", borderRadius: 3,
+                        background: isDone
+                          ? grn
+                          : isError
+                          ? red
+                          : "linear-gradient(90deg, #e8ff6b, #a3e635)",
+                        width: `${fileFill}%`,
+                        transition: "width 0.6s cubic-bezier(0.22,1,0.36,1)",
+                      }} />
+                    </div>
+
+                    {/* Status label */}
+                    <span style={{
+                      ...mono, fontSize: 9, color: isDone ? "rgba(52,211,153,0.5)" : isError ? "rgba(248,113,113,0.5)" : isProcessing ? "rgba(232,255,107,0.45)" : "transparent",
+                      minWidth: 52, textAlign: "right", transition: "color 0.3s",
+                    }}>
+                      {isDone ? "done" : isError ? "error" : isProcessing ? "parsing…" : "queued"}
+                    </span>
+                  </div>
+                );
+              })}
+
+              {/* Divider between acts */}
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8,
+                margin: "12px 0 10px",
+                opacity: uploadsAllDone ? 1 : 0.25,
+                transition: "opacity 0.5s ease 0.3s",
+              }}>
+                <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.06)" }} />
+                <span style={{ ...mono, fontSize: 9, color: "rgba(255,255,255,0.2)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                  matching pipeline
+                </span>
+                <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.06)" }} />
+              </div>
+            </>
+          )}
+
+          {/* ── Act 2: Match pipeline (always shown) ── */}
           {JD_STEPS.map((step, i) => {
-            const done    = i < stepIdx;
-            const active  = i === stepIdx;
-            const pending = i > stepIdx;
+            const done    = uploadsAllDone && i < stepIdx;
+            const active  = uploadsAllDone && i === stepIdx;
+            const pending = !uploadsAllDone || i > stepIdx;
             const color   = JD_STEP_COLOR[step.id] || acc;
             return (
               <div key={step.id} style={{
@@ -205,15 +309,12 @@ function JDPipelineAnimation() {
                 opacity: pending ? 0.35 : 1,
                 transition: "opacity 0.4s ease",
               }}>
-                {/* Status glyph */}
                 <span style={{
                   ...mono, fontSize: 12, lineHeight: "20px", minWidth: 14,
                   color: done ? grn : active ? color : dim,
                 }}>
                   {done ? "✓" : active ? JD_SPINNER[spinner] : "·"}
                 </span>
-
-                {/* Label + detail */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{
                     ...mono, fontSize: 12, fontWeight: 600,
@@ -256,33 +357,344 @@ function JDPipelineAnimation() {
   );
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   VALUE PREVIEW CARD — post-match teaser for anonymous users
+   ══════════════════════════════════════════════════════════════════ */
+function ValuePreviewCard({ results, onSignIn }) {
+  const [previews, setPreviews] = useState(null)
+  const [fetching, setFetching] = useState(false)
+  const [visible, setVisible]   = useState(false)
+
+  useEffect(() => {
+    if (!results || results.length === 0) return
+
+    // Build resume list from match results — use whatever text we have
+    const resumeInputs = results.map(r => ({
+      id: r.resume_id,
+      name: r.name,
+      text: [
+        r.titles?.join(' ') || '',
+        r.domains?.join(' ') || '',
+        (r.matched_skills || []).join(' '),
+        r.llm_reasoning || '',
+      ].join(' ').slice(0, 1200), // keep it lightweight
+    }))
+
+    const fetchPreviews = async () => {
+      setFetching(true)
+      try {
+        const res = await fetch('http://localhost:8000/api/match/preview-jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ resumes: resumeInputs }),
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.previews && data.previews.some(p => p.match_count > 0)) {
+          setPreviews(data.previews)
+          // Slight delay so results finish rendering before card slides in
+          setTimeout(() => setVisible(true), 400)
+        }
+      } catch (err) {
+        // Silently fail — this is purely a value-add teaser
+        console.warn('Preview jobs fetch failed:', err)
+      } finally {
+        setFetching(false)
+      }
+    }
+
+    fetchPreviews()
+  }, [results])
+
+  if (!previews || !visible) return null
+
+  const totalJobs = previews.reduce((sum, p) => sum + p.match_count, 0)
+  const topResume = previews[0]
+
+  return (
+    <div style={{
+      width: '100%', maxWidth: '720px', marginTop: '16px',
+      animation: 'previewSlideUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) both',
+    }}>
+      <style>{`
+        @keyframes previewSlideUp {
+          from { opacity: 0; transform: translateY(20px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .preview-card-cta:hover {
+          background: rgba(232,255,107,0.18) !important;
+          border-color: rgba(232,255,107,0.55) !important;
+        }
+      `}</style>
+
+      <div style={{
+        background: 'linear-gradient(135deg, rgba(232,255,107,0.04) 0%, rgba(167,139,250,0.04) 100%)',
+        border: '1px solid rgba(232,255,107,0.2)',
+        borderRadius: '16px', overflow: 'hidden',
+        boxShadow: '0 8px 40px rgba(0,0,0,0.3)',
+      }}>
+        {/* Top accent bar */}
+        <div style={{ height: '2px', background: 'linear-gradient(90deg, #e8ff6b 0%, #a78bfa 60%, transparent 100%)' }} />
+
+        <div style={{ padding: '20px 22px' }}>
+          {/* Header row */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '14px' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <span style={{ fontSize: '16px' }}>✦</span>
+                <span style={{
+                  fontSize: '11px', fontWeight: 700, letterSpacing: '0.1em',
+                  textTransform: 'uppercase', color: 'var(--accent)',
+                }}>
+                  Auto-Match Preview
+                </span>
+              </div>
+              <div style={{
+                fontFamily: 'var(--font-display)', fontSize: '17px', fontWeight: 700,
+                color: 'var(--text)', lineHeight: 1.2,
+              }}>
+                Found{' '}
+                <span style={{ color: 'var(--accent)' }}>{totalJobs} live job{totalJobs !== 1 ? 's' : ''}</span>
+                {' '}matching your resume{previews.length > 1 ? 's' : ''}
+              </div>
+            </div>
+
+            {/* Lock icon */}
+            <div style={{
+              width: '40px', height: '40px', flexShrink: 0,
+              background: 'rgba(232,255,107,0.08)', border: '1px solid rgba(232,255,107,0.2)',
+              borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '18px',
+            }}>🔒</div>
+          </div>
+
+          {/* Per-resume rows */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+            {previews.filter(p => p.match_count > 0).slice(0, 3).map(p => (
+              <div key={p.resume_id} style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '9px 12px', borderRadius: '10px',
+                background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)',
+              }}>
+                <span style={{ fontSize: '13px' }}>📄</span>
+                <span style={{
+                  fontSize: '13px', fontWeight: 500, color: 'var(--text)',
+                  flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {p.resume_name}
+                </span>
+                <span style={{
+                  fontSize: '12px', fontWeight: 700, padding: '3px 10px',
+                  borderRadius: '20px', background: 'rgba(52,211,153,0.1)',
+                  color: '#34d399', border: '1px solid rgba(52,211,153,0.2)',
+                  flexShrink: 0,
+                }}>
+                  {p.match_count} match{p.match_count !== 1 ? 'es' : ''}
+                </span>
+
+                {/* Blurred top job names */}
+                {p.top_jobs && p.top_jobs.length > 0 && (
+                  <div style={{
+                    display: 'flex', gap: '5px', flexShrink: 0,
+                  }}>
+                    {p.top_jobs.slice(0, 2).map((j, ji) => (
+                      <span key={ji} style={{
+                        fontSize: '11px', padding: '2px 8px', borderRadius: '8px',
+                        background: 'rgba(255,255,255,0.05)', color: 'transparent',
+                        border: '1px solid rgba(255,255,255,0.06)',
+                        filter: 'blur(4px)', userSelect: 'none',
+                        maxWidth: '90px', overflow: 'hidden',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {j.title || 'Software Engineer'}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* CTA */}
+          <button
+            className="preview-card-cta"
+            onClick={onSignIn}
+            style={{
+              width: '100%', padding: '14px',
+              background: 'rgba(232,255,107,0.1)',
+              border: '1px solid rgba(232,255,107,0.35)',
+              borderRadius: '12px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+              fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700,
+              color: 'var(--accent)', transition: 'all 0.2s ease',
+            }}
+          >
+            <span>Sign in to see all {totalJobs} matches and start applying</span>
+            <span style={{ fontSize: '16px' }}>→</span>
+          </button>
+
+          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.25)', textAlign: 'center', marginTop: '10px' }}>
+            Daily auto-matching · application tracking · full AI analysis
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Home() {
-  const [jd, setJd] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [results, setResults] = useState(null)
-  const [jdParsed, setJdParsed] = useState(null)
-  const [meta, setMeta] = useState(null)
-  const [error, setError] = useState(null)
+  const { user, signInWithGoogle } = useAuth()
+  const isAuthed = !!user
+
+  const [jd, setJd]               = useState('')
+  const [loading, setLoading]     = useState(false)
+  const [results, setResults]     = useState(null)
+  const [jdParsed, setJdParsed]   = useState(null)
+  const [meta, setMeta]           = useState(null)
+  const [error, setError]         = useState(null)
   const [expandedId, setExpandedId] = useState(null)
   const [resumeCount, setResumeCount] = useState(null)
   const [resumeWarning, setResumeWarning] = useState(false)
 
-  useEffect(() => {
-    fetch('http://localhost:8000/api/resumes')
-      .then(r => r.ok ? r.json() : [])
-      .then(data => setResumeCount(Array.isArray(data) ? data.length : 0))
-      .catch(() => setResumeCount(0))
-  }, [])
+  // ── Anonymous upload queue ──────────────────────────────────────
+  // fileQueue: File[] staged before clicking Match It
+  // uploadQueue: { name, status }[] — drives animation during processing
+  const [fileQueue, setFileQueue]     = useState([])  // staged files
+  const [uploadQueue, setUploadQueue] = useState([])  // live status for animation
+  const fileInputRef = useRef(null)
 
+  // ── Resume count ────────────────────────────────────────────────
+  useEffect(() => {
+    if (user) {
+      fetch('http://localhost:8000/api/resumes')
+        .then(r => r.ok ? r.json() : { resumes: [] })
+        .then(data => setResumeCount((data.resumes || []).length))
+        .catch(() => setResumeCount(0))
+    } else {
+      try {
+        const ls = JSON.parse(localStorage.getItem('rack_resumes') || '[]')
+        setResumeCount(ls.length)
+      } catch { setResumeCount(0) }
+    }
+  }, [user])
+
+  // ── File staging helpers ────────────────────────────────────────
+  const ALLOWED_TYPES = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ]
+
+  const ANON_CAP = 5
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || [])
+    const valid = files.filter(f => ALLOWED_TYPES.includes(f.type))
+
+    setFileQueue(prev => {
+      // Deduplicate by name against already-queued files
+      const existingNames = new Set(prev.map(f => f.name))
+      const fresh = valid.filter(f => !existingNames.has(f.name))
+
+      // Enforce cap: slots remaining = ANON_CAP - already saved - already queued
+      const saved = resumeCount || 0
+      const slotsRemaining = Math.max(0, ANON_CAP - saved - prev.length)
+
+      if (fresh.length > slotsRemaining) {
+        const accepted = fresh.slice(0, slotsRemaining)
+        const dropped  = fresh.length - accepted.length
+        if (dropped > 0) {
+          setResumeWarning(`cap:${dropped}`) // special flag — rendered below
+        }
+        return [...prev, ...accepted]
+      }
+
+      return [...prev, ...fresh]
+    })
+
+    e.target.value = ''
+  }
+
+  const removeFileFromQueue = (name) => {
+    setFileQueue(prev => prev.filter(f => f.name !== name))
+    setResumeWarning(false)
+  }
+
+  // ── base64 helper ───────────────────────────────────────────────
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result.split(',')[1])
+    r.onerror = () => reject(new Error('Read failed'))
+    r.readAsDataURL(file)
+  })
+
+  // ── Match handler ───────────────────────────────────────────────
   const handleMatch = async () => {
     if (!jd.trim() || loading) return
-    if (resumeCount === 0) { setResumeWarning(true); return }
+
+    const hasExistingResumes = resumeCount > 0
+    const hasQueuedFiles     = fileQueue.length > 0
+
+    if (!hasExistingResumes && !hasQueuedFiles) {
+      setResumeWarning(true)
+      return
+    }
+
     setLoading(true)
     setResults(null)
     setJdParsed(null)
     setMeta(null)
     setError(null)
 
+    // ── Act 1: Upload queued files (anonymous only) ─────────────
+    if (!isAuthed && hasQueuedFiles) {
+      // Initialise upload queue state for animation
+      const initialQueue = fileQueue.map(f => ({ name: f.name, status: 'queued' }))
+      setUploadQueue(initialQueue)
+
+      const lsResumes = (() => {
+        try { return JSON.parse(localStorage.getItem('rack_resumes') || '[]') } catch { return [] }
+      })()
+
+      for (let i = 0; i < fileQueue.length; i++) {
+        const file = fileQueue[i]
+
+        // Mark as processing
+        setUploadQueue(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'processing' } : f))
+
+        try {
+          const formData = new FormData()
+          formData.append('file', file)
+
+          const res = await fetch('http://localhost:8000/api/resumes/upload', {
+            method: 'POST',
+            body: formData,
+          })
+
+          if (!res.ok) throw new Error('Upload failed')
+
+          const data = await res.json()
+          const resume = data.resume
+
+          // Capture base64 for localStorage migration
+          const b64 = await fileToBase64(file)
+          lsResumes.push({ ...resume, fileBase64: b64, fileType: file.type })
+
+          // Mark done
+          setUploadQueue(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'done' } : f))
+        } catch (err) {
+          console.error('Upload error for', file.name, err)
+          setUploadQueue(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'error' } : f))
+        }
+      }
+
+      // Persist all to localStorage
+      localStorage.setItem('rack_resumes', JSON.stringify(lsResumes))
+      setResumeCount(lsResumes.length)
+      setFileQueue([])
+    }
+
+    // ── Act 2: Run match ─────────────────────────────────────────
     try {
       const res = await fetch('http://localhost:8000/api/match', {
         method: 'POST',
@@ -303,6 +715,7 @@ export default function Home() {
       setError(err.message || 'Failed to connect to backend')
     } finally {
       setLoading(false)
+      setUploadQueue([])
     }
   }
 
@@ -424,15 +837,118 @@ export default function Home() {
           onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleMatch() }}
         />
 
+        {/* ── Anonymous upload zone (hidden for authed users) ── */}
+        {!isAuthed && !results && (
+          <div style={{
+            borderTop: '1px solid var(--border)',
+            padding: '10px 16px',
+            background: 'rgba(255,255,255,0.01)',
+          }}>
+            {/* Staged file chips */}
+            {fileQueue.length > 0 && (
+              <div style={{
+                display: 'flex', gap: '6px', flexWrap: 'wrap',
+                marginBottom: '8px',
+              }}>
+                {fileQueue.map(f => (
+                  <div key={f.name} style={{
+                    display: 'flex', alignItems: 'center', gap: '5px',
+                    padding: '3px 8px 3px 10px',
+                    background: 'rgba(232,255,107,0.07)',
+                    border: '1px solid rgba(232,255,107,0.2)',
+                    borderRadius: '20px',
+                    animation: 'fadeUp 0.2s ease both',
+                  }}>
+                    <span style={{ fontSize: '11px', color: 'rgba(232,255,107,0.8)', fontWeight: 500, maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      📄 {f.name}
+                    </span>
+                    <button
+                      onClick={() => removeFileFromQueue(f.name)}
+                      style={{
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: 'rgba(232,255,107,0.4)', fontSize: '11px',
+                        padding: '0 2px', lineHeight: 1,
+                        display: 'flex', alignItems: 'center',
+                      }}
+                    >✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Upload trigger row */}
+            {(() => {
+              const saved = resumeCount || 0
+              const atCap = saved + fileQueue.length >= ANON_CAP
+              const slotsLeft = Math.max(0, ANON_CAP - saved - fileQueue.length)
+              const capWarning = typeof resumeWarning === 'string' && resumeWarning.startsWith('cap:')
+              const droppedCount = capWarning ? parseInt(resumeWarning.split(':')[1]) : 0
+
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button
+                    onClick={() => { if (!atCap) fileInputRef.current?.click() }}
+                    disabled={atCap}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px',
+                      padding: '6px 12px',
+                      background: 'transparent',
+                      border: `1px dashed ${atCap ? 'rgba(255,255,255,0.1)' : 'rgba(232,255,107,0.25)'}`,
+                      borderRadius: '20px',
+                      cursor: atCap ? 'not-allowed' : 'pointer',
+                      color: atCap ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.4)',
+                      fontSize: '12px', fontFamily: 'var(--font-body)',
+                      transition: 'all 0.2s ease',
+                      opacity: atCap ? 0.6 : 1,
+                    }}
+                    onMouseEnter={e => {
+                      if (atCap) return
+                      e.currentTarget.style.borderColor = 'rgba(232,255,107,0.5)'
+                      e.currentTarget.style.color = 'rgba(232,255,107,0.7)'
+                    }}
+                    onMouseLeave={e => {
+                      if (atCap) return
+                      e.currentTarget.style.borderColor = 'rgba(232,255,107,0.25)'
+                      e.currentTarget.style.color = 'rgba(255,255,255,0.4)'
+                    }}
+                  >
+                    <span style={{ fontSize: '14px' }}>+</span>
+                    {atCap ? 'Limit reached' : fileQueue.length === 0 ? 'Attach resume(s)' : 'Add more'}
+                  </button>
+
+                  <span style={{
+                    fontSize: '11px', transition: 'color 0.2s',
+                    color: capWarning
+                      ? '#fbbf24'
+                      : resumeWarning === true
+                      ? '#fbbf24'
+                      : 'rgba(255,255,255,0.22)',
+                  }}>
+                    {capWarning
+                      ? `⚠ ${droppedCount} file${droppedCount !== 1 ? 's' : ''} dropped — ${ANON_CAP}-resume limit`
+                      : resumeWarning === true
+                      ? '⚠ Attach at least one resume to match'
+                      : atCap
+                      ? `${ANON_CAP}/${ANON_CAP} · sign in to upload more`
+                      : saved + fileQueue.length > 0
+                      ? `${saved + fileQueue.length}/${ANON_CAP} · ${slotsLeft} slot${slotsLeft !== 1 ? 's' : ''} left`
+                      : 'PDF or DOCX · multiple allowed'
+                    }
+                  </span>
+                </div>
+              )
+            })()}
+          </div>
+        )}
+
+        {/* Input footer — Match It button row */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '12px 16px', borderTop: '1px solid var(--border)',
           background: 'rgba(255,255,255,0.015)', flexWrap: 'wrap', gap: '8px'
         }}>
-          <span style={{ fontSize: '12px', color: resumeWarning ? '#fbbf24' : 'var(--text-dim)', transition: 'color 0.2s' }}>
-            {resumeWarning
-              ? '⚠ Upload at least one resume in the Resumes tab first.'
-              : jd.length > 0 ? `${jd.length} chars` : 'Empty'}
+          <span style={{ fontSize: '12px', color: 'var(--text-dim)', transition: 'color 0.2s' }}>
+            {jd.length > 0 ? `${jd.length} chars` : 'Empty'}
           </span>
           <button onClick={handleMatch} disabled={!jd.trim() || loading} style={{
             display: 'flex', alignItems: 'center', gap: '10px',
@@ -450,10 +966,20 @@ export default function Home() {
             }
           </button>
         </div>
+
+        {/* Hidden multi-file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.doc,.docx"
+          multiple
+          style={{ display: 'none' }}
+          onChange={handleFileSelect}
+        />
       </div>
 
       {/* Pipeline animation while loading */}
-      {loading && <JDPipelineAnimation />}
+      {loading && <JDPipelineAnimation uploadQueue={uploadQueue} />}
 
       {/* Error state */}
       {error && (
@@ -730,6 +1256,11 @@ export default function Home() {
             )
           })}
         </div>
+      )}
+
+      {/* Value preview card — anonymous users only, after results render */}
+      {results && results.length > 0 && !isAuthed && (
+        <ValuePreviewCard results={results} onSignIn={signInWithGoogle} />
       )}
 
       {/* No results */}
