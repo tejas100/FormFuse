@@ -56,7 +56,7 @@ def _save_metadata(data: Dict):
         json.dump(data, f, indent=2, default=str)
 
 
-def ingest_resume(file_path: str, original_filename: str) -> Dict:
+def ingest_resume(file_path: str, original_filename: str, session_id: str = "default") -> Dict:
     """
     Full ingestion pipeline for a single resume file.
 
@@ -94,12 +94,12 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
     chunk_texts = [c["text"] for c in chunks]
     embeddings = embed_texts(chunk_texts, normalize=True)
 
-    # Step 6: Index vectors in FAISS
+    # Step 6: Index vectors in FAISS — scoped to session_id
     index_result = add_resume_vectors(
         resume_id=resume_id,
         chunks=chunks,
         embeddings=embeddings,
-        user_id="default",  # Will use actual user_id after auth is built
+        user_id=session_id,
     )
 
     # Step 7: Build metadata record
@@ -108,6 +108,7 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
 
     resume_record = {
         "id": resume_id,
+        "session_id": session_id,          # ← scope key for anonymous isolation
         "name": name,
         "original_filename": original_filename,
         "file_path": str(file_path),
@@ -151,11 +152,14 @@ def ingest_resume(file_path: str, original_filename: str) -> Dict:
     return resume_record
 
 
-def get_all_resumes() -> list:
-    """Return all resume metadata (without full chunk text for list view)."""
+def get_all_resumes(session_id: str = "default") -> list:
+    """Return resume metadata scoped to a session/user. Never leaks across sessions."""
     metadata = _load_metadata()
     results = []
     for r in metadata["resumes"]:
+        # Filter: only return resumes belonging to this session
+        if r.get("session_id", "default") != session_id:
+            continue
         structured = r.get("structured", {})
         results.append({
             "id": r["id"],
@@ -189,7 +193,7 @@ def get_resume_by_id(resume_id: str) -> Optional[Dict]:
     return None
 
 
-def delete_resume(resume_id: str) -> bool:
+def delete_resume(resume_id: str, session_id: str = "default") -> bool:
     """Delete resume file, FAISS vectors, and metadata."""
     metadata = _load_metadata()
     resume = None
@@ -206,8 +210,9 @@ def delete_resume(resume_id: str) -> bool:
     if file_path and os.path.exists(file_path):
         os.remove(file_path)
 
-    # Remove vectors from FAISS index
-    remove_resume_vectors(resume_id, user_id="default")
+    # Remove vectors from FAISS index — use stored session_id if available
+    effective_session = resume.get("session_id", session_id)
+    remove_resume_vectors(resume_id, user_id=effective_session)
 
     # Remove from metadata
     metadata["resumes"] = [r for r in metadata["resumes"] if r["id"] != resume_id]
@@ -215,20 +220,13 @@ def delete_resume(resume_id: str) -> bool:
     return True
 
 
-def ingest_resume_bytes(content: bytes, original_filename: str) -> dict:
+def ingest_resume_bytes(content: bytes, original_filename: str, session_id: str = "default") -> dict:
     """
     Wrapper around ingest_resume() that accepts raw bytes instead of a file path.
-    
-    Writes content to a temp file, runs the full ingestion pipeline,
-    then cleans up. Returns the same dict as ingest_resume().
-    
-    Used by:
-    - resumes.py upload endpoint (anonymous + authenticated paths)
-    - AuthContext.jsx migration flow (localStorage → DB)
+    session_id scopes the FAISS index and metadata to a specific user/session.
     """
     ext = Path(original_filename).suffix.lower()
     
-    # Write to a named temp file so existing pipeline can read it
     with tempfile.NamedTemporaryFile(
         suffix=ext,
         delete=False,
@@ -238,12 +236,10 @@ def ingest_resume_bytes(content: bytes, original_filename: str) -> dict:
         tmp_path = tmp.name
     
     try:
-        result = ingest_resume(tmp_path, original_filename)
+        result = ingest_resume(tmp_path, original_filename, session_id=session_id)
         return result
     finally:
-        # Always clean up the temp file
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
- 

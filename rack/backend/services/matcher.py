@@ -98,13 +98,11 @@ async def match_resumes(
         }
 
     # ── Step 3: Build focused semantic query and embed ──
-    # Don't embed the full JD — build a concentrated query from parsed data
-    # This stays within the 256-token limit and maximizes semantic signal
     semantic_query = _build_semantic_query(parsed_jd, jd_text)
     jd_embedding = embed_single(semantic_query)
     print(f"[matcher] Semantic query: {len(semantic_query.split())} words")
 
-    # ── Step 4: FAISS search ──
+    # ── Step 4: FAISS search — scoped to this session/user ──
     faiss_results = faiss_search(
         query_embedding=jd_embedding,
         top_k=top_k_chunks,
@@ -112,8 +110,8 @@ async def match_resumes(
     )
     print(f"[matcher] FAISS returned {len(faiss_results)} chunks")
 
-    # ── Step 5: Load all resume metadata ──
-    all_resumes = get_all_resumes()
+    # ── Step 5: Load resume metadata — scoped to this session/user ──
+    all_resumes = get_all_resumes(session_id=user_id)
     if not all_resumes:
         return {
             "results": [],

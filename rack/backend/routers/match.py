@@ -9,15 +9,21 @@ Two-phase architecture (mirrors auto_match.py / watchlist.py):
                           small set so every resume gets the full LLM treatment)
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-import json
-from typing import Optional, List
-from pathlib import Path
+from typing import Optional
 
 from services.matcher import match_resumes
 
 router = APIRouter(prefix="/api/match", tags=["match"])
+
+# Header name the frontend sends for anonymous session scoping
+_SESSION_HEADER = "X-Session-ID"
+_DEFAULT_SESSION = "default"
+
+def _get_session_id(request: Request) -> str:
+    """Extract session ID from header. Falls back to 'default' if absent."""
+    return request.headers.get(_SESSION_HEADER, _DEFAULT_SESSION) or _DEFAULT_SESSION
 
 
 class MatchRequest(BaseModel):
@@ -26,31 +32,24 @@ class MatchRequest(BaseModel):
 
 
 @router.post("")
-async def match_resume(request: MatchRequest):
+async def match_resume(request: MatchRequest, http_request: Request):
     """
     Match all indexed resumes against a job description.
-
-    Phase 1: Hybrid scoring (FAISS + rule scorer, always use_llm=False)
-    Phase 2: LLM deep scoring on all results (if use_llm=True and OPENAI_API_KEY set)
-
-    Request body:
-        {
-            "job_description": "We're looking for a Backend Engineer with 3+ years...",
-            "use_llm": true
-        }
-
-    Returns ranked results with hybrid + LLM scores, AI analysis, matched/missing skills.
+    Session-scoped: only resumes uploaded by this session are matched.
     """
+    session_id = _get_session_id(http_request)
+
     if not request.job_description or not request.job_description.strip():
         raise HTTPException(status_code=400, detail="Job description cannot be empty")
 
     if len(request.job_description) > 15000:
         raise HTTPException(status_code=400, detail="Job description too long (max 15000 chars)")
 
-    # ── Phase 1: Hybrid scoring (always use_llm=False — avoids Pass 3 penalty bug) ──
+    # ── Phase 1: Hybrid scoring — scoped to session ──
     result = await match_resumes(
         jd_text=request.job_description,
-        use_llm=False,   # Phase 1 always rule-based — consistent with auto_match + watchlist
+        user_id=session_id,
+        use_llm=False,
     )
 
     # ── Phase 2: LLM deep scoring (if enabled and resumes exist) ──
@@ -117,94 +116,3 @@ def _get_full_resume(resume_id: str):
         return get_resume_by_id(resume_id)
     except Exception:
         return None
-    
-
-# ── Paste this block into match.py ──────
- 
-PREVIEW_MIN_SCORE = 0.45   # ~45% — lower threshold for preview (show more matches)
-PREVIEW_TOP_JOBS = 3       # How many job titles to preview per resume
-PREVIEW_MAX_DISPLAY = 20   # Cap on match count shown (even if more match)
- 
-# Path to the cached job pool (same file auto_match.py uses)
-_JOB_POOL_PATH = Path(__file__).parent.parent / "data" / "auto_job_pool.json"
- 
- 
-class PreviewResume(BaseModel):
-    id: str
-    name: str
-    text: str   # raw resume text extracted on the frontend or sent from Home
- 
- 
-class PreviewJobsRequest(BaseModel):
-    resumes: List[PreviewResume]
- 
- 
-@router.post("/preview-jobs")
-async def preview_jobs(body: PreviewJobsRequest):
-    """
-    Score anonymous resumes against the cached job pool.
-    No auth required. Used for the post-match sign-in prompt on Home.
-    """
-    if not _JOB_POOL_PATH.exists():
-        # Job pool not yet populated — return empty gracefully
-        return {"previews": []}
- 
-    try:
-        with open(_JOB_POOL_PATH, "r") as f:
-            job_pool = json.load(f)
-    except Exception:
-        return {"previews": []}
- 
-    if not job_pool:
-        return {"previews": []}
- 
-    previews = []
- 
-    for resume in body.resumes:
-        if not resume.text or not resume.text.strip():
-            continue
- 
-        try:
-            # Use existing hybrid scorer with use_llm=False (fast, no OpenAI cost)
-            from services.hybrid_scorer import score_resume_against_jobs
- 
-            matches = score_resume_against_jobs(
-                resume_text=resume.text,
-                jobs=job_pool,
-                use_llm=False,
-                min_score=PREVIEW_MIN_SCORE,
-            )
- 
-            # Sort by score descending
-            matches.sort(key=lambda m: m.get("score", 0), reverse=True)
- 
-            match_count = min(len(matches), PREVIEW_MAX_DISPLAY)
-            top_jobs = [
-                {
-                    "title": m.get("job_title", "Software Engineer"),
-                    "company": m.get("company", ""),
-                }
-                for m in matches[:PREVIEW_TOP_JOBS]
-            ]
- 
-            previews.append({
-                "resume_id": resume.id,
-                "resume_name": resume.name,
-                "match_count": match_count,
-                "top_jobs": top_jobs,
-            })
- 
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"Preview scoring failed for resume '{resume.name}': {e}"
-            )
-            # Return a graceful fallback for this resume
-            previews.append({
-                "resume_id": resume.id,
-                "resume_name": resume.name,
-                "match_count": 0,
-                "top_jobs": [],
-            })
- 
-    return {"previews": previews}

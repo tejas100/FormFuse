@@ -9,8 +9,21 @@ uploads/resumes/*
 /rack/backend/__pycache__
 **/__pycache__
 
-
-**/uploads/
-
 .env
 .DS_Store
+
+**/uploads/
+# FAISS indexes — per-session binary files, never commit
+**/uploads/faiss_indexes/
+
+# Anonymous resume files
+uploads/resumes/*
+!uploads/resumes/.gitkeep
+
+# Runtime JSON files — generated data, not source
+**/uploads/resumes_metadata.json
+**/uploads/watchlist/auto_job_pool.json
+**/uploads/watchlist/auto_match_results.json
+**/uploads/watchlist/auto_match_meta.json
+**/uploads/watchlist/fetched_jobs.json
+**/uploads/watchlist/match_results.json

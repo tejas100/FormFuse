@@ -37,6 +37,7 @@ from db.database import get_db
 from models.orm import Resume, ResumeChunk
 from routers.auth import get_current_user
 from services.ingestion import ingest_resume_bytes
+from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ async def _delete_from_storage(storage_path: str) -> None:
 
 @router.post("/upload")
 async def upload_resume(
+    http_request: Request,
     file: UploadFile = File(...),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer),
     db: AsyncSession = Depends(get_db),
@@ -129,6 +131,8 @@ async def upload_resume(
     - Anonymous: ingest in-memory, return data + base64 file for localStorage.
     - Authenticated: ingest, save to Supabase Storage, write to DB.
     """
+
+    session_id = http_request.headers.get("X-Session-ID", "default")
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -155,7 +159,7 @@ async def upload_resume(
     # ingest_resume_bytes() is the same pipeline as before but takes bytes
     # instead of a file path. See services/ingestion.py for the signature.
     try:
-        resume_data = ingest_resume_bytes(content, file.filename)
+        resume_data = ingest_resume_bytes(content, file.filename, session_id=session_id)
     except Exception as e:
         logger.error(f"Ingestion failed for {file.filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
