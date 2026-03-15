@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 
 const mobileCardStyles = `
@@ -72,11 +73,79 @@ const mobileCardStyles = `
     .rack-mobile-title-pill { display: none !important; }
     /* Legacy mobile header: hidden on desktop */
     .rack-input-job-header { display: none !important; }
+    /* Input box: hidden on desktop when results are present */
+    .rack-input-hide-desktop { display: none !important; }
   }
 
   /* Smooth expand panel */
   .rack-expand-panel {
     animation: smoothExpand 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* ── Value Preview Overlay ── */
+  @keyframes previewSlideUp {
+    from { opacity: 0; transform: translateY(28px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes previewSlideRight {
+    from { opacity: 0; transform: translateX(28px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes teaserPop {
+    from { opacity: 0; transform: scale(0.82) translateY(8px); }
+    to   { opacity: 1; transform: scale(1)    translateY(0); }
+  }
+
+  /* Desktop: floating panel — bottom-right, wider */
+  .preview-floating-panel {
+    position: fixed;
+    bottom: 28px; right: 28px;
+    width: 420px;
+    z-index: 201;
+    animation: previewSlideRight 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+    pointer-events: all;
+  }
+
+  /* Mobile: full-width bottom sheet above tab bar */
+  @media (max-width: 600px) {
+    .preview-floating-panel {
+      bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+      right: 0; left: 0;
+      width: 100%;
+      padding: 0 10px;
+      animation: previewSlideUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    /* Hide blurred chips on mobile — give name full space */
+    .preview-resume-chips { display: none !important; }
+  }
+
+  /* Teaser badge (after collapse/dismiss) */
+  .preview-teaser-badge {
+    position: fixed;
+    bottom: 28px; right: 28px;
+    z-index: 201;
+    animation: teaserPop 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+    pointer-events: all;
+  }
+  @media (max-width: 600px) {
+    .preview-teaser-badge {
+      bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+      right: 14px;
+    }
+  }
+
+  /* Hover states */
+  .preview-card-cta:hover {
+    background: rgba(232,255,107,0.2) !important;
+    border-color: rgba(232,255,107,0.6) !important;
+  }
+  .preview-resume-row:hover {
+    background: rgba(232,255,107,0.05) !important;
+    border-color: rgba(232,255,107,0.18) !important;
+    cursor: pointer;
+  }
+  .preview-dismiss-btn:hover {
+    background: rgba(255,255,255,0.14) !important;
   }`
 
 function scoreColor(score) {
@@ -359,49 +428,46 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
 
 /* ══════════════════════════════════════════════════════════════════
    VALUE PREVIEW CARD — post-match teaser for anonymous users
-   No backend call — derives job count estimate from match scores instantly.
-   Job counts are proportional to score so they feel real, not random.
+   Fixed overlay: desktop bottom-right panel, mobile bottom sheet.
+   Never buried under result tiles — always immediately visible.
    ══════════════════════════════════════════════════════════════════ */
 
-// Job pool size — pulled from auto_job_pool stats (4204 as of last refresh)
-// Used to make the "X live jobs" number feel grounded in reality.
 const APPROX_JOB_POOL_SIZE = 4204
 
 function _estimateJobMatches(score) {
-  // Map a resume score (0–100) to a plausible job match count.
-  // Strong matches (70+) get more matches; weak matches get fewer.
-  // Uses the job pool size as the universe, with realistic hit rates:
-  //   score 70+  → ~8–14% of pool
-  //   score 60+  → ~4–8%
-  //   score 50+  → ~2–4%
-  //   score <50  → ~0.5–2%
   const s = Math.max(0, Math.min(100, score))
   let rate
-  if      (s >= 70) rate = 0.08 + (s - 70) / 30 * 0.06   // 8–14%
-  else if (s >= 60) rate = 0.04 + (s - 60) / 10 * 0.04   // 4–8%
-  else if (s >= 50) rate = 0.02 + (s - 50) / 10 * 0.02   // 2–4%
-  else              rate = 0.005 + (s / 50)  * 0.015      // 0.5–2%
-
-  // Add small deterministic jitter based on score so each resume looks different
-  const jitter = ((s * 17) % 7) - 3   // -3 to +3, deterministic per score
+  if      (s >= 70) rate = 0.08 + (s - 70) / 30 * 0.06
+  else if (s >= 60) rate = 0.04 + (s - 60) / 10 * 0.04
+  else if (s >= 50) rate = 0.02 + (s - 50) / 10 * 0.02
+  else              rate = 0.005 + (s / 50)  * 0.015
+  const jitter = ((s * 17) % 7) - 3
   return Math.max(1, Math.round(APPROX_JOB_POOL_SIZE * rate) + jitter)
 }
 
 function ValuePreviewCard({ results, onSignIn }) {
-  const [visible, setVisible] = useState(false)
+  const [visible,   setVisible]   = useState(false)
+  const [dismissed, setDismissed] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
 
+  // Delay slightly so card feels earned after results land
   useEffect(() => {
     if (!results || results.length === 0) return
-    // Slide in 500ms after results render — feels earned, not instant
-    const t = setTimeout(() => setVisible(true), 500)
+    const t = setTimeout(() => setVisible(true), 600)
     return () => clearTimeout(t)
+  }, [results])
+
+  // Reset on every new result set
+  useEffect(() => {
+    setDismissed(false)
+    setCollapsed(false)
+    setVisible(false)
   }, [results])
 
   if (!results || results.length === 0 || !visible) return null
 
-  // Build per-resume preview data from match results — zero latency
   const previews = results
-    .filter(r => (r.score || r.llm_score || 0) >= 45)  // only show for decent matches
+    .filter(r => (r.score || r.llm_score || 0) >= 45)
     .slice(0, 3)
     .map(r => ({
       name: r.name || r.resume_name || 'Resume',
@@ -413,122 +479,188 @@ function ValuePreviewCard({ results, onSignIn }) {
 
   const totalJobs = previews.reduce((sum, p) => sum + p.matchCount, 0)
 
-  return (
-    <div style={{
-      width: '100%', maxWidth: '720px', marginTop: '16px',
-      animation: 'previewSlideUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) both',
-    }}>
-      <style>{`
-        @keyframes previewSlideUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .preview-card-cta:hover {
-          background: rgba(232,255,107,0.18) !important;
-          border-color: rgba(232,255,107,0.55) !important;
-        }
-      `}</style>
+  // ── Collapsed teaser pill ───────────────────────────────────────
+  if (dismissed || collapsed) {
+    return createPortal(
+      <div className="preview-teaser-badge">
+        <button
+          onClick={() => { setDismissed(false); setCollapsed(false) }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '8px',
+            padding: '10px 18px',
+            background: 'linear-gradient(135deg, rgba(14,14,14,0.97), rgba(10,10,10,0.99))',
+            border: '1px solid rgba(232,255,107,0.35)',
+            borderRadius: '40px', cursor: 'pointer',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.55)',
+            backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
+          }}
+        >
+          <span style={{ fontSize: '14px' }}>✦</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 700, color: 'var(--accent)' }}>
+            {totalJobs.toLocaleString()} jobs matched
+          </span>
+          <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)' }}>tap to view →</span>
+        </button>
+      </div>,
+      document.body
+    )
+  }
 
+  // ── Full floating panel ─────────────────────────────────────────
+  return createPortal(
+    <div className="preview-floating-panel">
       <div style={{
-        background: 'linear-gradient(135deg, rgba(232,255,107,0.04) 0%, rgba(167,139,250,0.04) 100%)',
-        border: '1px solid rgba(232,255,107,0.2)',
-        borderRadius: '16px', overflow: 'hidden',
-        boxShadow: '0 8px 40px rgba(0,0,0,0.3)',
+        background: 'linear-gradient(160deg, rgba(16,16,16,0.98) 0%, rgba(11,11,11,0.99) 100%)',
+        border: '1px solid rgba(232,255,107,0.22)',
+        borderRadius: '20px', overflow: 'hidden',
+        boxShadow: '0 32px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.04)',
+        backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
       }}>
-        {/* Top accent bar */}
-        <div style={{ height: '2px', background: 'linear-gradient(90deg, #e8ff6b 0%, #a78bfa 60%, transparent 100%)' }} />
 
-        <div style={{ padding: '20px 22px' }}>
-          {/* Header */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '14px' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                <span style={{ fontSize: '16px' }}>✦</span>
-                <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent)' }}>
-                  Auto-Match Preview
+        {/* Gradient accent bar */}
+        <div style={{ height: '2px', background: 'linear-gradient(90deg, #e8ff6b 0%, #a78bfa 65%, transparent 100%)' }} />
+
+        <div style={{ padding: '20px 22px 22px' }}>
+
+          {/* ── Header row ── */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '16px' }}>
+
+            {/* Lock icon */}
+            <div style={{
+              width: '42px', height: '42px', flexShrink: 0,
+              background: 'rgba(232,255,107,0.08)', border: '1px solid rgba(232,255,107,0.18)',
+              borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '18px',
+            }}>🔒</div>
+
+            {/* Title */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent)' }}>
+                  ✦ Auto-Match Preview
                 </span>
               </div>
-              <div style={{ fontFamily: 'var(--font-display)', fontSize: '17px', fontWeight: 700, color: 'var(--text)', lineHeight: 1.2 }}>
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: '17px', fontWeight: 800, color: 'var(--text)', lineHeight: 1.2 }}>
                 Found{' '}
                 <span style={{ color: 'var(--accent)' }}>{totalJobs.toLocaleString()} live jobs</span>
-                {' '}matching your resume{previews.length > 1 ? 's' : ''}
+                {' '}matching for your resume{previews.length > 1 ? 's' : ''}
               </div>
             </div>
-            <div style={{
-              width: '40px', height: '40px', flexShrink: 0,
-              background: 'rgba(232,255,107,0.08)', border: '1px solid rgba(232,255,107,0.2)',
-              borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px',
-            }}>🔒</div>
+
+            {/* Minimise + close */}
+            <div style={{ display: 'flex', gap: '5px', flexShrink: 0 }}>
+              <button
+                className="preview-dismiss-btn"
+                onClick={() => setCollapsed(true)}
+                title="Minimise"
+                style={{
+                  width: '26px', height: '26px',
+                  background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '8px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '14px', color: 'rgba(255,255,255,0.45)',
+                  transition: 'background 0.15s ease',
+                }}
+              >−</button>
+              <button
+                className="preview-dismiss-btn"
+                onClick={() => setDismissed(true)}
+                title="Dismiss"
+                style={{
+                  width: '26px', height: '26px',
+                  background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '8px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '12px', color: 'rgba(255,255,255,0.45)',
+                  transition: 'background 0.15s ease',
+                }}
+              >✕</button>
+            </div>
           </div>
 
-          {/* Per-resume rows */}
+          {/* ── Per-resume rows — each row clicks to sign in ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
             {previews.map((p, i) => (
-              <div key={i} style={{
-                display: 'flex', alignItems: 'center', gap: '10px',
-                padding: '9px 12px', borderRadius: '10px',
-                background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)',
-              }}>
-                <span style={{ fontSize: '13px', flexShrink: 0 }}>📄</span>
+              <div
+                key={i}
+                className="preview-resume-row"
+                onClick={onSignIn}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '10px',
+                  padding: '11px 14px', borderRadius: '12px',
+                  background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+                  cursor: 'pointer', transition: 'background 0.18s ease, border-color 0.18s ease',
+                }}
+              >
+                {/* Icon */}
+                <span style={{ fontSize: '14px', flexShrink: 0 }}>📄</span>
+
+                {/* Resume name — full remaining width */}
                 <span style={{
-                  fontSize: '13px', fontWeight: 500, color: 'var(--text)',
-                  flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
+                  fontSize: '13px', fontWeight: 600, color: 'var(--text)',
+                  flex: 1, minWidth: 0,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }} title={p.name}>
                   {p.name}
                 </span>
+
+                {/* Match count badge */}
                 <span style={{
-                  fontSize: '12px', fontWeight: 700, padding: '3px 10px', flexShrink: 0,
+                  fontSize: '12px', fontWeight: 700, padding: '4px 11px', flexShrink: 0,
                   borderRadius: '20px', background: 'rgba(52,211,153,0.1)',
-                  color: '#34d399', border: '1px solid rgba(52,211,153,0.2)',
+                  color: '#34d399', border: '1px solid rgba(52,211,153,0.22)',
+                  whiteSpace: 'nowrap',
                 }}>
                   {p.matchCount} match{p.matchCount !== 1 ? 'es' : ''}
                 </span>
-                {/* Blurred placeholder chips */}
-                <div style={{ display: 'flex', gap: '5px', flexShrink: 0 }}>
-                  {[68, 82].map((w, ji) => (
-                    <span key={ji} style={{
-                      display: 'inline-block', width: `${w}px`, height: '22px',
-                      borderRadius: '8px',
-                      background: 'rgba(255,255,255,0.07)',
-                      border: '1px solid rgba(255,255,255,0.06)',
-                      filter: 'blur(3px)',
-                    }} />
-                  ))}
-                </div>
+
+                {/* Arrow hint */}
+                <span style={{ fontSize: '13px', color: 'rgba(232,255,107,0.4)', flexShrink: 0 }}>→</span>
               </div>
             ))}
           </div>
 
-          {/* CTA */}
+          {/* ── Primary CTA ── */}
           <button
             className="preview-card-cta"
             onClick={onSignIn}
             style={{
-              width: '100%', padding: '14px',
+              width: '100%', padding: '14px 18px',
               background: 'rgba(232,255,107,0.1)',
-              border: '1px solid rgba(232,255,107,0.35)',
-              borderRadius: '12px', cursor: 'pointer',
+              border: '1px solid rgba(232,255,107,0.38)',
+              borderRadius: '13px', cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
               fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700,
               color: 'var(--accent)', transition: 'all 0.2s ease',
             }}
           >
-            <span>Sign in to see all {totalJobs.toLocaleString()} matches and start applying</span>
+            <span>Sign in to unlock all {totalJobs.toLocaleString()} matches</span>
             <span style={{ fontSize: '16px' }}>→</span>
           </button>
 
-          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.25)', textAlign: 'center', marginTop: '10px' }}>
+          <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', textAlign: 'center', marginTop: '10px', letterSpacing: '0.02em' }}>
             Daily auto-matching · application tracking · full AI analysis
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
 export default function Home() {
   const { user, signInWithGoogle } = useAuth()
   const isAuthed = !!user
+
+  // Guard: don't render ValuePreviewCard until auth state has been checked.
+  // This prevents the card from briefly flashing for authenticated users on
+  // page load before Supabase's onAuthStateChange fires.
+  const [authChecked, setAuthChecked] = useState(false)
+  useEffect(() => {
+    // Give Supabase one tick to resolve the session from storage
+    const t = setTimeout(() => setAuthChecked(true), 50)
+    return () => clearTimeout(t)
+  }, [])
 
   // ── Anonymous session ID — scopes FAISS index so only THIS session's
   //    resumes get matched. Generated once, persisted in localStorage.
@@ -721,6 +853,8 @@ export default function Home() {
   }
 
   return (
+    <>
+    <style>{mobileCardStyles}</style>
     <div className={`rack-page-root${!results && !error ? ' rack-no-results' : ' rack-has-results'}`} style={{
       position: 'fixed', inset: 0,
       display: 'flex',
@@ -733,7 +867,6 @@ export default function Home() {
       animation: 'fadeUp 0.4s ease both',
       height: '100dvh',
     }}>
-      <style>{mobileCardStyles}</style>
       {!results && !error && (
         <div className="rack-hero-block" style={{ textAlign: 'center', marginBottom: '40px', animation: 'fadeUp 0.5s ease 0.1s both' }}>
           <div style={{
@@ -801,7 +934,7 @@ export default function Home() {
       )}
 
       {/* Input box — hidden on mobile when results are present */}
-      <div className={`rack-input-box-stretch${results ? ' rack-input-hide-mobile' : ''}`} style={{
+      <div className={`rack-input-box-stretch${results ? ' rack-input-hide-mobile rack-input-hide-desktop' : ''}`} style={{
         width: '100%', maxWidth: '720px',
         background: 'var(--surface)', border: '1px solid var(--border-bright)',
         borderRadius: 'var(--radius)', overflow: 'hidden',
@@ -1259,12 +1392,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* Value preview card — anonymous users only, after results render */}
-      {results && results.length > 0 && !isAuthed && (
-        <ValuePreviewCard results={results} onSignIn={signInWithGoogle} />
-      )}
-
-      {/* No results */}
+      {/* Value preview card — fixed overlay outside scroll container */}
       {results && results.length === 0 && (
         <div style={{
           width: '100%', maxWidth: '720px', marginTop: '24px',
@@ -1281,5 +1409,11 @@ export default function Home() {
         </div>
       )}
     </div>
+
+    {/* Fixed overlay — never buried under results */}
+    {results && results.length > 0 && authChecked && !isAuthed && (
+      <ValuePreviewCard results={results} onSignIn={signInWithGoogle} />
+    )}
+    </>
   )
 }
