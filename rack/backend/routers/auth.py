@@ -1,25 +1,19 @@
 """
 routers/auth.py — JWT verification + user dependency for FastAPI
 
-Supabase issues JWTs signed with the Legacy HS256 secret.
+Supabase now issues RS256 JWTs by default (verified via JWKS endpoint).
+Falls back to legacy HS256 (SUPABASE_JWT_SECRET) for older sessions.
+
 Every protected route uses:
 
     current_user: User = Depends(get_current_user)
 
 This dependency:
 1. Extracts Bearer token from Authorization header
-2. Verifies signature using SUPABASE_JWT_SECRET
+2. Verifies signature — RS256 via JWKS first, HS256 legacy as fallback
 3. Extracts user_id (sub claim) + email
 4. Upserts a row in the users table (creates on first login)
 5. Returns the User ORM object
-
-Usage in a router:
-    from routers.auth import get_current_user
-    from models.orm import User
-
-    @router.get("/me")
-    async def get_me(current_user: User = Depends(get_current_user)):
-        return {"id": str(current_user.id), "email": current_user.email}
 """
 
 import os
@@ -27,6 +21,7 @@ import uuid
 import logging
 
 import jwt as pyjwt
+from jwt import PyJWKClient
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -40,12 +35,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 # ── JWT config ─────────────────────────────────────────────────────────────────
+SUPABASE_URL        = os.getenv("SUPABASE_URL")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
+if not SUPABASE_URL:
+    raise RuntimeError("SUPABASE_URL is not set. Add it to your .env file.")
 if not SUPABASE_JWT_SECRET:
-    raise RuntimeError(
-        "SUPABASE_JWT_SECRET is not set. Add it to your .env file."
-    )
+    raise RuntimeError("SUPABASE_JWT_SECRET is not set. Add it to your .env file.")
+
+# JWKS endpoint — Supabase RS256 public keys (new default format)
+_JWKS_URL = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+_jwks_client = PyJWKClient(_JWKS_URL, cache_keys=True)
 
 # HTTPBearer extracts the Authorization: Bearer <token> header automatically
 _bearer_scheme = HTTPBearer(auto_error=True)
@@ -55,14 +55,37 @@ _bearer_scheme = HTTPBearer(auto_error=True)
 def _verify_token(token: str) -> dict:
     """
     Verify a Supabase JWT and return the decoded payload.
+
+    Tries RS256 via JWKS first (new Supabase default since late 2024).
+    Falls back to HS256 with the legacy secret for older sessions.
     Raises HTTPException 401 on any failure.
     """
+    # ── Attempt 1: RS256 via JWKS (new Supabase format) ───────────────────────
+    try:
+        signing_key = _jwks_client.get_signing_key_from_jwt(token)
+        payload = pyjwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["ES256"],
+            options={"verify_aud": False},
+        )
+        return payload
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired. Please sign in again.",
+        )
+    except Exception as e:
+        logger.warning(f"RS256 attempt failed: {e}")
+        pass  # Fall through to HS256 attempt
+
+    # ── Attempt 2: HS256 via legacy secret ────────────────────────────────────
     try:
         payload = pyjwt.decode(
             token,
             SUPABASE_JWT_SECRET,
             algorithms=["HS256"],
-            options={"verify_aud": False},  # Supabase doesn't set aud by default
+            options={"verify_aud": False},
         )
         return payload
     except pyjwt.ExpiredSignatureError:
@@ -93,14 +116,13 @@ async def _get_or_create_user(
     user = result.scalar_one_or_none()
 
     if user is None:
-        # First login — create the user row
         user = User(
             id=user_id,
             email=email,
             display_name=display_name,
         )
         db.add(user)
-        await db.flush()  # Get the row into the session without committing yet
+        await db.flush()
         logger.info(f"Created new user: {user_id} ({email})")
 
     return user
@@ -114,15 +136,9 @@ async def get_current_user(
     """
     FastAPI dependency — verifies JWT and returns the current User ORM object.
     Inject this into any protected route.
-
-    Example:
-        @router.get("/resumes")
-        async def list_resumes(current_user: User = Depends(get_current_user)):
-            ...
     """
     payload = _verify_token(credentials.credentials)
 
-    # Supabase puts the user UUID in the 'sub' claim
     sub = payload.get("sub")
     if not sub:
         raise HTTPException(
@@ -139,7 +155,6 @@ async def get_current_user(
         )
 
     email = payload.get("email", "")
-    # display_name may come from user_metadata
     user_metadata = payload.get("user_metadata", {}) or {}
     display_name = user_metadata.get("full_name") or user_metadata.get("name")
 

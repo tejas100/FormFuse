@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
+import { getAuthHeaders } from '../utils/api'
 
 const mobileCardStyles = `
   @keyframes smoothExpand {
@@ -695,7 +696,8 @@ export default function Home() {
   // ── Resume count ────────────────────────────────────────────────
   useEffect(() => {
     if (user) {
-      fetch('http://localhost:8000/api/resumes')
+      getAuthHeaders()
+        .then(headers => fetch('http://localhost:8000/api/resumes', { headers }))
         .then(r => r.ok ? r.json() : { resumes: [] })
         .then(data => setResumeCount((data.resumes || []).length))
         .catch(() => setResumeCount(0))

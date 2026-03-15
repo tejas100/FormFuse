@@ -3480,6 +3480,942 @@
           "token_count": 98
         }
       ]
+    },
+    {
+      "id": "85418090",
+      "session_id": "default",
+      "name": "TejasAIE3",
+      "original_filename": "TejasAIE3.pdf",
+      "file_path": "/var/folders/wz/zw9l5bgj2gq1rgrj3mtz4j140000gn/T/rack_ingest_jxjrx3gy.pdf",
+      "file_ext": ".pdf",
+      "status": "active",
+      "uploaded_at": "2026-03-15T02:42:18.694411+00:00",
+      "updated": "Just now",
+      "raw_text_length": 4757,
+      "section_count": 5,
+      "chunk_count": 5,
+      "embedding_dim": 384,
+      "indexed": true,
+      "index_stats": {
+        "resume_id": "85418090",
+        "chunks_added": 5,
+        "total_vectors": 5,
+        "index_type": "Flat"
+      },
+      "structured": {
+        "skills": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "years_exp": 4.1,
+        "titles": [
+          "Software Engineer (Backend, Python) 07/2022",
+          "Project Engineer (Full Stack, Security) 10/2021",
+          "Founder, Lead Engineer 05/2019",
+          "Software Engineer (Backend, Python)",
+          "Project Engineer (Full Stack, Security)",
+          "Founder, Lead Engineer"
+        ],
+        "companies": [
+          "Exito Infynites",
+          "Wipro",
+          "Cnotes.in"
+        ],
+        "education": [
+          {
+            "degree": "Master's",
+            "field": "Computer Science",
+            "institution": "New Jersey Institute of Technology Newark, NJ"
+          },
+          {
+            "degree": "Bachelor's",
+            "field": "Computer Science",
+            "institution": "Visvesvaraya Technological University Mysuru, India"
+          }
+        ],
+        "domains": [
+          "backend",
+          "cloud",
+          "data engineering",
+          "devops",
+          "frontend",
+          "fullstack",
+          "machine learning"
+        ],
+        "extraction_method": "hybrid",
+        "confidence": {
+          "skills": "high",
+          "years_exp": "high",
+          "titles": "high",
+          "companies": "high",
+          "education": "high",
+          "domains": "high"
+        },
+        "skills_rule_based": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "skills_llm_added": [],
+        "skills_inferred": {}
+      },
+      "skills": [
+        "AWS",
+        "CI/CD",
+        "Deep Learning",
+        "Django",
+        "Docker",
+        "Drift Monitoring",
+        "Embeddings",
+        "FAISS"
+      ],
+      "sections": [
+        {
+          "section": "summary",
+          "text_length": 119,
+          "weight": 1.0
+        },
+        {
+          "section": "education",
+          "text_length": 193,
+          "weight": 0.3
+        },
+        {
+          "section": "experience",
+          "text_length": 1728,
+          "weight": 0.7
+        },
+        {
+          "section": "projects",
+          "text_length": 2064,
+          "weight": 0.5
+        },
+        {
+          "section": "skills",
+          "text_length": 602,
+          "weight": 1.0
+        }
+      ],
+      "chunks": [
+        {
+          "text": "Tejas Belakavadi Kemparaju\nAI Engineer | 862-214-0129 | tejas55bk@gmail.com | linkedin.com/in/tejasbk | github/tejas100",
+          "section": "summary",
+          "weight": 1.0,
+          "chunk_index": 0,
+          "token_count": 17
+        },
+        {
+          "text": "New Jersey Institute of Technology Newark, NJ\nMaster\u2019s in Computer Science 10/2023 \u2013 05/2025\nVisvesvaraya Technological University Mysuru, India\nBachelor\u2019s in Computer Science 08/2017 \u2013 08/2021",
+          "section": "education",
+          "weight": 0.3,
+          "chunk_index": 1,
+          "token_count": 34
+        },
+        {
+          "text": "Exito Infynites - Software Engineer (Backend, Python) 07/2022 \u2013 08/2023\n\u2022 DesignedandimplementedMLpipelinesincollaborationwithdatascienceteamsforeventdataprocessing,including\nfeature engineering, model training (XGBoost, scikit-learn), and production inference integration\n\u2022 Developed batch and real-time inference APIs using FastAPI to serve ML predictions with sub-200ms latency\n\u2022 Implementedautomatedmodelevaluationworkflows(cross-validation,hyperparametertuning,precision/recalltrack-\ning) to improve model robustness and reduce false positives\n\u2022 DesignedRESTfulbackendservicestoprocesshigh-volumeeventstreamsandintegrateMLpredictionsintosystems\nWipro - Project Engineer (Full Stack, Security) 10/2021 \u2013 07/2022\n\u2022 BuiltscalablebackendsystemswithJava,implementedRESTAPIs,&deployedmicroservicesonAWSforavailability\n\u2022 ReducedAPIresponsetimeby40%throughloadbalancing,requestrouting,andefficientdataserializationpipelines\n\u2022 Enhanced reliability and scalability by refactoring services and adopting Docker + Kubernetes containerization\n\u2022 Designed relational schemas and optimized PostgreSQL queries for scalable analytics and reporting workflows\nCnotes.in - Founder, Lead Engineer 05/2019 \u2013 08/2021\n\u2022 Builtafull-stackCRM(LAMP+React)for50K+users,enablingLocalCableOperatorstomanagebillingandclient\nrecords efficiently. Implemented role-based authentication and input sanitization to prevent injection vulnerabilities\n\u2022 DevelopedresponsivedashboardsandinteractiveUIsinReacttovisualizereal-timecustomeractivityandSMSalerts\n\u2022 Designed and operated transactional billing and money-movement workflows, ensuring correct balance updates,\nidempotent transaction processing, and audit-ready event logs for payment confirmations and renewals",
+          "section": "experience",
+          "weight": 0.7,
+          "chunk_index": 2,
+          "token_count": 188
+        },
+        {
+          "text": "Instruction Tuning Dataset Generator for StarCoder2-15B | Python, LoRA, PEFT New Jersey, USA\n\u2022 Designedandimplementedasyntheticinstruction-tuningpipelineforStarCoder2-15B,generatinghigh-qualitytrain-\ning data through prompt orchestration and automated validation workflows\n\u2022 Fine-tunedopen-sourceLLMsusingLoRA/QLoRAwithPEFTandHuggingFaceTransformers,enablingparameter-\nefficient training and reducing GPU memory usage by 70% while maintaining model performance\n\u2022 Refactored&extendedthecodebasefromStackv1tosupportmulti-languageparsinganddynamicpromptformatting\n\u2022 Built a data validation, filtering pipelines to improve instruction dataset quality and reduce noisy before fine-tuning\nAgentic Career Assistant (RAG-based Conversational AI System) | Py, RAG, FAISS New Jersey, USA\n\u2022 Designed&deployedastateful,tool-usingAIagentthatautomatesmulti-stepcareerworkflows(resumeanalysis,job\nmatching, skill gap detection, interview prep), reducing decision effort through structured reasoning and retrieval\n\u2022 Builtaproduction-gradeRetrieval-AugmentedGeneration(RAG)infrastructurewithembedding-basedsearch(sentence-\ntransformers + FAISS), metadata enrichment, and dynamic context assembly\n\u2022 Implemented agent orchestration layer combining retrieval, LLM evaluation, and response validation\n\u2022 IntegratedOpenAIAPI(GPT-4o-mini)intomulti-stageagentpipelinewithstructuredJSONvalidation,deterministic\nmerge logic, & rule-based fallbacks, ensuring reliability, idempotency, and graceful degradation under API failure\n\u2022 DeployedinferenceusingvLLMonGPU-backedinstances,optimizingtokenthroughputandreducingresponselatency\nby 30% via batching and prompt optimization\nPublications\nThe prediction of CERN electron mass collision by using CATBoosting and LGBMR Published in IEEE\n\u2022 AppliedMLatCERNusingCatBoost,&advancedfeatures,achieving99%accuracy&boostingpredictionreliability\nDetecting Diabetic Retinopathy using Deep Learning \u2014 Tensorflow, Django, Python Published Link\n\u2022 Developed a model for diabetic retinopathy detection using Fully convolutional Neural Network, with 93% accuracy",
+          "section": "projects",
+          "weight": 0.5,
+          "chunk_index": 3,
+          "token_count": 242
+        },
+        {
+          "text": "AI / LLM: RAG pipelines, LangChain, Hugging Face Transformers, LLM inference (vLLM), embeddings\n(sentence-transformers), vector search (FAISS), prompt orchestration, LLM fine-tuning (LoRA, QLoRA, PEFT)\nLanguages: Python, Java, SQL, TypeScript, React, Redis\nML & Data: TensorFlow, PyTorch, Scikit-learn, XGBoost, MLflow, drift monitoring, model evaluation\nVector Databases: FAISS, Pinecone, ChromaDB, PostgreSQL, MongoDB\nCloud & Infrastructure: Docker, Kubernetes, AWS (EKS, SQS, SNS, Lambda), Kafka, CI/CD (GitHub Actions)\nFrameworks & Libraries: Django, Node.js, React, Next.js, MongoDB, pandas, NumPy",
+          "section": "skills",
+          "weight": 1.0,
+          "chunk_index": 4,
+          "token_count": 98
+        }
+      ]
+    },
+    {
+      "id": "0b1e393f",
+      "session_id": "default",
+      "name": "TejasAIE2",
+      "original_filename": "TejasAIE2.pdf",
+      "file_path": "/var/folders/wz/zw9l5bgj2gq1rgrj3mtz4j140000gn/T/rack_ingest_c3bxpjo4.pdf",
+      "file_ext": ".pdf",
+      "status": "active",
+      "uploaded_at": "2026-03-15T02:49:27.480006+00:00",
+      "updated": "Just now",
+      "raw_text_length": 4779,
+      "section_count": 5,
+      "chunk_count": 5,
+      "embedding_dim": 384,
+      "indexed": true,
+      "index_stats": {
+        "resume_id": "0b1e393f",
+        "chunks_added": 5,
+        "total_vectors": 10,
+        "index_type": "Flat"
+      },
+      "structured": {
+        "skills": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "years_exp": 4.1,
+        "titles": [
+          "Software Engineer (Backend, Python) 07/2022",
+          "Project Engineer (Full Stack, Security) 10/2021",
+          "Founder, Lead Engineer 05/2019",
+          "Software Engineer",
+          "Project Engineer",
+          "Founder"
+        ],
+        "companies": [
+          "Exito Infynites",
+          "Wipro",
+          "Cnotes.in"
+        ],
+        "education": [
+          {
+            "degree": "Master's",
+            "field": "Computer Science",
+            "institution": "New Jersey Institute of Technology Newark, NJ"
+          },
+          {
+            "degree": "Bachelor's",
+            "field": "Computer Science",
+            "institution": "Visvesvaraya Technological University Mysuru, India"
+          }
+        ],
+        "domains": [
+          "backend",
+          "cloud",
+          "data engineering",
+          "devops",
+          "frontend",
+          "fullstack",
+          "machine learning"
+        ],
+        "extraction_method": "hybrid",
+        "confidence": {
+          "skills": "high",
+          "years_exp": "high",
+          "titles": "high",
+          "companies": "high",
+          "education": "high",
+          "domains": "high"
+        },
+        "skills_rule_based": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "skills_llm_added": [],
+        "skills_inferred": {}
+      },
+      "skills": [
+        "AWS",
+        "CI/CD",
+        "Deep Learning",
+        "Django",
+        "Docker",
+        "Drift Monitoring",
+        "Embeddings",
+        "FAISS"
+      ],
+      "sections": [
+        {
+          "section": "summary",
+          "text_length": 141,
+          "weight": 1.0
+        },
+        {
+          "section": "education",
+          "text_length": 193,
+          "weight": 0.3
+        },
+        {
+          "section": "experience",
+          "text_length": 1728,
+          "weight": 0.7
+        },
+        {
+          "section": "projects",
+          "text_length": 2064,
+          "weight": 0.5
+        },
+        {
+          "section": "skills",
+          "text_length": 602,
+          "weight": 1.0
+        }
+      ],
+      "chunks": [
+        {
+          "text": "Tejas Belakavadi Kemparaju\nSoftware Engineer (Generative AI) | 862-214-0129 | tejas55bk@gmail.com | linkedin.com/in/tejasbk | github/tejas100",
+          "section": "summary",
+          "weight": 1.0,
+          "chunk_index": 0,
+          "token_count": 19
+        },
+        {
+          "text": "New Jersey Institute of Technology Newark, NJ\nMaster\u2019s in Computer Science 10/2023 \u2013 05/2025\nVisvesvaraya Technological University Mysuru, India\nBachelor\u2019s in Computer Science 08/2017 \u2013 08/2021",
+          "section": "education",
+          "weight": 0.3,
+          "chunk_index": 1,
+          "token_count": 34
+        },
+        {
+          "text": "Exito Infynites - Software Engineer (Backend, Python) 07/2022 \u2013 08/2023\n\u2022 DesignedandimplementedMLpipelinesincollaborationwithdatascienceteamsforeventdataprocessing,including\nfeature engineering, model training (XGBoost, scikit-learn), and production inference integration\n\u2022 Developed batch and real-time inference APIs using FastAPI to serve ML predictions with sub-200ms latency\n\u2022 Implementedautomatedmodelevaluationworkflows(cross-validation,hyperparametertuning,precision/recalltrack-\ning) to improve model robustness and reduce false positives\n\u2022 DesignedRESTfulbackendservicestoprocesshigh-volumeeventstreamsandintegrateMLpredictionsintosystems\nWipro - Project Engineer (Full Stack, Security) 10/2021 \u2013 07/2022\n\u2022 BuiltscalablebackendsystemswithJava,implementedRESTAPIs,&deployedmicroservicesonAWSforavailability\n\u2022 ReducedAPIresponsetimeby40%throughloadbalancing,requestrouting,andefficientdataserializationpipelines\n\u2022 Enhanced reliability and scalability by refactoring services and adopting Docker + Kubernetes containerization\n\u2022 Designed relational schemas and optimized PostgreSQL queries for scalable analytics and reporting workflows\nCnotes.in - Founder, Lead Engineer 05/2019 \u2013 08/2021\n\u2022 Builtafull-stackCRM(LAMP+React)for50K+users,enablingLocalCableOperatorstomanagebillingandclient\nrecords efficiently. Implemented role-based authentication and input sanitization to prevent injection vulnerabilities\n\u2022 DevelopedresponsivedashboardsandinteractiveUIsinReacttovisualizereal-timecustomeractivityandSMSalerts\n\u2022 Designed and operated transactional billing and money-movement workflows, ensuring correct balance updates,\nidempotent transaction processing, and audit-ready event logs for payment confirmations and renewals",
+          "section": "experience",
+          "weight": 0.7,
+          "chunk_index": 2,
+          "token_count": 188
+        },
+        {
+          "text": "Instruction Tuning Dataset Generator for StarCoder2-15B | Python, LoRA, PEFT New Jersey, USA\n\u2022 Designedandimplementedasyntheticinstruction-tuningpipelineforStarCoder2-15B,generatinghigh-qualitytrain-\ning data through prompt orchestration and automated validation workflows\n\u2022 Fine-tunedopen-sourceLLMsusingLoRA/QLoRAwithPEFTandHuggingFaceTransformers,enablingparameter-\nefficient training and reducing GPU memory usage by 70% while maintaining model performance\n\u2022 Refactored&extendedthecodebasefromStackv1tosupportmulti-languageparsinganddynamicpromptformatting\n\u2022 Built a data validation, filtering pipelines to improve instruction dataset quality and reduce noisy before fine-tuning\nAgentic Career Assistant (RAG-based Conversational AI System) | Py, RAG, FAISS New Jersey, USA\n\u2022 Designed&deployedastateful,tool-usingAIagentthatautomatesmulti-stepcareerworkflows(resumeanalysis,job\nmatching, skill gap detection, interview prep), reducing decision effort through structured reasoning and retrieval\n\u2022 Builtaproduction-gradeRetrieval-AugmentedGeneration(RAG)infrastructurewithembedding-basedsearch(sentence-\ntransformers + FAISS), metadata enrichment, and dynamic context assembly\n\u2022 Implemented agent orchestration layer combining retrieval, LLM evaluation, and response validation\n\u2022 IntegratedOpenAIAPI(GPT-4o-mini)intomulti-stageagentpipelinewithstructuredJSONvalidation,deterministic\nmerge logic, & rule-based fallbacks, ensuring reliability, idempotency, and graceful degradation under API failure\n\u2022 DeployedinferenceusingvLLMonGPU-backedinstances,optimizingtokenthroughputandreducingresponselatency\nby 30% via batching and prompt optimization\nPublications\nThe prediction of CERN electron mass collision by using CATBoosting and LGBMR Published in IEEE\n\u2022 AppliedMLatCERNusingCatBoost,&advancedfeatures,achieving99%accuracy&boostingpredictionreliability\nDetecting Diabetic Retinopathy using Deep Learning \u2014 Tensorflow, Django, Python Published Link\n\u2022 Developed a model for diabetic retinopathy detection using Fully convolutional Neural Network, with 93% accuracy",
+          "section": "projects",
+          "weight": 0.5,
+          "chunk_index": 3,
+          "token_count": 242
+        },
+        {
+          "text": "AI / LLM: RAG pipelines, LangChain, Hugging Face Transformers, LLM inference (vLLM), embeddings\n(sentence-transformers), vector search (FAISS), prompt orchestration, LLM fine-tuning (LoRA, QLoRA, PEFT)\nLanguages: Python, Java, SQL, TypeScript, React, Redis\nML & Data: TensorFlow, PyTorch, Scikit-learn, XGBoost, MLflow, drift monitoring, model evaluation\nVector Databases: FAISS, Pinecone, ChromaDB, PostgreSQL, MongoDB\nCloud & Infrastructure: Docker, Kubernetes, AWS (EKS, SQS, SNS, Lambda), Kafka, CI/CD (GitHub Actions)\nFrameworks & Libraries: Django, Node.js, React, Next.js, MongoDB, pandas, NumPy",
+          "section": "skills",
+          "weight": 1.0,
+          "chunk_index": 4,
+          "token_count": 98
+        }
+      ]
+    },
+    {
+      "id": "6bc46c6d",
+      "session_id": "default",
+      "name": "TejasAIE3",
+      "original_filename": "TejasAIE3.pdf",
+      "file_path": "/var/folders/wz/zw9l5bgj2gq1rgrj3mtz4j140000gn/T/rack_ingest_8cr3ogtb.pdf",
+      "file_ext": ".pdf",
+      "status": "active",
+      "uploaded_at": "2026-03-15T02:54:20.280822+00:00",
+      "updated": "Just now",
+      "raw_text_length": 4757,
+      "section_count": 5,
+      "chunk_count": 5,
+      "embedding_dim": 384,
+      "indexed": true,
+      "index_stats": {
+        "resume_id": "6bc46c6d",
+        "chunks_added": 5,
+        "total_vectors": 15,
+        "index_type": "Flat"
+      },
+      "structured": {
+        "skills": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "years_exp": 4.1,
+        "titles": [
+          "Software Engineer (Backend, Python) 07/2022",
+          "Project Engineer (Full Stack, Security) 10/2021",
+          "Founder, Lead Engineer 05/2019",
+          "Software Engineer",
+          "Project Engineer",
+          "Founder"
+        ],
+        "companies": [
+          "Exito Infynites",
+          "Wipro",
+          "Cnotes.in"
+        ],
+        "education": [
+          {
+            "degree": "Master's",
+            "field": "Computer Science",
+            "institution": "New Jersey Institute of Technology Newark, NJ"
+          },
+          {
+            "degree": "Bachelor's",
+            "field": "Computer Science",
+            "institution": "Visvesvaraya Technological University Mysuru, India"
+          }
+        ],
+        "domains": [
+          "backend",
+          "cloud",
+          "data engineering",
+          "devops",
+          "frontend",
+          "fullstack",
+          "machine learning"
+        ],
+        "extraction_method": "hybrid",
+        "confidence": {
+          "skills": "high",
+          "years_exp": "high",
+          "titles": "high",
+          "companies": "high",
+          "education": "high",
+          "domains": "high"
+        },
+        "skills_rule_based": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "skills_llm_added": [],
+        "skills_inferred": {}
+      },
+      "skills": [
+        "AWS",
+        "CI/CD",
+        "Deep Learning",
+        "Django",
+        "Docker",
+        "Drift Monitoring",
+        "Embeddings",
+        "FAISS"
+      ],
+      "sections": [
+        {
+          "section": "summary",
+          "text_length": 119,
+          "weight": 1.0
+        },
+        {
+          "section": "education",
+          "text_length": 193,
+          "weight": 0.3
+        },
+        {
+          "section": "experience",
+          "text_length": 1728,
+          "weight": 0.7
+        },
+        {
+          "section": "projects",
+          "text_length": 2064,
+          "weight": 0.5
+        },
+        {
+          "section": "skills",
+          "text_length": 602,
+          "weight": 1.0
+        }
+      ],
+      "chunks": [
+        {
+          "text": "Tejas Belakavadi Kemparaju\nAI Engineer | 862-214-0129 | tejas55bk@gmail.com | linkedin.com/in/tejasbk | github/tejas100",
+          "section": "summary",
+          "weight": 1.0,
+          "chunk_index": 0,
+          "token_count": 17
+        },
+        {
+          "text": "New Jersey Institute of Technology Newark, NJ\nMaster\u2019s in Computer Science 10/2023 \u2013 05/2025\nVisvesvaraya Technological University Mysuru, India\nBachelor\u2019s in Computer Science 08/2017 \u2013 08/2021",
+          "section": "education",
+          "weight": 0.3,
+          "chunk_index": 1,
+          "token_count": 34
+        },
+        {
+          "text": "Exito Infynites - Software Engineer (Backend, Python) 07/2022 \u2013 08/2023\n\u2022 DesignedandimplementedMLpipelinesincollaborationwithdatascienceteamsforeventdataprocessing,including\nfeature engineering, model training (XGBoost, scikit-learn), and production inference integration\n\u2022 Developed batch and real-time inference APIs using FastAPI to serve ML predictions with sub-200ms latency\n\u2022 Implementedautomatedmodelevaluationworkflows(cross-validation,hyperparametertuning,precision/recalltrack-\ning) to improve model robustness and reduce false positives\n\u2022 DesignedRESTfulbackendservicestoprocesshigh-volumeeventstreamsandintegrateMLpredictionsintosystems\nWipro - Project Engineer (Full Stack, Security) 10/2021 \u2013 07/2022\n\u2022 BuiltscalablebackendsystemswithJava,implementedRESTAPIs,&deployedmicroservicesonAWSforavailability\n\u2022 ReducedAPIresponsetimeby40%throughloadbalancing,requestrouting,andefficientdataserializationpipelines\n\u2022 Enhanced reliability and scalability by refactoring services and adopting Docker + Kubernetes containerization\n\u2022 Designed relational schemas and optimized PostgreSQL queries for scalable analytics and reporting workflows\nCnotes.in - Founder, Lead Engineer 05/2019 \u2013 08/2021\n\u2022 Builtafull-stackCRM(LAMP+React)for50K+users,enablingLocalCableOperatorstomanagebillingandclient\nrecords efficiently. Implemented role-based authentication and input sanitization to prevent injection vulnerabilities\n\u2022 DevelopedresponsivedashboardsandinteractiveUIsinReacttovisualizereal-timecustomeractivityandSMSalerts\n\u2022 Designed and operated transactional billing and money-movement workflows, ensuring correct balance updates,\nidempotent transaction processing, and audit-ready event logs for payment confirmations and renewals",
+          "section": "experience",
+          "weight": 0.7,
+          "chunk_index": 2,
+          "token_count": 188
+        },
+        {
+          "text": "Instruction Tuning Dataset Generator for StarCoder2-15B | Python, LoRA, PEFT New Jersey, USA\n\u2022 Designedandimplementedasyntheticinstruction-tuningpipelineforStarCoder2-15B,generatinghigh-qualitytrain-\ning data through prompt orchestration and automated validation workflows\n\u2022 Fine-tunedopen-sourceLLMsusingLoRA/QLoRAwithPEFTandHuggingFaceTransformers,enablingparameter-\nefficient training and reducing GPU memory usage by 70% while maintaining model performance\n\u2022 Refactored&extendedthecodebasefromStackv1tosupportmulti-languageparsinganddynamicpromptformatting\n\u2022 Built a data validation, filtering pipelines to improve instruction dataset quality and reduce noisy before fine-tuning\nAgentic Career Assistant (RAG-based Conversational AI System) | Py, RAG, FAISS New Jersey, USA\n\u2022 Designed&deployedastateful,tool-usingAIagentthatautomatesmulti-stepcareerworkflows(resumeanalysis,job\nmatching, skill gap detection, interview prep), reducing decision effort through structured reasoning and retrieval\n\u2022 Builtaproduction-gradeRetrieval-AugmentedGeneration(RAG)infrastructurewithembedding-basedsearch(sentence-\ntransformers + FAISS), metadata enrichment, and dynamic context assembly\n\u2022 Implemented agent orchestration layer combining retrieval, LLM evaluation, and response validation\n\u2022 IntegratedOpenAIAPI(GPT-4o-mini)intomulti-stageagentpipelinewithstructuredJSONvalidation,deterministic\nmerge logic, & rule-based fallbacks, ensuring reliability, idempotency, and graceful degradation under API failure\n\u2022 DeployedinferenceusingvLLMonGPU-backedinstances,optimizingtokenthroughputandreducingresponselatency\nby 30% via batching and prompt optimization\nPublications\nThe prediction of CERN electron mass collision by using CATBoosting and LGBMR Published in IEEE\n\u2022 AppliedMLatCERNusingCatBoost,&advancedfeatures,achieving99%accuracy&boostingpredictionreliability\nDetecting Diabetic Retinopathy using Deep Learning \u2014 Tensorflow, Django, Python Published Link\n\u2022 Developed a model for diabetic retinopathy detection using Fully convolutional Neural Network, with 93% accuracy",
+          "section": "projects",
+          "weight": 0.5,
+          "chunk_index": 3,
+          "token_count": 242
+        },
+        {
+          "text": "AI / LLM: RAG pipelines, LangChain, Hugging Face Transformers, LLM inference (vLLM), embeddings\n(sentence-transformers), vector search (FAISS), prompt orchestration, LLM fine-tuning (LoRA, QLoRA, PEFT)\nLanguages: Python, Java, SQL, TypeScript, React, Redis\nML & Data: TensorFlow, PyTorch, Scikit-learn, XGBoost, MLflow, drift monitoring, model evaluation\nVector Databases: FAISS, Pinecone, ChromaDB, PostgreSQL, MongoDB\nCloud & Infrastructure: Docker, Kubernetes, AWS (EKS, SQS, SNS, Lambda), Kafka, CI/CD (GitHub Actions)\nFrameworks & Libraries: Django, Node.js, React, Next.js, MongoDB, pandas, NumPy",
+          "section": "skills",
+          "weight": 1.0,
+          "chunk_index": 4,
+          "token_count": 98
+        }
+      ]
+    },
+    {
+      "id": "afbfee91",
+      "session_id": "default",
+      "name": "TejasAIE3",
+      "original_filename": "TejasAIE3.pdf",
+      "file_path": "/var/folders/wz/zw9l5bgj2gq1rgrj3mtz4j140000gn/T/rack_ingest_88357n8u.pdf",
+      "file_ext": ".pdf",
+      "status": "active",
+      "uploaded_at": "2026-03-15T03:19:11.190696+00:00",
+      "updated": "Just now",
+      "raw_text_length": 4757,
+      "section_count": 5,
+      "chunk_count": 5,
+      "embedding_dim": 384,
+      "indexed": true,
+      "index_stats": {
+        "resume_id": "afbfee91",
+        "chunks_added": 5,
+        "total_vectors": 20,
+        "index_type": "Flat"
+      },
+      "structured": {
+        "skills": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "years_exp": 4.1,
+        "titles": [
+          "Software Engineer (Backend, Python) 07/2022",
+          "Project Engineer (Full Stack, Security) 10/2021",
+          "Founder, Lead Engineer 05/2019",
+          "Software Engineer",
+          "Project Engineer",
+          "Founder"
+        ],
+        "companies": [
+          "Exito Infynites",
+          "Wipro",
+          "Cnotes.in"
+        ],
+        "education": [
+          {
+            "degree": "Master's",
+            "field": "Computer Science",
+            "institution": "New Jersey Institute of Technology Newark, NJ"
+          },
+          {
+            "degree": "Bachelor's",
+            "field": "Computer Science",
+            "institution": "Visvesvaraya Technological University Mysuru, India"
+          }
+        ],
+        "domains": [
+          "backend",
+          "cloud",
+          "data engineering",
+          "devops",
+          "frontend",
+          "fullstack",
+          "machine learning"
+        ],
+        "extraction_method": "hybrid",
+        "confidence": {
+          "skills": "high",
+          "years_exp": "high",
+          "titles": "high",
+          "companies": "high",
+          "education": "high",
+          "domains": "high"
+        },
+        "skills_rule_based": [
+          "AWS",
+          "CI/CD",
+          "Deep Learning",
+          "Django",
+          "Docker",
+          "Drift Monitoring",
+          "Embeddings",
+          "FAISS",
+          "FastAPI",
+          "Feature Engineering",
+          "Fine-tuning",
+          "Git",
+          "GitHub Actions",
+          "Hugging Face",
+          "Java",
+          "JavaScript",
+          "Kafka",
+          "Kubernetes",
+          "LLM",
+          "LangChain",
+          "MLflow",
+          "Model Evaluation",
+          "MongoDB",
+          "Neural Networks",
+          "Next.js",
+          "Node.js",
+          "NumPy",
+          "Pandas",
+          "PostgreSQL",
+          "Prompt Engineering",
+          "PyTorch",
+          "Python",
+          "RAG",
+          "React",
+          "Redis",
+          "SQL",
+          "TensorFlow",
+          "Transformers",
+          "TypeScript",
+          "Vector Search",
+          "XGBoost",
+          "scikit-learn",
+          "vLLM"
+        ],
+        "skills_llm_added": [],
+        "skills_inferred": {}
+      },
+      "skills": [
+        "AWS",
+        "CI/CD",
+        "Deep Learning",
+        "Django",
+        "Docker",
+        "Drift Monitoring",
+        "Embeddings",
+        "FAISS"
+      ],
+      "sections": [
+        {
+          "section": "summary",
+          "text_length": 119,
+          "weight": 1.0
+        },
+        {
+          "section": "education",
+          "text_length": 193,
+          "weight": 0.3
+        },
+        {
+          "section": "experience",
+          "text_length": 1728,
+          "weight": 0.7
+        },
+        {
+          "section": "projects",
+          "text_length": 2064,
+          "weight": 0.5
+        },
+        {
+          "section": "skills",
+          "text_length": 602,
+          "weight": 1.0
+        }
+      ],
+      "chunks": [
+        {
+          "text": "Tejas Belakavadi Kemparaju\nAI Engineer | 862-214-0129 | tejas55bk@gmail.com | linkedin.com/in/tejasbk | github/tejas100",
+          "section": "summary",
+          "weight": 1.0,
+          "chunk_index": 0,
+          "token_count": 17
+        },
+        {
+          "text": "New Jersey Institute of Technology Newark, NJ\nMaster\u2019s in Computer Science 10/2023 \u2013 05/2025\nVisvesvaraya Technological University Mysuru, India\nBachelor\u2019s in Computer Science 08/2017 \u2013 08/2021",
+          "section": "education",
+          "weight": 0.3,
+          "chunk_index": 1,
+          "token_count": 34
+        },
+        {
+          "text": "Exito Infynites - Software Engineer (Backend, Python) 07/2022 \u2013 08/2023\n\u2022 DesignedandimplementedMLpipelinesincollaborationwithdatascienceteamsforeventdataprocessing,including\nfeature engineering, model training (XGBoost, scikit-learn), and production inference integration\n\u2022 Developed batch and real-time inference APIs using FastAPI to serve ML predictions with sub-200ms latency\n\u2022 Implementedautomatedmodelevaluationworkflows(cross-validation,hyperparametertuning,precision/recalltrack-\ning) to improve model robustness and reduce false positives\n\u2022 DesignedRESTfulbackendservicestoprocesshigh-volumeeventstreamsandintegrateMLpredictionsintosystems\nWipro - Project Engineer (Full Stack, Security) 10/2021 \u2013 07/2022\n\u2022 BuiltscalablebackendsystemswithJava,implementedRESTAPIs,&deployedmicroservicesonAWSforavailability\n\u2022 ReducedAPIresponsetimeby40%throughloadbalancing,requestrouting,andefficientdataserializationpipelines\n\u2022 Enhanced reliability and scalability by refactoring services and adopting Docker + Kubernetes containerization\n\u2022 Designed relational schemas and optimized PostgreSQL queries for scalable analytics and reporting workflows\nCnotes.in - Founder, Lead Engineer 05/2019 \u2013 08/2021\n\u2022 Builtafull-stackCRM(LAMP+React)for50K+users,enablingLocalCableOperatorstomanagebillingandclient\nrecords efficiently. Implemented role-based authentication and input sanitization to prevent injection vulnerabilities\n\u2022 DevelopedresponsivedashboardsandinteractiveUIsinReacttovisualizereal-timecustomeractivityandSMSalerts\n\u2022 Designed and operated transactional billing and money-movement workflows, ensuring correct balance updates,\nidempotent transaction processing, and audit-ready event logs for payment confirmations and renewals",
+          "section": "experience",
+          "weight": 0.7,
+          "chunk_index": 2,
+          "token_count": 188
+        },
+        {
+          "text": "Instruction Tuning Dataset Generator for StarCoder2-15B | Python, LoRA, PEFT New Jersey, USA\n\u2022 Designedandimplementedasyntheticinstruction-tuningpipelineforStarCoder2-15B,generatinghigh-qualitytrain-\ning data through prompt orchestration and automated validation workflows\n\u2022 Fine-tunedopen-sourceLLMsusingLoRA/QLoRAwithPEFTandHuggingFaceTransformers,enablingparameter-\nefficient training and reducing GPU memory usage by 70% while maintaining model performance\n\u2022 Refactored&extendedthecodebasefromStackv1tosupportmulti-languageparsinganddynamicpromptformatting\n\u2022 Built a data validation, filtering pipelines to improve instruction dataset quality and reduce noisy before fine-tuning\nAgentic Career Assistant (RAG-based Conversational AI System) | Py, RAG, FAISS New Jersey, USA\n\u2022 Designed&deployedastateful,tool-usingAIagentthatautomatesmulti-stepcareerworkflows(resumeanalysis,job\nmatching, skill gap detection, interview prep), reducing decision effort through structured reasoning and retrieval\n\u2022 Builtaproduction-gradeRetrieval-AugmentedGeneration(RAG)infrastructurewithembedding-basedsearch(sentence-\ntransformers + FAISS), metadata enrichment, and dynamic context assembly\n\u2022 Implemented agent orchestration layer combining retrieval, LLM evaluation, and response validation\n\u2022 IntegratedOpenAIAPI(GPT-4o-mini)intomulti-stageagentpipelinewithstructuredJSONvalidation,deterministic\nmerge logic, & rule-based fallbacks, ensuring reliability, idempotency, and graceful degradation under API failure\n\u2022 DeployedinferenceusingvLLMonGPU-backedinstances,optimizingtokenthroughputandreducingresponselatency\nby 30% via batching and prompt optimization\nPublications\nThe prediction of CERN electron mass collision by using CATBoosting and LGBMR Published in IEEE\n\u2022 AppliedMLatCERNusingCatBoost,&advancedfeatures,achieving99%accuracy&boostingpredictionreliability\nDetecting Diabetic Retinopathy using Deep Learning \u2014 Tensorflow, Django, Python Published Link\n\u2022 Developed a model for diabetic retinopathy detection using Fully convolutional Neural Network, with 93% accuracy",
+          "section": "projects",
+          "weight": 0.5,
+          "chunk_index": 3,
+          "token_count": 242
+        },
+        {
+          "text": "AI / LLM: RAG pipelines, LangChain, Hugging Face Transformers, LLM inference (vLLM), embeddings\n(sentence-transformers), vector search (FAISS), prompt orchestration, LLM fine-tuning (LoRA, QLoRA, PEFT)\nLanguages: Python, Java, SQL, TypeScript, React, Redis\nML & Data: TensorFlow, PyTorch, Scikit-learn, XGBoost, MLflow, drift monitoring, model evaluation\nVector Databases: FAISS, Pinecone, ChromaDB, PostgreSQL, MongoDB\nCloud & Infrastructure: Docker, Kubernetes, AWS (EKS, SQS, SNS, Lambda), Kafka, CI/CD (GitHub Actions)\nFrameworks & Libraries: Django, Node.js, React, Next.js, MongoDB, pandas, NumPy",
+          "section": "skills",
+          "weight": 1.0,
+          "chunk_index": 4,
+          "token_count": 98
+        }
+      ]
     }
   ]
 }

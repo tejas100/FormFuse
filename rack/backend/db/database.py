@@ -35,8 +35,11 @@ if not DATABASE_URL:
 
 engine = create_async_engine(
     DATABASE_URL,
-    # Transaction pooler (PgBouncer) requires statement-level pooling mode.
-    # pool_pre_ping keeps connections healthy across idle periods.
+    # statement_cache_size=0 is required when using Supabase's transaction pooler
+    # (pgbouncer in transaction mode). Without it, asyncpg caches prepared
+    # statements that pgbouncer can't track across connections, causing
+    # DuplicatePreparedStatementError on concurrent requests.
+    connect_args={"statement_cache_size": 0},
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
