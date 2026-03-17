@@ -27,11 +27,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from supabase import create_client, Client
 
 from db.database import get_db
 from models.orm import Resume, ResumeChunk
@@ -55,30 +55,34 @@ STORAGE_BUCKET = "resumes"
 # Optional bearer — won't error if missing (anonymous users)
 _optional_bearer = HTTPBearer(auto_error=False)
 
+# Supabase SDK client — uses service key, handles sb_secret_ key format correctly
+def _get_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
 
 # ── Supabase Storage helpers ──────────────────────────────────────────────────
 
 async def _upload_to_storage(user_id: uuid.UUID, filename: str, content: bytes, content_type: str) -> str:
     """
-    Upload a file to Supabase Storage.
+    Upload a file to Supabase Storage via supabase-py SDK.
     Returns the storage path (e.g. 'user-uuid/filename.pdf').
+
+    NOTE: We use the supabase-py SDK (not raw httpx) because the SUPABASE_SERVICE_KEY
+    is in Supabase's new sb_secret_ opaque format, which is not a JWT. The SDK
+    handles authentication internally; raw Bearer headers won't work.
     """
     storage_path = f"{user_id}/{filename}"
-    url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{storage_path}"
+    supabase = _get_supabase()
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            url,
-            content=content,
-            headers={
-                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                "Content-Type": content_type,
-                "x-upsert": "true",  # overwrite if same filename
-            },
+    try:
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            path=storage_path,
+            file=content,
+            file_options={"content-type": content_type, "upsert": "true"},
         )
-        if resp.status_code not in (200, 201):
-            logger.error(f"Storage upload failed: {resp.status_code} {resp.text}")
-            raise HTTPException(status_code=500, detail="Failed to upload file to storage.")
+    except Exception as e:
+        logger.error(f"Storage upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload file to storage.")
 
     return storage_path
 
@@ -88,32 +92,26 @@ async def _get_signed_url(storage_path: str, expires_in: int = 3600) -> str:
     Generate a signed URL for a private storage file.
     expires_in: seconds until URL expires (default 1 hour).
     """
-    url = f"{SUPABASE_URL}/storage/v1/object/sign/{STORAGE_BUCKET}/{storage_path}"
+    supabase = _get_supabase()
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            url,
-            json={"expiresIn": expires_in},
-            headers={
-                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                "Content-Type": "application/json",
-            },
+    try:
+        result = supabase.storage.from_(STORAGE_BUCKET).create_signed_url(
+            path=storage_path,
+            expires_in=expires_in,
         )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=500, detail="Failed to generate signed URL.")
-        data = resp.json()
-        return f"{SUPABASE_URL}/storage/v1{data['signedURL']}"
+        return result["signedURL"]
+    except Exception as e:
+        logger.error(f"Signed URL generation failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate signed URL.")
 
 
 async def _delete_from_storage(storage_path: str) -> None:
     """Delete a file from Supabase Storage."""
-    url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{storage_path}"
-
-    async with httpx.AsyncClient() as client:
-        await client.delete(
-            url,
-            headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
-        )
+    supabase = _get_supabase()
+    try:
+        supabase.storage.from_(STORAGE_BUCKET).remove([storage_path])
+    except Exception as e:
+        logger.warning(f"Storage delete failed for {storage_path}: {e}")
 
 
 # ── Anonymous upload ──────────────────────────────────────────────────────────
