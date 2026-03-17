@@ -218,7 +218,9 @@ async def upload_resume(
     )
 
     # Write Resume row
-    resume_id = uuid.UUID(resume_data["id"]) if isinstance(resume_data["id"], str) else resume_data["id"]
+    # Always generate a fresh UUID for DB-backed resumes.
+    # resume_data["id"] is the ingestion pipeline's session-scoped ID (not a valid UUID).
+    resume_id = uuid.uuid4()
     db_resume = Resume(
         id=resume_id,
         user_id=current_user.id,
@@ -243,7 +245,7 @@ async def upload_resume(
             resume_id=resume_id,
             user_id=current_user.id,
             chunk_index=chunk["chunk_index"],
-            chunk_text=chunk["chunk_text"],
+            chunk_text=chunk["text"],
             embedding=chunk.get("embedding"),  # list of floats or None
         )
         db.add(db_chunk)
