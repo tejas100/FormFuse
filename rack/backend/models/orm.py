@@ -49,6 +49,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+    preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
     # Relationships
     resumes: Mapped[list["Resume"]] = relationship(
