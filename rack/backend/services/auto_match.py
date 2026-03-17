@@ -322,10 +322,84 @@ def _is_results_stale(meta: dict) -> bool:
         return True
 
 
+# ── Per-user storage helpers ──────────────────────────────────────────
+def _user_results_path(user_id: str) -> str:
+    return os.path.join(WATCHLIST_DIR, f"{user_id}_results.json")
+
+def _user_meta_path(user_id: str) -> str:
+    return os.path.join(WATCHLIST_DIR, f"{user_id}_meta.json")
+
+def _load_auto_results_for_user(user_id: str) -> list:
+    try:
+        with open(_user_results_path(user_id)) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_auto_results_for_user(user_id: str, results: list):
+    os.makedirs(WATCHLIST_DIR, exist_ok=True)
+    with open(_user_results_path(user_id), "w") as f:
+        json.dump(results, f, indent=2)
+
+def _load_auto_meta_for_user(user_id: str) -> dict:
+    try:
+        with open(_user_meta_path(user_id)) as f:
+            return json.load(f)
+    except Exception:
+        return {"last_fetch_at": None, "seen_job_ids": [], "last_pool_fetch_at": None}
+
+def _save_auto_meta_for_user(user_id: str, meta: dict):
+    os.makedirs(WATCHLIST_DIR, exist_ok=True)
+    with open(_user_meta_path(user_id), "w") as f:
+        json.dump(meta, f, indent=2)
+
+def _load_archived_ids_for_user(user_id: str) -> set:
+    meta = _load_auto_meta_for_user(user_id)
+    return set(meta.get("archived_job_ids", []))
+
+def _save_archived_ids_for_user(user_id: str, archived_ids: set):
+    meta = _load_auto_meta_for_user(user_id)
+    meta["archived_job_ids"] = list(archived_ids)
+    _save_auto_meta_for_user(user_id, meta)
+
+
+def archive_jobs_for_user(user_id: str, job_ids: list) -> dict:
+    """
+    Mark job IDs as permanently archived for a specific user.
+    Removes them from that user's stored results immediately.
+    """
+    if not job_ids:
+        return {"archived": 0, "total_archived": len(_load_archived_ids_for_user(user_id))}
+
+    archived = _load_archived_ids_for_user(user_id)
+    new_count = sum(1 for jid in job_ids if jid not in archived)
+    archived.update(job_ids)
+    _save_archived_ids_for_user(user_id, archived)
+
+    existing = _load_auto_results_for_user(user_id)
+    filtered = [r for r in existing if r["job_id"] not in archived]
+    _save_auto_results_for_user(user_id, filtered)
+
+    logger.info(
+        f"[AutoMatch] user={user_id} Archived {new_count} new job(s). "
+        f"Total archived: {len(archived)}. Removed from results: {len(existing) - len(filtered)}"
+    )
+    return {"archived": new_count, "total_archived": len(archived)}
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────
-async def run_auto_pipeline(force: bool = False) -> dict:
+async def run_auto_pipeline(
+    user_id: str,
+    profile: dict,
+    force: bool = False,
+) -> dict:
     """
     Main entry point for the Auto Matches tab.
+
+    Args:
+        user_id:  Authenticated user's UUID (scopes FAISS index + storage).
+        profile:  User's preferences dict from DB (target_roles, preferred_locations, etc.)
+        force:    If True, bypass cache and re-run the full pipeline.
 
     Returns:
         {
@@ -338,20 +412,12 @@ async def run_auto_pipeline(force: bool = False) -> dict:
     from services.ingestion import get_resume_by_id
     from services.llm_scorer import llm_score_batch, rerank_by_llm_score
 
-    # ── Load user profile ─────────────────────────────────────────────
-    _profile_path = os.path.join("uploads", "user_profile.json")
-    try:
-        with open(_profile_path) as _f:
-            profile = json.load(_f)
-    except Exception:
-        profile = {}
-
-    meta = _load_auto_meta()
+    meta = _load_auto_meta_for_user(user_id)
 
     # ── Serve cache if fresh and not forced ───────────────────────────
     if not force and not _is_results_stale(meta):
-        logger.info("[AutoMatch] Cache fresh — returning stored results")
-        stored = _load_auto_results()
+        logger.info(f"[AutoMatch] user={user_id} Cache fresh — returning stored results")
+        stored = _load_auto_results_for_user(user_id)
         return {
             "matches": stored[:DISPLAY_CAP],
             "stats": {
@@ -374,7 +440,7 @@ async def run_auto_pipeline(force: bool = False) -> dict:
             "from_cache": False,
         }
 
-    logger.info(f"[AutoMatch] Starting pipeline for roles: {target_roles}")
+    logger.info(f"[AutoMatch] user={user_id} Starting pipeline for roles: {target_roles}")
 
     # ── Step 1: Refresh job pool if stale or forced ───────────────────
     if force or _is_pool_stale(meta):
@@ -403,7 +469,7 @@ async def run_auto_pipeline(force: bool = False) -> dict:
         j for j in raw_pool
         if _role_matches_title(j["title"], target_roles)
     ]
-    logger.info(f"[AutoMatch] {len(role_matched)} jobs matched target roles from pool of {len(raw_pool)}")
+    logger.info(f"[AutoMatch] user={user_id} {len(role_matched)} jobs matched target roles from pool of {len(raw_pool)}")
 
     # ── Step 2b: Filter by preferred locations ───────────────────────
     # Uses country-aware matching. "Remote" means remote-within-your-country —
@@ -418,21 +484,21 @@ async def run_auto_pipeline(force: bool = False) -> dict:
             if matches_any_preferred_location(j.get("location", ""), preferred_locations)
         ]
         logger.info(
-            f"[AutoMatch] {len(role_matched)} jobs after location filter "
+            f"[AutoMatch] user={user_id} {len(role_matched)} jobs after location filter "
             f"({before - len(role_matched)} excluded) "
             f"prefs={preferred_locations}"
         )
 
     # ── Step 3: Remove already-seen and permanently-archived jobs ───────
     seen_ids     = set(meta.get("seen_job_ids", []))
-    archived_ids = _load_archived_ids()
+    archived_ids = _load_archived_ids_for_user(user_id)
 
     # Archived jobs are excluded permanently — never resurface them
     non_archived = [j for j in role_matched if j["job_id"] not in archived_ids]
     unseen       = [j for j in non_archived  if j["job_id"] not in seen_ids]
 
     logger.info(
-        f"[AutoMatch] {len(unseen)} unseen jobs "
+        f"[AutoMatch] user={user_id} {len(unseen)} unseen jobs "
         f"(filtered {len(role_matched) - len(non_archived)} archived, "
         f"{len(non_archived) - len(unseen)} seen)"
     )
@@ -440,15 +506,15 @@ async def run_auto_pipeline(force: bool = False) -> dict:
     # Reset seen_job_ids only when ALL non-archived jobs have been seen —
     # never bring back archived jobs even after a reset.
     if len(non_archived) > 0 and len(unseen) == 0:
-        logger.info("[AutoMatch] All non-archived jobs seen — resetting seen_job_ids for fresh cycle")
+        logger.info(f"[AutoMatch] user={user_id} All non-archived jobs seen — resetting seen_job_ids for fresh cycle")
         seen_ids = set()
-        unseen = non_archived          # archived jobs are still excluded
+        unseen = non_archived
         meta["seen_job_ids"] = []
 
     if not unseen:
-        existing = _load_auto_results()
+        existing = _load_auto_results_for_user(user_id)
         meta["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
-        _save_auto_meta(meta)
+        _save_auto_meta_for_user(user_id, meta)
         return {
             "matches": existing[:DISPLAY_CAP],
             "stats": {
@@ -486,7 +552,7 @@ async def run_auto_pipeline(force: bool = False) -> dict:
     scored_count  = 0
     parsed_jd_cache = {}  # job_id → parsed_jd (reused in Phase 2)
 
-    logger.info(f"[AutoMatch] Phase 1: scoring {len(unseen_sorted)} jobs with hybrid scorer…")
+    logger.info(f"[AutoMatch] user={user_id} Phase 1: scoring {len(unseen_sorted)} jobs with hybrid scorer…")
 
     for job in unseen_sorted:
         desc = job.get("description_text", "").strip()
@@ -495,7 +561,7 @@ async def run_auto_pipeline(force: bool = False) -> dict:
             continue
 
         try:
-            result = await match_resumes(jd_text=desc, use_llm=False)
+            result = await match_resumes(jd_text=desc, user_id=user_id, use_llm=False)
         except Exception as e:
             logger.error(f"[AutoMatch] Phase 1 scoring error for '{job.get('title')}': {e}")
             continue
@@ -560,10 +626,10 @@ async def run_auto_pipeline(force: bool = False) -> dict:
 
         seen_ids.add(job["job_id"])
 
-    logger.info(f"[AutoMatch] Phase 1 complete: {scored_count} jobs scored → {len(phase1_pairs)} pairs qualify for Phase 2")
+    logger.info(f"[AutoMatch] user={user_id} Phase 1 complete: {scored_count} jobs scored → {len(phase1_pairs)} pairs qualify for Phase 2")
 
     # ── Step 6: Phase 2 — LLM deep scoring ───────────────────────────
-    logger.info(f"[AutoMatch] Phase 2: LLM scoring {len(phase1_pairs)} (job × resume) pairs…")
+    logger.info(f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_pairs)} (job × resume) pairs…")
 
     llm_scored_pairs = await llm_score_batch(phase1_pairs)
 
@@ -628,17 +694,17 @@ async def run_auto_pipeline(force: bool = False) -> dict:
             "matched_at":      datetime.now(timezone.utc).isoformat(),
         })
 
-    logger.info(f"[AutoMatch] Phase 2 complete: {len(new_entries)} final entries after LLM scoring")
+    logger.info(f"[AutoMatch] user={user_id} Phase 2 complete: {len(new_entries)} final entries after LLM scoring")
 
     # ── Step 9: Merge with existing, sort, keep top STORE_CAP ─────────
-    existing = _load_auto_results()
+    existing = _load_auto_results_for_user(user_id)
     merged = {r["job_id"]: r for r in existing}
     for e in new_entries:
         merged[e["job_id"]] = e
 
     final = sorted(merged.values(), key=lambda x: x.get("rank_score", 0), reverse=True)
     final = final[:STORE_CAP]
-    _save_auto_results(final)
+    _save_auto_results_for_user(user_id, final)
 
     # ── Step 10: Persist meta ─────────────────────────────────────────
     seen_list = list(seen_ids)
@@ -646,11 +712,11 @@ async def run_auto_pipeline(force: bool = False) -> dict:
         seen_list = seen_list[-SEEN_ID_CAP:]
     meta["seen_job_ids"] = seen_list
     meta["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
-    _save_auto_meta(meta)
+    _save_auto_meta_for_user(user_id, meta)
 
     llm_count = sum(1 for e in new_entries if e.get("scoring_method") == "llm+hybrid")
     logger.info(
-        f"[AutoMatch] Complete: {len(new_entries)} new entries "
+        f"[AutoMatch] user={user_id} Complete: {len(new_entries)} new entries "
         f"({llm_count} LLM-scored), {len(final)} total stored, showing top {DISPLAY_CAP}"
     )
 

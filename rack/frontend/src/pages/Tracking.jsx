@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { getAuthHeaders } from "../utils/api";
 
 const API = "http://localhost:8000/api/tracking";
 const RESUMES_API = "http://localhost:8000/api/resumes";
@@ -1018,7 +1019,11 @@ function AutoMatchesTab({ profile }) {
 
   const loadStoredMatches = useCallback(async () => {
     try {
-      const [mr, me] = await Promise.all([fetch(`${API}/auto/matches`), fetch(`${API}/auto/meta`)]);
+      const headers = await getAuthHeaders();
+      const [mr, me] = await Promise.all([
+        fetch(`${API}/auto/matches`, { headers }),
+        fetch(`${API}/auto/meta`, { headers }),
+      ]);
       if (mr.ok) setMatches(await mr.json());
       if (me.ok) setMeta(await me.json());
     } catch {}
@@ -1045,9 +1050,10 @@ function AutoMatchesTab({ profile }) {
       const jobIds = matches.map(m => m.job_id).filter(Boolean);
       if (jobIds.length > 0) {
         try {
+          const headers = await getAuthHeaders();
           await fetch(`${API}/auto/archive`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...headers },
             body: JSON.stringify({ job_ids: jobIds }),
           });
         } catch (e) {
@@ -1061,8 +1067,10 @@ function AutoMatchesTab({ profile }) {
   const handleRefresh = async (force = true) => {
     setLoading(true); setError(null); setStats(null); setPage(1);
     try {
+      const headers = await getAuthHeaders();
       const r = await fetch(`${API}/auto/refresh`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
         body: JSON.stringify({ force }),
       });
       const d = await r.json();
@@ -1636,9 +1644,10 @@ export default function Tracking() {
   useEffect(() => {
     (async () => {
       try {
+        const headers = await getAuthHeaders();
         const [pr, am, cm] = await Promise.all([
-          fetch(`${PROFILE_API}/profile`),
-          fetch(`${API}/auto/matches`),
+          fetch(`${PROFILE_API}/profile`, { headers }),
+          fetch(`${API}/auto/matches`, { headers }),
           fetch(`${API}/matches?limit=50`),
         ]);
         if (pr.ok) setProfile(await pr.json());

@@ -1,17 +1,33 @@
 """
-routers/tracking.py — Job watchlist & auto-match API endpoints.
+routers/tracking.py — Auto-match pipeline API endpoints.
 
-UPDATED v5:
-  - /auto/refresh  → fully automatic pipeline (Remotive by target_roles)
-  - /auto/matches  → load stored auto match results
-  - /auto/meta     → last fetch time + stats
-  All previous endpoints unchanged.
+All /auto/* endpoints are user-scoped — they require a valid JWT and
+pass the authenticated user's ID and DB preferences into the pipeline.
+
+The raw Greenhouse job pool (auto_job_pool.json) is still shared across
+all users — it's just raw source data. Results and meta are per-user:
+  uploads/watchlist/{user_id}_results.json
+  uploads/watchlist/{user_id}_meta.json
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional
 
+from db.database import get_db
+from models.orm import User
+from routers.auth import get_current_user
+from services.auto_match import (
+    run_auto_pipeline,
+    archive_jobs_for_user,
+    _load_auto_results_for_user,
+    _load_auto_meta_for_user,
+    DISPLAY_CAP,
+)
+
+# Legacy watchlist/custom-search services (Custom Search tab — unchanged)
 from services.watchlist import (
     get_watchlist,
     add_company,
@@ -25,18 +41,30 @@ from services.watchlist import (
     clear_match_history,
     get_watchlist_stats,
 )
-from services.auto_match import (
-    run_auto_pipeline,
-    archive_jobs,
-    _load_auto_results,
-    _load_auto_meta,
-    DISPLAY_CAP,
-)
 
 router = APIRouter(prefix="/api/tracking", tags=["tracking"])
 
 
-# ── Request models ──────────────────────────────────────────────────
+# ── Default empty preferences ─────────────────────────────────────────
+DEFAULT_PREFS = {
+    "target_roles": [],
+    "preferred_locations": [],
+    "min_years": None,
+    "max_years": None,
+    "include_keywords": [],
+    "exclude_keywords": [],
+}
+
+
+# ── Request models ────────────────────────────────────────────────────
+class AutoRefreshRequest(BaseModel):
+    force: bool = False
+
+
+class AutoArchiveRequest(BaseModel):
+    job_ids: list[str]
+
+
 class AddCompanyRequest(BaseModel):
     company: str
     source: str = "greenhouse"
@@ -63,33 +91,82 @@ class RefreshRequest(BaseModel):
     force_fetch: bool = False
 
 
-class AutoRefreshRequest(BaseModel):
-    force: bool = False
-
-
-class AutoArchiveRequest(BaseModel):
-    job_ids: list[str]
-
-
 class SettingsRequest(BaseModel):
     auto_match: Optional[bool] = None
     min_score_alert: Optional[int] = None
     match_use_llm: Optional[bool] = None
 
 
-# ── Stats ───────────────────────────────────────────────────────────
+# ── Auto Matches — user-scoped ────────────────────────────────────────
+
+@router.post("/auto/refresh")
+async def auto_refresh(
+    req: AutoRefreshRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Run the auto-match pipeline for the authenticated user.
+    Reads their preferences from DB, scopes job pool filtering and
+    FAISS matching to their user_id.
+    """
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+    profile = {**DEFAULT_PREFS, **(user.preferences or {})} if user else DEFAULT_PREFS
+
+    user_id = str(current_user.id)
+    return await run_auto_pipeline(user_id=user_id, profile=profile, force=req.force)
+
+
+@router.get("/auto/matches")
+async def auto_matches(
+    limit: int = DISPLAY_CAP,
+    current_user: User = Depends(get_current_user),
+):
+    """Return stored auto match results for the authenticated user."""
+    user_id = str(current_user.id)
+    results = _load_auto_results_for_user(user_id)
+    return results[:limit]
+
+
+@router.get("/auto/meta")
+async def auto_meta(
+    current_user: User = Depends(get_current_user),
+):
+    """Return pipeline metadata (last_fetch_at, stats) for the authenticated user."""
+    user_id = str(current_user.id)
+    return _load_auto_meta_for_user(user_id)
+
+
+@router.post("/auto/archive")
+async def auto_archive(
+    req: AutoArchiveRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Permanently archive job IDs for the authenticated user.
+    They will never resurface in their Auto Matches feed.
+    """
+    if not req.job_ids:
+        raise HTTPException(status_code=400, detail="job_ids list cannot be empty")
+    user_id = str(current_user.id)
+    return archive_jobs_for_user(user_id=user_id, job_ids=req.job_ids)
+
+
+# ── Stats + Presets (shared, no auth needed) ──────────────────────────
+
 @router.get("/stats")
 async def stats():
     return get_watchlist_stats()
 
 
-# ── Presets ─────────────────────────────────────────────────────────
 @router.get("/presets")
 async def presets():
     return get_presets()
 
 
-# ── Watchlist CRUD ──────────────────────────────────────────────────
+# ── Watchlist CRUD (Custom Search tab — unchanged) ────────────────────
+
 @router.get("/watchlist")
 async def watchlist():
     return get_watchlist()
@@ -97,14 +174,12 @@ async def watchlist():
 
 @router.post("/watchlist")
 async def add(req: AddCompanyRequest):
-    result = add_company(req.company, req.source, req.label)
-    return result
+    return add_company(req.company, req.source, req.label)
 
 
 @router.delete("/watchlist")
 async def remove(req: RemoveCompanyRequest):
-    result = remove_company(req.company, req.source)
-    return result
+    return remove_company(req.company, req.source)
 
 
 @router.put("/settings")
@@ -113,18 +188,15 @@ async def settings_update(req: SettingsRequest):
     return update_settings(updates)
 
 
-# ── Fetch jobs ──────────────────────────────────────────────────────
+# ── Custom Search pipeline (unchanged) ───────────────────────────────
+
 @router.post("/fetch")
 async def fetch():
     return await fetch_watchlist_jobs(force=True)
 
 
-# ── Custom: Refresh pipeline (fetch + filter + match in ONE call) ───
 @router.post("/refresh")
 async def refresh(req: RefreshRequest):
-    """
-    Custom Search tab: fetch watchlist companies → filter → match → return top jobs.
-    """
     return await refresh_pipeline(
         date_filter=req.date_filter,
         use_profile=req.use_profile,
@@ -133,41 +205,6 @@ async def refresh(req: RefreshRequest):
     )
 
 
-# ── Auto Matches: fully automatic pipeline ──────────────────────────
-@router.post("/auto/refresh")
-async def auto_refresh(req: AutoRefreshRequest):
-    """
-    Auto Matches tab: Remotive search by target_roles → filter 24h → score → return.
-    Long-running: ~30-120s depending on number of target roles and jobs to score.
-    """
-    return await run_auto_pipeline(force=req.force)
-
-
-@router.get("/auto/matches")
-async def auto_matches(limit: int = DISPLAY_CAP):
-    """Return stored auto match results without re-fetching."""
-    results = _load_auto_results()
-    return results[:limit]
-
-
-@router.get("/auto/meta")
-async def auto_meta():
-    """Return metadata about the last auto fetch (last_fetch_at, seen count, etc.)."""
-    return _load_auto_meta()
-
-
-@router.post("/auto/archive")
-async def auto_archive(req: AutoArchiveRequest):
-    """
-    Permanently archive job IDs — they will never resurface in Auto Matches,
-    even after seen_job_ids resets. Also removes them from stored results immediately.
-    """
-    if not req.job_ids:
-        raise HTTPException(status_code=400, detail="job_ids list cannot be empty")
-    return archive_jobs(req.job_ids)
-
-
-# ── Legacy auto-match (backward compat) ────────────────────────────
 @router.post("/match")
 async def match(req: MatchRequest):
     return await run_auto_match(
@@ -179,7 +216,6 @@ async def match(req: MatchRequest):
     )
 
 
-# ── Match results (Custom tab) ──────────────────────────────────────
 @router.get("/matches")
 async def matches(
     company: Optional[str] = None,
