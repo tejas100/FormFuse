@@ -410,7 +410,7 @@ async def run_auto_pipeline(
     """
     from services.matcher import match_resumes
     from services.ingestion import get_resume_by_id
-    from services.llm_scorer import llm_score_batch, rerank_by_llm_score
+    from services.llm_scorer import llm_score_jobs_grouped
 
     meta = _load_auto_meta_for_user(user_id)
 
@@ -548,7 +548,8 @@ async def run_auto_pipeline(
 
     # ── Step 5: Phase 1 — FAISS + Hybrid scoring ─────────────────────
     # Score ALL resumes per job, collect pairs above PHASE2_THRESHOLD
-    phase1_pairs = []    # (job × resume) pairs qualifying for Phase 2
+    # Grouped by job_id so Phase 2 can fire one LLM call per job.
+    phase1_groups: dict[str, list] = {}  # job_id → [pair_entry, ...]
     scored_count  = 0
     parsed_jd_cache = {}  # job_id → parsed_jd (reused in Phase 2)
 
@@ -586,7 +587,8 @@ async def run_auto_pipeline(
             seen_ids.add(job["job_id"])
             continue
 
-        # Build pair entries for Phase 2
+        # Build pair entries grouped by job_id for Phase 2
+        job_entries = []
         for resume_match in qualifying:
             hybrid_score = round(resume_match.get("raw_score", 0) * 100)
             resume_id = resume_match.get("resume_id", "")
@@ -594,7 +596,7 @@ async def run_auto_pipeline(
             if not full_resume:
                 continue
 
-            phase1_pairs.append({
+            job_entries.append({
                 # Job context
                 "job_id":          job["job_id"],
                 "job_title":       job["title"],
@@ -618,28 +620,37 @@ async def run_auto_pipeline(
                 "matched_preferred": resume_match.get("matched_preferred", []),
                 "coverage":        resume_match.get("gap_analysis", {}).get("coverage", {}),
                 "critical_gaps":   resume_match.get("gap_analysis", {}).get("critical_gaps", []),
-                # Phase 2 inputs
+                # Phase 2 inputs (stripped before saving to results)
                 "job":             job,
                 "resume":          full_resume,
                 "parsed_jd":       parsed_jd,
             })
 
+        if job_entries:
+            phase1_groups[job["job_id"]] = job_entries
+
         seen_ids.add(job["job_id"])
 
-    logger.info(f"[AutoMatch] user={user_id} Phase 1 complete: {scored_count} jobs scored → {len(phase1_pairs)} pairs qualify for Phase 2")
+    total_pairs = sum(len(v) for v in phase1_groups.values())
+    logger.info(
+        f"[AutoMatch] user={user_id} Phase 1 complete: {scored_count} jobs scored → "
+        f"{len(phase1_groups)} jobs with qualifying resumes ({total_pairs} pairs total)"
+    )
 
-    # ── Step 6: Phase 2 — LLM deep scoring ───────────────────────────
-    logger.info(f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_pairs)} (job × resume) pairs…")
+    # ── Step 6: Phase 2 — LLM deep scoring (grouped: one call per job) ──
+    logger.info(
+        f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_groups)} jobs "
+        f"({total_pairs} resume pairs) → {len(phase1_groups)} LLM calls"
+    )
 
-    llm_scored_pairs = await llm_score_batch(phase1_pairs)
+    llm_scored_groups = await llm_score_jobs_grouped(phase1_groups)
 
     # ── Step 7: Per job, pick best LLM-scored resume ──────────────────
-    # Group by job_id, pick the pair with highest llm_score
+    # Each group already has all its resumes scored — pick the highest llm_score
     by_job: dict[str, dict] = {}
-    for pair in llm_scored_pairs:
-        jid = pair["job_id"]
-        if jid not in by_job or pair.get("llm_score", 0) > by_job[jid].get("llm_score", 0):
-            by_job[jid] = pair
+    for job_id, entries in llm_scored_groups.items():
+        best = max(entries, key=lambda e: e.get("llm_score", 0))
+        by_job[job_id] = best
 
     # ── Step 8: Build final entries with rank_score ───────────────────
     new_entries = []
@@ -726,7 +737,8 @@ async def run_auto_pipeline(
             "from_cache":       False,
             "total_pool":       len(raw_pool),
             "role_matched":     len(role_matched),
-            "phase1_pairs":     len(phase1_pairs),
+            "phase1_jobs":      len(phase1_groups),
+            "phase1_pairs":     total_pairs,
             "llm_scored":       llm_count,
             "new_processed":    len(new_entries),
             "total_shown":      len(final[:DISPLAY_CAP]),

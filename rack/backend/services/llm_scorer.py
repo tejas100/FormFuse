@@ -6,12 +6,20 @@ Architecture:
   Phase 2 (this file): LLM holistic scorer → re-rank shortlist with full reasoning
 
 Design decisions:
-  - One LLM call per (job × resume) pair — NOT per skill
+  - One LLM call per (job × resume) pair — NOT per skill  [Home page path]
+  - One LLM call per job with ALL qualifying resumes bundled — [Auto Matches path]
   - Condensed context: signal-dense JD summary + resume summary (~1200 tokens per call)
   - Structured JSON response: score + 3 components + reasoning + recommendation
   - Hybrid score passed as context anchor to reduce LLM score hallucination
   - Concurrent calls with semaphore (max 8 at a time) for speed
   - Graceful fallback: if LLM call fails, hybrid score is kept as-is
+
+Auto Matches grouped scorer (llm_score_jobs_grouped):
+  - Receives a dict of { job_id → [resume_entry, ...] } instead of flat pairs list
+  - Fires ONE LLM call per job containing all qualifying resumes in a single prompt
+  - GPT scores each resume independently and returns a JSON array
+  - Result: N jobs × M resumes = N API calls (not N×M)
+  - Falls back to hybrid_only per resume if the call fails or parse errors
 
 Output fields added to each match entry:
   llm_score          int 0-100   — primary display score
@@ -475,3 +483,307 @@ def rerank_by_llm_score(entries: List[Dict]) -> List[Dict]:
         key=lambda x: (x.get("llm_score", 0), x.get("hybrid_score", 0)),
         reverse=True,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GROUPED SCORER — one LLM call per job, all resumes bundled
+# Used by Auto Matches pipeline only. Home page uses llm_score_batch.
+# ═══════════════════════════════════════════════════════════════════
+
+_GROUPED_SCORER_SYSTEM_PROMPT = """You are an expert technical recruiter scoring candidate resumes against a job description.
+
+You will receive one job description and a numbered list of candidate resumes.
+Score EACH resume independently against the job — do not rank them relative to each other.
+A strong resume should score high even if all other resumes are weak, and vice versa.
+
+SCORING RUBRIC:
+- 85-100: Exceptional fit — candidate has almost everything, including domain-specific depth
+- 70-84:  Strong fit — most requirements met, minor gaps only
+- 55-69:  Good fit — core skills present, some meaningful gaps
+- 40-54:  Partial fit — foundational match but significant gaps
+- 0-39:   Weak fit — missing too many critical requirements
+
+COMPONENT SCORES (each 0-100):
+- skills_fit: How well do the candidate's technical skills match the JD requirements?
+- experience_fit: Is the seniority, domain, and years of experience appropriate?
+- trajectory_fit: Does the candidate's career trajectory point toward this role?
+
+RULES:
+1. Score each resume independently — treat each as if it were the only one
+2. Be honest and specific — vague high scores help nobody
+3. Key strengths and gaps must be SPECIFIC (name actual skills/experiences)
+4. Recommendation must match the score range
+
+Return ONLY a valid JSON array — one object per resume, in the same order as input.
+No markdown, no backticks, no preamble. Example for 2 resumes:
+[
+  {
+    "resume_index": 0,
+    "llm_score": 82,
+    "components": { "skills_fit": 85, "experience_fit": 80, "trajectory_fit": 78 },
+    "reasoning": "Specific 2-3 sentence explanation of fit.",
+    "recommendation": "Good Match",
+    "key_strengths": ["Strength 1 with evidence", "Strength 2"],
+    "key_gaps": ["Gap 1 — why it matters", "Gap 2 if any"]
+  },
+  {
+    "resume_index": 1,
+    "llm_score": 61,
+    ...
+  }
+]"""
+
+
+async def _score_job_multi_resume(
+    job_id: str,
+    job: Dict,
+    resume_entries: List[Dict],
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+) -> List[Dict]:
+    """
+    Score one job against all its qualifying resumes in a single LLM call.
+
+    Args:
+        job_id:         The job's ID (for logging)
+        job:            Full job dict (has job_title, description_text, company, etc.)
+        resume_entries: List of phase1 pair entries for this job — each has
+                        "resume", "parsed_jd", "hybrid_score", and all job/resume metadata
+        client:         Shared httpx client
+        semaphore:      Concurrency limiter
+
+    Returns:
+        List of enriched pair entries (same as input but with llm_* fields added).
+        On failure, all entries get scoring_method="hybrid_only".
+    """
+    async with semaphore:
+        # Build the JD summary once (shared across all resumes for this job)
+        parsed_jd = resume_entries[0].get("parsed_jd", {})
+        jd_summary = _build_jd_summary(job, parsed_jd)
+
+        # Build resume summaries — numbered so GPT can reference by index
+        resume_blocks = []
+        for i, entry in enumerate(resume_entries):
+            resume_summary = _build_resume_summary(entry["resume"])
+            hybrid = entry.get("hybrid_score", 0)
+            resume_blocks.append(
+                f"CANDIDATE {i} (initial hybrid score: {hybrid}%):\n{resume_summary}"
+            )
+
+        resumes_text = "\n\n---\n\n".join(resume_blocks)
+
+        user_message = (
+            f"JOB DESCRIPTION:\n{jd_summary}\n\n"
+            f"{'=' * 60}\n\n"
+            f"CANDIDATES TO SCORE ({len(resume_entries)} total):\n\n"
+            f"{resumes_text}\n\n"
+            f"Score each candidate independently against this job. "
+            f"Return a JSON array with {len(resume_entries)} entries."
+        )
+
+        try:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("No OPENAI_API_KEY")
+
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": _GROUPED_SCORER_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    "temperature": 0.1,
+                    # ~600 tokens per resume + overhead — scale with resume count
+                    "max_tokens": 600 * len(resume_entries) + 200,
+                },
+                timeout=LLM_TIMEOUT + (5 * len(resume_entries)),  # extra time per resume
+            )
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"[LLMScorer][grouped] API {response.status_code} for job {job_id}"
+                )
+                raise ValueError(f"API error {response.status_code}")
+
+            content = response.json()["choices"][0]["message"]["content"].strip()
+            content = re.sub(r'^```(?:json)?\s*', '', content)
+            content = re.sub(r'\s*```$', '', content)
+
+            scored_list = json.loads(content)
+
+            if not isinstance(scored_list, list):
+                raise ValueError("Response is not a JSON array")
+
+            # Build a lookup by resume_index for safe merging
+            scores_by_index = {}
+            for item in scored_list:
+                idx = item.get("resume_index")
+                if idx is not None and 0 <= idx < len(resume_entries):
+                    scores_by_index[idx] = item
+
+            # Merge LLM results back into the entry dicts
+            enriched = []
+            for i, entry in enumerate(resume_entries):
+                # Strip internal-only keys before building the output entry
+                base = {k: v for k, v in entry.items() if k not in ("job", "resume", "parsed_jd")}
+
+                llm_result = scores_by_index.get(i)
+                if llm_result is None:
+                    # GPT didn't return a score for this index — fall back
+                    logger.warning(
+                        f"[LLMScorer][grouped] Missing score for index {i} in job {job_id}"
+                    )
+                    base["llm_score"] = base.get("hybrid_score", 0)
+                    base["llm_components"] = {}
+                    base["llm_reasoning"] = ""
+                    base["llm_recommendation"] = _score_to_recommendation(base["llm_score"])
+                    base["llm_key_strengths"] = []
+                    base["llm_key_gaps"] = []
+                    base["scoring_method"] = "hybrid_only"
+                else:
+                    score = max(0, min(100, int(llm_result.get("llm_score", 0))))
+                    components = llm_result.get("components", {})
+                    for key in ["skills_fit", "experience_fit", "trajectory_fit"]:
+                        if key in components:
+                            components[key] = max(0, min(100, int(components[key])))
+
+                    base["llm_score"] = score
+                    base["llm_components"] = components
+                    base["llm_reasoning"] = llm_result.get("reasoning", "")
+                    base["llm_recommendation"] = llm_result.get(
+                        "recommendation", _score_to_recommendation(score)
+                    )
+                    base["llm_key_strengths"] = llm_result.get("key_strengths", [])
+                    base["llm_key_gaps"] = llm_result.get("key_gaps", [])
+                    base["scoring_method"] = "llm+hybrid"
+
+                    logger.info(
+                        f"[LLMScorer][grouped] {base.get('resume_name')} × "
+                        f"{job.get('title', job_id)}: "
+                        f"hybrid={base.get('hybrid_score')} → llm={score} "
+                        f"({base['llm_recommendation']})"
+                    )
+
+                enriched.append(base)
+
+            return enriched
+
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"[LLMScorer][grouped] Parse/call failed for job {job_id}: {e}")
+        except Exception as e:
+            logger.warning(f"[LLMScorer][grouped] Unexpected error for job {job_id}: {e}")
+
+    # Fallback — return all entries with hybrid scores
+    fallback = []
+    for entry in resume_entries:
+        base = {k: v for k, v in entry.items() if k not in ("job", "resume", "parsed_jd")}
+        base["llm_score"] = base.get("hybrid_score", 0)
+        base["llm_components"] = {}
+        base["llm_reasoning"] = ""
+        base["llm_recommendation"] = _score_to_recommendation(base["llm_score"])
+        base["llm_key_strengths"] = []
+        base["llm_key_gaps"] = []
+        base["scoring_method"] = "hybrid_only"
+        fallback.append(base)
+    return fallback
+
+
+async def llm_score_jobs_grouped(
+    phase1_groups: Dict[str, List[Dict]],
+) -> Dict[str, List[Dict]]:
+    """
+    Auto Matches Phase 2: score all jobs concurrently, each job's resumes in one LLM call.
+
+    Args:
+        phase1_groups: { job_id → [pair_entry, ...] }
+                       Each pair_entry must have: "job", "resume", "parsed_jd",
+                       "hybrid_score", and all job/resume metadata fields.
+
+    Returns:
+        { job_id → [enriched_pair_entry, ...] }
+        Each entry has llm_score, llm_components, llm_reasoning, etc. added.
+        Entries where LLM failed get scoring_method="hybrid_only".
+    """
+    if not phase1_groups:
+        return {}
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        logger.warning("[LLMScorer][grouped] No OPENAI_API_KEY — returning hybrid scores")
+        result = {}
+        for job_id, entries in phase1_groups.items():
+            fallback = []
+            for entry in entries:
+                base = {k: v for k, v in entry.items() if k not in ("job", "resume", "parsed_jd")}
+                base["llm_score"] = base.get("hybrid_score", 0)
+                base["llm_components"] = {}
+                base["llm_reasoning"] = ""
+                base["llm_recommendation"] = _score_to_recommendation(base["llm_score"])
+                base["llm_key_strengths"] = []
+                base["llm_key_gaps"] = []
+                base["scoring_method"] = "hybrid_only"
+                fallback.append(base)
+            result[job_id] = fallback
+        return result
+
+    total_jobs = len(phase1_groups)
+    total_resumes = sum(len(v) for v in phase1_groups.values())
+    logger.info(
+        f"[LLMScorer][grouped] Scoring {total_jobs} jobs × "
+        f"{total_resumes} resume pairs → {total_jobs} LLM calls"
+    )
+
+    semaphore = asyncio.Semaphore(LLM_CONCURRENCY)
+
+    async with httpx.AsyncClient() as client:
+        tasks = {}
+        for job_id, entries in phase1_groups.items():
+            # The job dict lives inside each entry — grab from first entry
+            job = entries[0].get("job", {})
+            tasks[job_id] = asyncio.create_task(
+                _score_job_multi_resume(job_id, job, entries, client, semaphore)
+            )
+
+        job_ids = list(tasks.keys())
+        results_list = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    enriched_groups: Dict[str, List[Dict]] = {}
+    llm_success = 0
+    llm_failed = 0
+
+    for job_id, result in zip(job_ids, results_list):
+        if isinstance(result, Exception):
+            logger.warning(f"[LLMScorer][grouped] Task exception for {job_id}: {result}")
+            # Fall back to hybrid for all entries in this job
+            entries = phase1_groups[job_id]
+            fallback = []
+            for entry in entries:
+                base = {k: v for k, v in entry.items() if k not in ("job", "resume", "parsed_jd")}
+                base["llm_score"] = base.get("hybrid_score", 0)
+                base["llm_components"] = {}
+                base["llm_reasoning"] = ""
+                base["llm_recommendation"] = _score_to_recommendation(base["llm_score"])
+                base["llm_key_strengths"] = []
+                base["llm_key_gaps"] = []
+                base["scoring_method"] = "hybrid_only"
+                fallback.append(base)
+            enriched_groups[job_id] = fallback
+            llm_failed += 1
+        else:
+            enriched_groups[job_id] = result
+            if any(e.get("scoring_method") == "llm+hybrid" for e in result):
+                llm_success += 1
+            else:
+                llm_failed += 1
+
+    logger.info(
+        f"[LLMScorer][grouped] Complete: {llm_success} jobs LLM-scored, "
+        f"{llm_failed} hybrid fallback"
+    )
+    return enriched_groups
