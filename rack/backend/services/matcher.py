@@ -2,22 +2,24 @@
 matcher.py
 Orchestrates the full matching pipeline.
 
-Key fixes in this version:
-  1. Gap analyzer now receives resume_chunks for text-based fallback
-  2. JD embedding uses a focused query (skills + title + key requirements)
-     instead of the full JD text, staying within all-MiniLM-L6-v2's 256 token limit
-  3. This dramatically improves semantic similarity scores
+pgvector edition (Session 16):
+  - faiss_store replaced with vector_store (pgvector cosine similarity)
+  - db (AsyncSession) is now a required parameter — no local index files
+  - Authenticated users: resume metadata + chunks loaded from DB directly
+  - Anonymous users: resume metadata + chunks loaded from local JSON (unchanged)
+  - All FAISS cold-start rebuild logic removed
 """
 
 import logging
 import time
 from typing import Dict, List, Optional
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from services.jd_parser import parse_jd, _split_jd_sections
 from services.embedder import embed_single
-from services.faiss_store import search as faiss_search, get_index_stats, rebuild_index_from_chunks
-from services.faiss_store import _index_path
-from services.ingestion import get_all_resumes, get_resume_by_id
+from services.vector_store import vector_search
 from services.hybrid_scorer import score_resume
 from services.gap_analyzer import analyze_gaps
 
@@ -26,50 +28,89 @@ logger = logging.getLogger(__name__)
 
 def _build_semantic_query(parsed_jd: Dict, jd_text: str) -> str:
     """
-    Build a focused semantic query for FAISS embedding.
-    
+    Build a focused semantic query for embedding.
+
     Instead of embedding the entire JD (which exceeds 256 tokens and gets
-    truncated, losing key requirements), we build a concentrated query
-    from the parsed JD data + relevant sections.
-    
-    This is like a search query — dense with signal, no noise.
-    
-    Example output:
-      "Applied AI Engineer. Python, RAG, LLM, Fine-tuning, Docker, CI/CD.
-       Build and deploy AI applications. LLM inference. RAG systems.
-       Production ML systems. Backend infrastructure."
+    truncated), we build a concentrated query from the parsed JD data +
+    relevant sections. Dense with signal, no noise.
     """
     parts = []
-    
-    # Title
+
     if parsed_jd.get("title"):
         parts.append(parsed_jd["title"])
-    
-    # All skills as a dense list
+
     all_skills = parsed_jd.get("required_skills", []) + parsed_jd.get("preferred_skills", [])
     if all_skills:
         parts.append(", ".join(all_skills))
-    
-    # Domains
+
     if parsed_jd.get("domains"):
         parts.append(", ".join(parsed_jd["domains"]))
-    
-    # Extract key responsibility sentences (short, signal-dense)
+
     sections = _split_jd_sections(jd_text)
     for key in ["responsibilities", "required"]:
         if key in sections:
-            # Take first ~500 chars of responsibilities/requirements
-            text = sections[key][:500]
-            parts.append(text)
-    
+            parts.append(sections[key][:500])
+
     query = ". ".join(parts)
-    
-    # Keep under ~200 words to stay within 256 token limit
     words = query.split()
     if len(words) > 180:
         query = " ".join(words[:180])
-    
+
     return query
+
+
+async def _load_resumes_from_db(user_id: str, db: AsyncSession) -> List[Dict]:
+    """
+    Load resume metadata + chunks from Supabase DB for an authenticated user.
+    Returns a list of dicts in the same shape the rest of the pipeline expects.
+    """
+    from models.orm import Resume, ResumeChunk
+
+    result = await db.execute(
+        select(Resume)
+        .where(Resume.user_id == user_id, Resume.status == "active")
+    )
+    resumes = result.scalars().all()
+
+    resume_list = []
+    for r in resumes:
+        chunk_result = await db.execute(
+            select(ResumeChunk)
+            .where(ResumeChunk.resume_id == r.id)
+            .order_by(ResumeChunk.chunk_index)
+        )
+        chunks = chunk_result.scalars().all()
+
+        chunk_dicts = [
+            {
+                "text": c.chunk_text,
+                "chunk_index": c.chunk_index,
+                "section": "experience",  # not stored in DB, use default
+                "weight": 1.0,
+            }
+            for c in chunks
+        ]
+
+        resume_list.append({
+            "id": str(r.id),
+            "name": r.display_name,
+            "file_ext": r.file_ext,
+            "skills": r.skills or [],
+            "years_exp": r.years_exp,
+            "titles": r.titles or [],
+            "domains": r.domains or [],
+            "chunk_count": r.chunk_count,
+            "structured": {
+                "years_exp": r.years_exp,
+                "titles": r.titles or [],
+                "domains": r.domains or [],
+                "skills": r.skills or [],
+            },
+            "chunks": chunk_dicts,
+        })
+
+    logger.info(f"[matcher] Loaded {len(resume_list)} resumes from DB for user={user_id}")
+    return resume_list
 
 
 async def match_resumes(
@@ -77,15 +118,13 @@ async def match_resumes(
     user_id: str = "default",
     top_k_chunks: int = 20,
     use_llm: bool = True,
-    db=None,  # Optional AsyncSession — enables FAISS rebuild from Supabase on cold start
+    db: AsyncSession = None,
 ) -> Dict:
     """
     Full matching pipeline: JD → parsed → scored → ranked results.
 
-    db: if provided and the local FAISS index is missing, fetches chunks from
-        Supabase and rebuilds the index before proceeding. Pass the FastAPI
-        db dependency from authenticated endpoints (match.py, tracking.py).
-        Anonymous / auto_match callers leave it as None.
+    db: AsyncSession — required for authenticated users (pgvector search +
+        DB resume loading). If None, returns empty with a clear message.
     """
     start_time = time.time()
 
@@ -94,40 +133,34 @@ async def match_resumes(
     print(f"[matcher] JD parsed: {len(parsed_jd.get('required_skills', []))} required skills, "
           f"method={parsed_jd.get('extraction_method')}")
 
-    # ── Step 2: Check if we have any resumes indexed ──
-    # If the local index file is missing (cold start / new deploy) but a DB
-    # session is available, attempt to rebuild from resume_chunks in Supabase.
-    index_file_missing = not _index_path(user_id).exists()
-    if index_file_missing and db is not None:
-        logger.info(f"[matcher] No local FAISS index for user={user_id} — attempting DB rebuild")
-        try:
-            from sqlalchemy import select
-            from models.orm import ResumeChunk
-            result = await db.execute(
-                select(ResumeChunk).where(ResumeChunk.user_id == user_id)
-            )
-            db_chunks = result.scalars().all()
-            if db_chunks:
-                chunk_dicts = [
-                    {
-                        "resume_id":   str(c.resume_id),
-                        "chunk_index": c.chunk_index,
-                        "chunk_text":  c.chunk_text,
-                        "embedding":   c.embedding,   # list[float] or None
-                        "section":     "experience",  # section not stored in DB — use default
-                        "weight":      1.0,
-                    }
-                    for c in db_chunks
-                ]
-                rebuild_stats = rebuild_index_from_chunks(chunk_dicts, user_id)
-                logger.info(f"[matcher] Rebuilt FAISS index: {rebuild_stats}")
-            else:
-                logger.info(f"[matcher] No chunks in DB for user={user_id} — cannot rebuild")
-        except Exception as e:
-            logger.warning(f"[matcher] FAISS rebuild failed for user={user_id}: {e}")
+    # ── Step 2: Require db session ──
+    if db is None:
+        logger.warning(f"[matcher] No db session for user={user_id} — cannot search")
+        return {
+            "results": [],
+            "jd_parsed": parsed_jd,
+            "meta": {
+                "total_resumes": 0,
+                "pipeline_time_ms": _elapsed_ms(start_time),
+                "message": "No database session available.",
+            },
+        }
 
-    index_stats = get_index_stats(user_id)
-    if index_stats["total_vectors"] == 0:
+    # ── Step 3: Build focused semantic query and embed ──
+    semantic_query = _build_semantic_query(parsed_jd, jd_text)
+    jd_embedding = embed_single(semantic_query)
+    print(f"[matcher] Semantic query: {len(semantic_query.split())} words")
+
+    # ── Step 4: pgvector search — scoped to this user ──
+    vector_results = await vector_search(
+        query_embedding=jd_embedding,
+        user_id=user_id,
+        top_k=top_k_chunks,
+        db=db,
+    )
+    print(f"[matcher] pgvector returned {len(vector_results)} chunks")
+
+    if not vector_results:
         return {
             "results": [],
             "jd_parsed": parsed_jd,
@@ -138,21 +171,9 @@ async def match_resumes(
             },
         }
 
-    # ── Step 3: Build focused semantic query and embed ──
-    semantic_query = _build_semantic_query(parsed_jd, jd_text)
-    jd_embedding = embed_single(semantic_query)
-    print(f"[matcher] Semantic query: {len(semantic_query.split())} words")
+    # ── Step 5: Load resume metadata + chunks from DB ──
+    all_resumes = await _load_resumes_from_db(user_id, db)
 
-    # ── Step 4: FAISS search — scoped to this session/user ──
-    faiss_results = faiss_search(
-        query_embedding=jd_embedding,
-        top_k=top_k_chunks,
-        user_id=user_id,
-    )
-    print(f"[matcher] FAISS returned {len(faiss_results)} chunks")
-
-    # ── Step 5: Load resume metadata — scoped to this session/user ──
-    all_resumes = get_all_resumes(session_id=user_id)
     if not all_resumes:
         return {
             "results": [],
@@ -164,9 +185,9 @@ async def match_resumes(
             },
         }
 
-    # ── Step 6: Group FAISS results by resume ──
+    # ── Step 6: Group vector results by resume ──
     results_by_resume = {}
-    for result in faiss_results:
+    for result in vector_results:
         rid = result["resume_id"]
         if rid not in results_by_resume:
             results_by_resume[rid] = []
@@ -176,27 +197,18 @@ async def match_resumes(
     scored_results = []
     for resume in all_resumes:
         resume_id = resume["id"]
+        structured = resume["structured"]
+        resume_chunks = resume["chunks"]
+        resume_vector_hits = results_by_resume.get(resume_id, [])
 
-        full_resume = get_resume_by_id(resume_id)
-        if not full_resume:
-            continue
-
-        structured = full_resume.get("structured", {})
-        resume_chunks = full_resume.get("chunks", [])
-
-        # FAISS results for this resume
-        resume_faiss = results_by_resume.get(resume_id, [])
-
-        # Hybrid scoring — passes chunks for text-based skill matching
         score_result = score_resume(
             parsed_jd=parsed_jd,
             resume_structured=structured,
-            faiss_results=resume_faiss,
+            faiss_results=resume_vector_hits,   # same dict shape, field name kept for compat
             resume_chunks=resume_chunks,
             use_llm=use_llm,
         )
 
-        # Gap analysis — same 3-pass matching for consistency
         gaps = analyze_gaps(parsed_jd, structured, resume_chunks=resume_chunks, use_llm=use_llm)
 
         scored_results.append({
@@ -229,8 +241,7 @@ async def match_resumes(
         "meta": {
             "total_resumes": len(scored_results),
             "pipeline_time_ms": pipeline_time,
-            "faiss_chunks_searched": len(faiss_results),
-            "index_stats": index_stats,
+            "vector_chunks_searched": len(vector_results),
         },
     }
 

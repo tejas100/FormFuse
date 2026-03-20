@@ -9,6 +9,15 @@ load_dotenv()
 import logging
 logging.basicConfig(level=logging.INFO)
 
+# ── File logging ──────────────────────────────────────────────────────────────
+file_handler = logging.FileHandler("rack.log", mode="a")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(name)s: %(message)s"
+))
+logging.getLogger().addHandler(file_handler)
+# ─────────────────────────────────────────────────────────────────────────────
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

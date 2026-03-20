@@ -1,13 +1,8 @@
 """
 routers/tracking.py — Auto-match pipeline API endpoints.
 
-All /auto/* endpoints are user-scoped — they require a valid JWT and
-pass the authenticated user's ID and DB preferences into the pipeline.
-
-The raw Greenhouse job pool (auto_job_pool.json) is still shared across
-all users — it's just raw source data. Results and meta are per-user:
-  uploads/watchlist/{user_id}_results.json
-  uploads/watchlist/{user_id}_meta.json
+Session 16 change: auto_refresh() passes db into run_auto_pipeline()
+so the pgvector search has a live DB session. Everything else unchanged.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -107,15 +102,15 @@ async def auto_refresh(
 ):
     """
     Run the auto-match pipeline for the authenticated user.
-    Reads their preferences from DB, scopes job pool filtering and
-    FAISS matching to their user_id.
+    Reads their preferences from DB, scopes pgvector search to their user_id.
     """
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one_or_none()
     profile = {**DEFAULT_PREFS, **(user.preferences or {})} if user else DEFAULT_PREFS
 
     user_id = str(current_user.id)
-    return await run_auto_pipeline(user_id=user_id, profile=profile, force=req.force)
+    # ── KEY CHANGE: pass db so run_auto_pipeline can do pgvector search ──
+    return await run_auto_pipeline(user_id=user_id, profile=profile, force=req.force, db=db)
 
 
 @router.get("/auto/matches")
@@ -143,10 +138,7 @@ async def auto_archive(
     req: AutoArchiveRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Permanently archive job IDs for the authenticated user.
-    They will never resurface in their Auto Matches feed.
-    """
+    """Permanently archive job IDs for the authenticated user."""
     if not req.job_ids:
         raise HTTPException(status_code=400, detail="job_ids list cannot be empty")
     user_id = str(current_user.id)

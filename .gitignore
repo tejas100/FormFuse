@@ -27,3 +27,6 @@ uploads/resumes/*
 **/uploads/watchlist/auto_match_meta.json
 **/uploads/watchlist/fetched_jobs.json
 **/uploads/watchlist/match_results.json
+
+
+rack.log

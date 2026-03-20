@@ -1,19 +1,14 @@
 """
 models/orm.py — SQLAlchemy ORM models for RACK
 
-Tables:
-    users             — mirrors Supabase Auth users (synced on first login)
-    resumes           — uploaded resume metadata
-    resume_chunks     — chunked text + embeddings (pgvector-ready)
-    tracked_jobs      — user's job tracking board
-    auto_match_results — cached auto-match pipeline results
+Session 16: ResumeChunk.embedding changed from JSONB to pgvector Vector(384).
+All other models unchanged.
 """
 
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    BigInteger,
     DateTime,
     Float,
     ForeignKey,
@@ -24,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
 from db.database import Base
 
@@ -34,11 +30,6 @@ def utcnow() -> datetime:
 
 # ── Users ──────────────────────────────────────────────────────────────────────
 class User(Base):
-    """
-    Mirrors Supabase Auth users table.
-    Created automatically on first login via JWT middleware.
-    id = Supabase Auth UUID (same UUID they issue in the JWT).
-    """
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -51,7 +42,6 @@ class User(Base):
     )
     preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
-    # Relationships
     resumes: Mapped[list["Resume"]] = relationship(
         "Resume", back_populates="user", cascade="all, delete-orphan"
     )
@@ -65,10 +55,6 @@ class User(Base):
 
 # ── Resumes ────────────────────────────────────────────────────────────────────
 class Resume(Base):
-    """
-    Resume metadata. Actual PDF stored in Supabase Storage.
-    chunks relationship gives access to all text chunks + embeddings.
-    """
     __tablename__ = "resumes"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -77,29 +63,21 @@ class Resume(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-
-    # File metadata
-    filename: Mapped[str] = mapped_column(String(500), nullable=False)        # original filename
-    display_name: Mapped[str] = mapped_column(String(500), nullable=False)    # user-facing name
-    storage_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)  # Supabase Storage path
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    storage_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     file_ext: Mapped[str] = mapped_column(String(10), nullable=False)
-
-    # Parsed metadata
     years_exp: Mapped[float | None] = mapped_column(Float, nullable=True)
     titles: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     domains: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     skills: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
-
-    # Ingestion stats
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     section_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)
-
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
-    # Relationships
     user: Mapped["User"] = relationship("User", back_populates="resumes")
     chunks: Mapped[list["ResumeChunk"]] = relationship(
         "ResumeChunk", back_populates="resume", cascade="all, delete-orphan"
@@ -109,9 +87,8 @@ class Resume(Base):
 # ── Resume Chunks ──────────────────────────────────────────────────────────────
 class ResumeChunk(Base):
     """
-    Chunked resume text with embeddings.
-    user_id is denormalized here for fast per-user FAISS index rebuilds.
-    embedding stored as JSON array for now (pgvector migration in Phase 3).
+    Chunked resume text with pgvector embeddings.
+    embedding: vector(384) — all-MiniLM-L6-v2 dimensions.
     """
     __tablename__ = "resume_chunks"
 
@@ -124,28 +101,21 @@ class ResumeChunk(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # Embedding stored as JSONB array of floats (384-dim all-MiniLM-L6-v2)
-    # Phase 3: migrate to pgvector column type
-    embedding: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # pgvector — 384-dim all-MiniLM-L6-v2 embeddings
+    embedding: Mapped[list | None] = mapped_column(Vector(384), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("resume_id", "chunk_index", name="uq_resume_chunk_index"),
     )
 
-    # Relationships
     resume: Mapped["Resume"] = relationship("Resume", back_populates="chunks")
 
 
 # ── Tracked Jobs ───────────────────────────────────────────────────────────────
 class TrackedJob(Base):
-    """
-    User's job tracking board entries.
-    status follows the existing Kanban board statuses from Tracking.jsx.
-    """
     __tablename__ = "tracked_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -154,15 +124,11 @@ class TrackedJob(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-
     job_title: Mapped[str] = mapped_column(String(500), nullable=False)
     company: Mapped[str | None] = mapped_column(String(500), nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(
-        String(50), default="saved", nullable=False
-    )  # saved | applied | interviewing | offer | rejected
+    status: Mapped[str] = mapped_column(String(50), default="saved", nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -170,17 +136,11 @@ class TrackedJob(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
 
-    # Relationships
     user: Mapped["User"] = relationship("User", back_populates="tracked_jobs")
 
 
 # ── Auto Match Results ─────────────────────────────────────────────────────────
 class AutoMatchResult(Base):
-    """
-    Cached results from the auto-match pipeline.
-    job_data is the full match payload (jsonb) — same shape as current JSON files.
-    Replaces auto_match_results.json on disk.
-    """
     __tablename__ = "auto_match_results"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -189,12 +149,10 @@ class AutoMatchResult(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-
     job_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
-    # Relationships
     user: Mapped["User"] = relationship("User", back_populates="auto_match_results")

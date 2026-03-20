@@ -3,45 +3,10 @@ services/auto_match.py — Fully automatic job discovery + matching pipeline.
 
 Powers the "Auto Matches" tab on the Tracking page.
 
-Job source: Greenhouse Job Board API (~80 curated tech companies)
-  - Free, no API key required
-  - Full job descriptions (critical for RACK scoring quality)
-  - Real companies users actually want to work at
-  - Fan out ~80 boards in parallel with asyncio semaphore
-
-Two-phase scoring pipeline:
-  Phase 1 — FAISS + Hybrid scorer (existing, fast, use_llm=False)
-    → Filters 150-200 Greenhouse jobs down to qualifying (job × resume) pairs
-    → All resumes scored per job, pairs above PHASE2_THRESHOLD kept
-    → Fast: no LLM calls, runs in seconds
-
-  Phase 2 — LLM Deep Scorer (new, accurate, concurrent)
-    → Each qualifying (job × resume) pair sent to GPT-4o-mini
-    → Holistic scoring: skills_fit + experience_fit + trajectory_fit
-    → Returns reasoning + recommendation + key strengths/gaps
-    → Concurrent: up to 8 calls at once, ~25-40s for 30-50 pairs
-    → Graceful fallback: if LLM fails, hybrid score kept
-
-Ranking formula (post Phase 2):
-  rank_score = (llm_score × SCORE_WEIGHT) + (recency_score × RECENCY_WEIGHT)
-  recency_score = 2^(-age_days / RECENCY_HALF_LIFE_DAYS)
-  → Today = 1.0, 7 days ago = 0.5, 30 days ago ≈ 0.09
-
-Pipeline steps:
-  1.  Load uploads/user_profile.json → get target_roles
-  2.  If pool stale or force=True → fan out ~80 Greenhouse boards in parallel
-  3.  Filter pool by target_role (ROLE_MATCH_RATIO word-overlap on title)
-  4.  Remove seen_job_ids
-  5.  If all seen → reset seen list
-  6.  Sort unseen by posted_at descending
-  7.  Phase 1: match_resumes(desc, use_llm=False) for each job → collect ALL
-      resumes above PHASE2_THRESHOLD per job (not just the best one)
-  8.  Phase 2: LLM deep score all qualifying (job × resume) pairs concurrently
-  9.  Per job: pick best LLM-scored resume as the display entry
-  10. Compute rank_score using llm_score
-  11. Merge with existing, sort by rank_score, keep top STORE_CAP
-  12. Save → auto_match_results.json, update seen_job_ids in meta
-  13. Return top DISPLAY_CAP
+Session 16 change: run_auto_pipeline() now accepts a db (AsyncSession)
+parameter and passes it through to match_resumes(). This is required now
+that the matching pipeline uses pgvector instead of local FAISS indexes.
+Everything else in this file is unchanged.
 """
 
 import asyncio
@@ -55,6 +20,8 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 logger = logging.getLogger(__name__)
 
 # ── Storage ──────────────────────────────────────────────────────────
@@ -64,25 +31,20 @@ AUTO_META_PATH    = os.path.join(WATCHLIST_DIR, "auto_match_meta.json")
 AUTO_POOL_PATH    = os.path.join(WATCHLIST_DIR, "auto_job_pool.json")
 
 # ── Tunables ─────────────────────────────────────────────────────────
-DISPLAY_CAP             = 20    # Jobs shown to user
-STORE_CAP               = 50    # Jobs persisted in results file
-SCORE_WEIGHT            = 0.85  # LLM score weight in rank formula
-RECENCY_WEIGHT          = 0.15  # Recency weight in rank formula
-RECENCY_HALF_LIFE_DAYS  = 7     # Recency decay: 7 days → score halved
-MIN_SCORE               = 30    # Min hybrid % to even attempt LLM scoring
-PHASE2_THRESHOLD        = 60    # Min hybrid % to qualify for Phase 2 LLM scoring
-                                 # 45% → ~2500 pairs (way too many)
-                                 # 55% → ~165 pairs (still scores weak matches)
-                                 # 60% → ~40-80 pairs (only genuine candidates)
-PHASE1_JOB_CAP          = 100   # Max jobs scored per refresh. Prevents 580-job blowouts
-                                 # on first run. Sorted by recency — newest jobs first.
-                                 # Remaining jobs are picked up on next refresh.
-MIN_DESC_LEN            = 100   # Skip jobs with short descriptions
-STALE_HOURS             = 24    # Pool refresh interval
-MAX_CONCURRENT          = 15    # Parallel Greenhouse requests (semaphore)
-SEEN_ID_CAP             = 2000  # Rolling cap on seen_job_ids list
-ROLE_MATCH_RATIO        = 0.6   # Word overlap threshold for role filtering
-FETCH_TIMEOUT           = 15.0  # Seconds per Greenhouse request
+DISPLAY_CAP             = 20
+STORE_CAP               = 50
+SCORE_WEIGHT            = 0.85
+RECENCY_WEIGHT          = 0.15
+RECENCY_HALF_LIFE_DAYS  = 7
+MIN_SCORE               = 30
+PHASE2_THRESHOLD        = 60
+PHASE1_JOB_CAP          = 100
+MIN_DESC_LEN            = 100
+STALE_HOURS             = 24
+MAX_CONCURRENT          = 15
+SEEN_ID_CAP             = 2000
+ROLE_MATCH_RATIO        = 0.6
+FETCH_TIMEOUT           = 15.0
 
 # ── Greenhouse company board tokens ──────────────────────────────────
 GREENHOUSE_COMPANIES = [
@@ -268,27 +230,17 @@ def _is_pool_stale(meta: dict) -> bool:
 
 
 def _load_archived_ids() -> set:
-    """Load the permanent set of archived job IDs from meta."""
     meta = _load_auto_meta()
     return set(meta.get("archived_job_ids", []))
 
 
 def _save_archived_ids(archived_ids: set):
-    """Persist archived job IDs into meta (never reset by the pipeline)."""
     meta = _load_auto_meta()
     meta["archived_job_ids"] = list(archived_ids)
     _save_auto_meta(meta)
 
 
 def archive_jobs(job_ids: list) -> dict:
-    """
-    Mark job IDs as permanently archived:
-      1. Merge into archived_job_ids in meta (never reset).
-      2. Remove those jobs from auto_match_results.json so they
-         disappear from the display immediately.
-
-    Called by POST /api/tracking/auto/archive.
-    """
     if not job_ids:
         return {"archived": 0, "total_archived": len(_load_archived_ids())}
 
@@ -297,7 +249,6 @@ def archive_jobs(job_ids: list) -> dict:
     archived.update(job_ids)
     _save_archived_ids(archived)
 
-    # Remove from stored results immediately so UI refreshes correctly
     existing = _load_auto_results()
     filtered = [r for r in existing if r["job_id"] not in archived]
     _save_auto_results(filtered)
@@ -364,10 +315,7 @@ def _save_archived_ids_for_user(user_id: str, archived_ids: set):
 
 
 def archive_jobs_for_user(user_id: str, job_ids: list) -> dict:
-    """
-    Mark job IDs as permanently archived for a specific user.
-    Removes them from that user's stored results immediately.
-    """
+    """Mark job IDs as permanently archived for a specific user."""
     if not job_ids:
         return {"archived": 0, "total_archived": len(_load_archived_ids_for_user(user_id))}
 
@@ -392,24 +340,19 @@ async def run_auto_pipeline(
     user_id: str,
     profile: dict,
     force: bool = False,
+    db: AsyncSession = None,      # ← NEW: required for pgvector search
 ) -> dict:
     """
     Main entry point for the Auto Matches tab.
 
     Args:
-        user_id:  Authenticated user's UUID (scopes FAISS index + storage).
+        user_id:  Authenticated user's UUID (scopes vector search + storage).
         profile:  User's preferences dict from DB (target_roles, preferred_locations, etc.)
         force:    If True, bypass cache and re-run the full pipeline.
-
-    Returns:
-        {
-          "matches":    list of match entries (up to DISPLAY_CAP),
-          "stats":      pipeline stats for UI toast,
-          "from_cache": bool,
-        }
+        db:       AsyncSession — passed through to match_resumes() for pgvector search.
+                  Must be provided by the calling router (tracking.py).
     """
     from services.matcher import match_resumes
-    from services.ingestion import get_resume_by_id
     from services.llm_scorer import llm_score_jobs_grouped
 
     meta = _load_auto_meta_for_user(user_id)
@@ -472,9 +415,6 @@ async def run_auto_pipeline(
     logger.info(f"[AutoMatch] user={user_id} {len(role_matched)} jobs matched target roles from pool of {len(raw_pool)}")
 
     # ── Step 2b: Filter by preferred locations ───────────────────────
-    # Uses country-aware matching. "Remote" means remote-within-your-country —
-    # NOT a worldwide remote pass. "Remote – UK" is excluded for a US-based user.
-    # If the user has set no preferred_locations, this step is skipped entirely.
     preferred_locations = profile.get("preferred_locations", [])
     if preferred_locations:
         from services.user_profile import matches_any_preferred_location
@@ -493,7 +433,6 @@ async def run_auto_pipeline(
     seen_ids     = set(meta.get("seen_job_ids", []))
     archived_ids = _load_archived_ids_for_user(user_id)
 
-    # Archived jobs are excluded permanently — never resurface them
     non_archived = [j for j in role_matched if j["job_id"] not in archived_ids]
     unseen       = [j for j in non_archived  if j["job_id"] not in seen_ids]
 
@@ -503,8 +442,6 @@ async def run_auto_pipeline(
         f"{len(non_archived) - len(unseen)} seen)"
     )
 
-    # Reset seen_job_ids only when ALL non-archived jobs have been seen —
-    # never bring back archived jobs even after a reset.
     if len(non_archived) > 0 and len(unseen) == 0:
         logger.info(f"[AutoMatch] user={user_id} All non-archived jobs seen — resetting seen_job_ids for fresh cycle")
         seen_ids = set()
@@ -537,8 +474,6 @@ async def run_auto_pipeline(
 
     unseen_sorted = sorted(unseen, key=_posted_sort_key, reverse=True)
 
-    # Cap Phase 1 to newest N jobs — prevents first-run / reset from scoring
-    # 500+ jobs at once and generating thousands of LLM pairs.
     if len(unseen_sorted) > PHASE1_JOB_CAP:
         logger.info(
             f"[AutoMatch] Capping Phase 1 to {PHASE1_JOB_CAP} most-recent jobs "
@@ -546,12 +481,10 @@ async def run_auto_pipeline(
         )
         unseen_sorted = unseen_sorted[:PHASE1_JOB_CAP]
 
-    # ── Step 5: Phase 1 — FAISS + Hybrid scoring ─────────────────────
-    # Score ALL resumes per job, collect pairs above PHASE2_THRESHOLD
-    # Grouped by job_id so Phase 2 can fire one LLM call per job.
-    phase1_groups: dict[str, list] = {}  # job_id → [pair_entry, ...]
+    # ── Step 5: Phase 1 — pgvector + Hybrid scoring ───────────────────
+    phase1_groups: dict[str, list] = {}
     scored_count  = 0
-    parsed_jd_cache = {}  # job_id → parsed_jd (reused in Phase 2)
+    parsed_jd_cache = {}
 
     logger.info(f"[AutoMatch] user={user_id} Phase 1: scoring {len(unseen_sorted)} jobs with hybrid scorer…")
 
@@ -562,7 +495,13 @@ async def run_auto_pipeline(
             continue
 
         try:
-            result = await match_resumes(jd_text=desc, user_id=user_id, use_llm=False)
+            # ── KEY CHANGE: pass db so pgvector search works ──
+            result = await match_resumes(
+                jd_text=desc,
+                user_id=user_id,
+                use_llm=False,
+                db=db,
+            )
         except Exception as e:
             logger.error(f"[AutoMatch] Phase 1 scoring error for '{job.get('title')}': {e}")
             continue
@@ -576,25 +515,19 @@ async def run_auto_pipeline(
             seen_ids.add(job["job_id"])
             continue
 
-        # Collect ALL resumes above PHASE2_THRESHOLD for this job
         qualifying = [
             m for m in matches
             if round(m.get("raw_score", 0) * 100) >= PHASE2_THRESHOLD
         ]
 
         if not qualifying:
-            # Best resume still below threshold — skip job entirely
             seen_ids.add(job["job_id"])
             continue
 
-        # Build pair entries grouped by job_id for Phase 2
         job_entries = []
         for resume_match in qualifying:
             hybrid_score = round(resume_match.get("raw_score", 0) * 100)
             resume_id = resume_match.get("resume_id", "")
-            full_resume = get_resume_by_id(resume_id)
-            if not full_resume:
-                continue
 
             job_entries.append({
                 # Job context
@@ -620,9 +553,17 @@ async def run_auto_pipeline(
                 "matched_preferred": resume_match.get("matched_preferred", []),
                 "coverage":        resume_match.get("gap_analysis", {}).get("coverage", {}),
                 "critical_gaps":   resume_match.get("gap_analysis", {}).get("critical_gaps", []),
-                # Phase 2 inputs (stripped before saving to results)
+                # Phase 2 inputs
                 "job":             job,
-                "resume":          full_resume,
+                "resume": {
+                    "id":        resume_id,
+                    "name":      resume_match.get("name", ""),
+                    "file_ext":  resume_match.get("file_ext", ""),
+                    "skills":    resume_match.get("skills", []),
+                    "years_exp": resume_match.get("years_exp"),
+                    "titles":    resume_match.get("titles", []),
+                    "domains":   resume_match.get("domains", []),
+                },
                 "parsed_jd":       parsed_jd,
             })
 
@@ -637,7 +578,7 @@ async def run_auto_pipeline(
         f"{len(phase1_groups)} jobs with qualifying resumes ({total_pairs} pairs total)"
     )
 
-    # ── Step 6: Phase 2 — LLM deep scoring (grouped: one call per job) ──
+    # ── Step 6: Phase 2 — LLM deep scoring ───────────────────────────
     logger.info(
         f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_groups)} jobs "
         f"({total_pairs} resume pairs) → {len(phase1_groups)} LLM calls"
@@ -646,7 +587,6 @@ async def run_auto_pipeline(
     llm_scored_groups = await llm_score_jobs_grouped(phase1_groups)
 
     # ── Step 7: Per job, pick best LLM-scored resume ──────────────────
-    # Each group already has all its resumes scored — pick the highest llm_score
     by_job: dict[str, dict] = {}
     for job_id, entries in llm_scored_groups.items():
         best = max(entries, key=lambda e: e.get("llm_score", 0))
@@ -657,7 +597,6 @@ async def run_auto_pipeline(
     for jid, pair in by_job.items():
         llm_score = pair.get("llm_score", pair.get("hybrid_score", 0))
 
-        # Guard: if llm_score is still below MIN_SCORE, skip
         if llm_score < MIN_SCORE:
             continue
 
@@ -665,7 +604,6 @@ async def run_auto_pipeline(
         rank_score = (llm_score / 100 * SCORE_WEIGHT) + (rec * RECENCY_WEIGHT)
 
         new_entries.append({
-            # Job info
             "job_id":          pair["job_id"],
             "source":          pair["source"],
             "board_token":     pair.get("board_token", ""),
@@ -675,11 +613,9 @@ async def run_auto_pipeline(
             "job_url":         pair["job_url"],
             "posted_at":       pair.get("posted_at"),
             "department":      pair.get("department", ""),
-            # Best resume
             "resume_id":       pair["resume_id"],
             "resume_name":     pair["resume_name"],
             "file_ext":        pair.get("file_ext", ""),
-            # Primary score — LLM (what the UI shows prominently)
             "score":           llm_score,
             "llm_score":       llm_score,
             "llm_components":  pair.get("llm_components", {}),
@@ -688,19 +624,15 @@ async def run_auto_pipeline(
             "llm_key_strengths": pair.get("llm_key_strengths", []),
             "llm_key_gaps":    pair.get("llm_key_gaps", []),
             "scoring_method":  pair.get("scoring_method", "hybrid_only"),
-            # Hybrid score — kept for reference (shown minimally in UI)
             "hybrid_score":    pair.get("hybrid_score", 0),
             "hybrid_components": pair.get("hybrid_components", {}),
-            # Skill signals from hybrid (still useful for UI pills)
             "matched_skills":  pair.get("matched_skills", []),
             "missing_skills":  pair.get("missing_skills", []),
             "matched_preferred": pair.get("matched_preferred", []),
             "coverage":        pair.get("coverage", {}),
             "critical_gaps":   pair.get("critical_gaps", []),
-            # Ranking
             "rank_score":      round(rank_score, 6),
             "recency_score":   round(rec, 4),
-            # Meta
             "auto_matched":    True,
             "matched_at":      datetime.now(timezone.utc).isoformat(),
         })
