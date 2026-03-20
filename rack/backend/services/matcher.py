@@ -9,15 +9,19 @@ Key fixes in this version:
   3. This dramatically improves semantic similarity scores
 """
 
+import logging
 import time
 from typing import Dict, List, Optional
 
 from services.jd_parser import parse_jd, _split_jd_sections
 from services.embedder import embed_single
-from services.faiss_store import search as faiss_search, get_index_stats
+from services.faiss_store import search as faiss_search, get_index_stats, rebuild_index_from_chunks
+from services.faiss_store import _index_path
 from services.ingestion import get_all_resumes, get_resume_by_id
 from services.hybrid_scorer import score_resume
 from services.gap_analyzer import analyze_gaps
+
+logger = logging.getLogger(__name__)
 
 
 def _build_semantic_query(parsed_jd: Dict, jd_text: str) -> str:
@@ -73,9 +77,15 @@ async def match_resumes(
     user_id: str = "default",
     top_k_chunks: int = 20,
     use_llm: bool = True,
+    db=None,  # Optional AsyncSession — enables FAISS rebuild from Supabase on cold start
 ) -> Dict:
     """
     Full matching pipeline: JD → parsed → scored → ranked results.
+
+    db: if provided and the local FAISS index is missing, fetches chunks from
+        Supabase and rebuilds the index before proceeding. Pass the FastAPI
+        db dependency from authenticated endpoints (match.py, tracking.py).
+        Anonymous / auto_match callers leave it as None.
     """
     start_time = time.time()
 
@@ -85,6 +95,37 @@ async def match_resumes(
           f"method={parsed_jd.get('extraction_method')}")
 
     # ── Step 2: Check if we have any resumes indexed ──
+    # If the local index file is missing (cold start / new deploy) but a DB
+    # session is available, attempt to rebuild from resume_chunks in Supabase.
+    index_file_missing = not _index_path(user_id).exists()
+    if index_file_missing and db is not None:
+        logger.info(f"[matcher] No local FAISS index for user={user_id} — attempting DB rebuild")
+        try:
+            from sqlalchemy import select
+            from models.orm import ResumeChunk
+            result = await db.execute(
+                select(ResumeChunk).where(ResumeChunk.user_id == user_id)
+            )
+            db_chunks = result.scalars().all()
+            if db_chunks:
+                chunk_dicts = [
+                    {
+                        "resume_id":   str(c.resume_id),
+                        "chunk_index": c.chunk_index,
+                        "chunk_text":  c.chunk_text,
+                        "embedding":   c.embedding,   # list[float] or None
+                        "section":     "experience",  # section not stored in DB — use default
+                        "weight":      1.0,
+                    }
+                    for c in db_chunks
+                ]
+                rebuild_stats = rebuild_index_from_chunks(chunk_dicts, user_id)
+                logger.info(f"[matcher] Rebuilt FAISS index: {rebuild_stats}")
+            else:
+                logger.info(f"[matcher] No chunks in DB for user={user_id} — cannot rebuild")
+        except Exception as e:
+            logger.warning(f"[matcher] FAISS rebuild failed for user={user_id}: {e}")
+
     index_stats = get_index_stats(user_id)
     if index_stats["total_vectors"] == 0:
         return {

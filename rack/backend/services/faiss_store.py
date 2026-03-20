@@ -358,3 +358,90 @@ def get_index_stats(user_id: str = "default") -> Dict:
         stats["index_ntotal"] = index.ntotal
     
     return stats
+
+# ═══════════════════════════════════════════════════════════════════
+# DB-BACKED REBUILD — reconstruct FAISS index from Supabase chunks
+# Called by matcher.py when local index file is missing (cold start,
+# new deploy, or first match after sign-in on a fresh server).
+# ═══════════════════════════════════════════════════════════════════
+
+def rebuild_index_from_chunks(
+    chunks: list,
+    user_id: str,
+) -> Dict:
+    """
+    Rebuild the FAISS index and metadata sidecar from DB-sourced chunk dicts.
+
+    Args:
+        chunks: List of dicts from resume_chunks table, each must have:
+                  resume_id (str), chunk_index (int), chunk_text (str),
+                  embedding (list[float] | None), section (str, optional),
+                  weight (float, optional)
+        user_id: User identifier — determines which .index file is written
+
+    Returns:
+        Dict with rebuild stats: total_vectors, resume_count, skipped
+
+    Call this when _index_path(user_id) does not exist but the user
+    has resumes in Supabase. After this call the normal search() path works.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    valid_chunks = [c for c in chunks if c.get("embedding")]
+    skipped = len(chunks) - len(valid_chunks)
+
+    if skipped:
+        logger.warning(
+            f"[FAISSStore] rebuild user={user_id}: "
+            f"{skipped} chunks have NULL embedding — skipped. "
+            f"These are resumes uploaded before the embedding-write fix."
+        )
+
+    if not valid_chunks:
+        logger.warning(
+            f"[FAISSStore] rebuild user={user_id}: no chunks with embeddings — "
+            f"cannot rebuild index. User must re-upload resumes."
+        )
+        return {"total_vectors": 0, "resume_count": 0, "skipped": skipped}
+
+    # Build vectors array
+    vectors = np.array(
+        [c["embedding"] for c in valid_chunks],
+        dtype=np.float32,
+    )
+
+    # Build metadata sidecar — same structure as add_resume_vectors
+    resume_ids = list({c["resume_id"] for c in valid_chunks})
+    metadata_chunks = []
+    for i, c in enumerate(valid_chunks):
+        metadata_chunks.append({
+            "resume_id":   c["resume_id"],
+            "text":        c.get("chunk_text", ""),
+            "section":     c.get("section", "experience"),
+            "weight":      c.get("weight", 1.0),
+            "chunk_index": c.get("chunk_index", i),
+            "faiss_idx":   i,
+            "_embedding":  c["embedding"],  # kept for future incremental rebuilds
+        })
+
+    metadata = {
+        "chunks":     metadata_chunks,
+        "resume_ids": resume_ids,
+    }
+
+    # Build and persist the index
+    index = _build_index(vectors)
+    faiss.write_index(index, str(_index_path(user_id)))
+    _save_metadata(metadata, user_id)
+
+    logger.info(
+        f"[FAISSStore] Rebuilt index for user={user_id}: "
+        f"{len(valid_chunks)} vectors, {len(resume_ids)} resume(s)"
+    )
+
+    return {
+        "total_vectors": len(valid_chunks),
+        "resume_count":  len(resume_ids),
+        "skipped":       skipped,
+    }

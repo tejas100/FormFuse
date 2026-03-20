@@ -9,10 +9,12 @@ Two-phase architecture (mirrors auto_match.py / watchlist.py):
                           small set so every resume gets the full LLM treatment)
 """
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.database import get_db
 from services.matcher import match_resumes
 
 router = APIRouter(prefix="/api/match", tags=["match"])
@@ -32,7 +34,11 @@ class MatchRequest(BaseModel):
 
 
 @router.post("")
-async def match_resume(request: MatchRequest, http_request: Request):
+async def match_resume(
+    request: MatchRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Match all indexed resumes against a job description.
     Session-scoped: only resumes uploaded by this session are matched.
@@ -50,6 +56,7 @@ async def match_resume(request: MatchRequest, http_request: Request):
         jd_text=request.job_description,
         user_id=session_id,
         use_llm=False,
+        db=db,      # enables FAISS rebuild from Supabase on cold start
     )
 
     # ── Phase 2: LLM deep scoring (if enabled and resumes exist) ──

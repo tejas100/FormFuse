@@ -131,7 +131,9 @@ def ingest_resume(file_path: str, original_filename: str, session_id: str = "def
             {"section": s["section"], "text_length": len(s["text"]), "weight": s["weight"]}
             for s in sections
         ],
-        # Chunks stored without embeddings (those are in FAISS now)
+        # Chunks include serialized embeddings so resumes.py can write them to
+        # resume_chunks.embedding in Supabase. This enables FAISS index rebuild
+        # from DB after server restarts or deploys — no local file dependency.
         "chunks": [
             {
                 "text": c["text"],
@@ -139,8 +141,9 @@ def ingest_resume(file_path: str, original_filename: str, session_id: str = "def
                 "weight": c["weight"],
                 "chunk_index": c["chunk_index"],
                 "token_count": c["token_count"],
+                "embedding": embeddings[i].tolist(),  # float32 ndarray → list[float]
             }
-            for c in chunks
+            for i, c in enumerate(chunks)
         ],
     }
 
