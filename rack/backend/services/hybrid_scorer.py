@@ -58,7 +58,7 @@ SECTION_WEIGHTS = {
 # COMPONENT 1: SEMANTIC SCORE (FAISS cosine similarity)
 # ═══════════════════════════════════════════════════════════════════
 
-def _compute_semantic_score(faiss_results: List[Dict], top_k: int = 5) -> float:
+def _compute_semantic_score(faiss_results: List[Dict], top_k: int = 15) -> float:
     """
     Average cosine similarity of top-K FAISS results for this resume.
 

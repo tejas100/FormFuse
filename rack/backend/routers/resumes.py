@@ -235,6 +235,7 @@ async def upload_resume(
         chunk_count=resume_data.get("chunk_count", 0),
         section_count=resume_data.get("section_count", 0),
         status="active",
+        full_text=resume_data.get("full_text"),   # Session 19: full cleaned text for LLM scoring
     )
     db.add(db_resume)
 

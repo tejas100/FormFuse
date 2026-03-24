@@ -2,7 +2,7 @@
 models/orm.py — SQLAlchemy ORM models for RACK
 
 Session 16: ResumeChunk.embedding changed from JSONB to pgvector Vector(384).
-All other models unchanged.
+Session 19: Resume.full_text added — cleaned full resume text for LLM scoring.
 """
 
 import uuid
@@ -77,6 +77,12 @@ class Resume(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+    # ── Session 19: full cleaned resume text for LLM scoring ──────────────────
+    # Populated at upload time by ingestion.py → _clean_resume_text().
+    # NULL for resumes uploaded before this migration — handled gracefully in
+    # llm_scorer.py by falling back to structured metadata summary.
+    full_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="resumes")
     chunks: Mapped[list["ResumeChunk"]] = relationship(

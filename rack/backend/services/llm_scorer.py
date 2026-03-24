@@ -49,7 +49,7 @@ LLM_TIMEOUT     = 20.0    # seconds per call
 LLM_MODEL       = "gpt-4o-mini"
 
 # ── Phase 2 threshold — only pairs above this go to LLM ────────────
-PHASE2_THRESHOLD = 60     # hybrid score % — keep in sync with auto_match.py
+PHASE2_THRESHOLD = 40     # hybrid score % — keep in sync with auto_match.py
                           # At 45%: ~2500 pairs on first run (too many)
                           # At 55%: ~30-80 pairs (fast + affordable)
 
@@ -94,40 +94,53 @@ def _build_jd_summary(job: Dict, parsed_jd: Dict) -> str:
             parts.append(f"KEY REQUIREMENTS EXCERPT:\n{condensed}")
 
     return "\n".join(parts)
-
-
+# ─────────────────────────────────────────────────────────────────
+# Patch for build resume
+# ─────────────────────────────────────────────────────────────────
+ 
 def _build_resume_summary(resume: Dict) -> str:
     """
-    Build a condensed resume summary for the LLM prompt.
-    Focuses on: titles, years, skills, top experience excerpts.
-    Target: ~400 tokens.
+    Build a resume summary for the LLM prompt.
+ 
+    Priority order:
+      1. full_text — the complete cleaned resume text stored at upload time.
+         This is the gold path: the LLM sees everything a recruiter would see.
+         Capped at 3000 chars in the prompt to keep token budget reasonable
+         (~750 tokens), but that covers any single-page resume completely.
+ 
+      2. Fallback (full_text is None — resume uploaded before Session 19 migration):
+         Reconstruct a structured summary from metadata fields. This is the
+         old behavior — less accurate but still functional.
+ 
+    The full_text path is expected to be the norm after users re-upload their
+    resumes post-migration. The fallback exists so old resumes don't break.
     """
     parts = []
     structured = resume.get("structured", {})
-
     name = resume.get("name", "Candidate")
     parts.append(f"CANDIDATE: {name}")
-
+ 
+    # ── Always include metadata header regardless of path ─────────────────────
     years = structured.get("years_exp")
     if years:
         parts.append(f"EXPERIENCE: {years} years")
-
+ 
     titles = structured.get("titles", [])
     if titles:
         parts.append(f"ROLES HELD: {', '.join(titles[:4])}")
-
+ 
     companies = structured.get("companies", [])
     if companies:
         parts.append(f"COMPANIES: {', '.join(companies[:4])}")
-
+ 
     skills = structured.get("skills", [])
     if skills:
         parts.append(f"SKILLS: {', '.join(skills[:25])}")
-
+ 
     domains = structured.get("domains", [])
     if domains:
         parts.append(f"DOMAINS: {', '.join(domains)}")
-
+ 
     education = structured.get("education", [])
     if education:
         edu_strs = []
@@ -138,16 +151,48 @@ def _build_resume_summary(resume: Dict) -> str:
             edu_strs.append(" ".join(filter(None, [degree, field, f"@ {inst}" if inst else ""])))
         if edu_strs:
             parts.append(f"EDUCATION: {'; '.join(edu_strs)}")
-
-    # Add 2-3 most relevant experience chunks (from resume chunks)
+ 
+    # ── Path 1: full_text available (post-migration upload) ───────────────────
+    full_text = resume.get("full_text")
+    if full_text and full_text.strip():
+        # Cap at 3000 chars — ~750 tokens, covers any 1-page resume fully,
+        # most of a 2-pager. Truncate at a newline boundary when possible.
+        cap = 3000
+        if len(full_text) > cap:
+            truncated = full_text[:cap]
+            last_newline = truncated.rfind("\n")
+            if last_newline > cap * 0.85:
+                truncated = truncated[:last_newline]
+            full_text_excerpt = truncated
+        else:
+            full_text_excerpt = full_text
+        parts.append(f"FULL RESUME TEXT:\n{full_text_excerpt}")
+        return "\n".join(parts)
+ 
+    # ── Path 2: fallback — no full_text (pre-migration resume) ────────────────
+    # Attempt to reconstruct from chunks. The section == "experience" filter
+    # was unreliable (section not stored in DB), so we take any chunks available.
     chunks = resume.get("chunks", [])
-    exp_chunks = [c for c in chunks if c.get("section") == "experience"][:3]
-    if exp_chunks:
-        excerpt = " | ".join(c["text"][:200] for c in exp_chunks)
-        parts.append(f"EXPERIENCE EXCERPTS:\n{excerpt[:600]}")
-
+    if chunks:
+        # Sort by chunk_index if available, otherwise take as-is
+        sorted_chunks = sorted(chunks, key=lambda c: c.get("chunk_index", 0))
+        # Take up to 6 chunks, 250 chars each — approximates the top third
+        # of resume content without the section filter that previously returned zero
+        excerpt_parts = []
+        for c in sorted_chunks[:6]:
+            text = c.get("text", "").strip()
+            if text:
+                excerpt_parts.append(text[:250])
+        if excerpt_parts:
+            parts.append(f"EXPERIENCE EXCERPTS (partial — re-upload resume for full scoring):\n"
+                         + " | ".join(excerpt_parts))
+ 
     return "\n".join(parts)
-
+ 
+ 
+# ─────────────────────────────────────────────────────────────────
+# END OF PATCH
+#
 
 def _extract_key_sentences(text: str, max_chars: int = 500) -> str:
     """Extract the most signal-dense part of a JD description."""

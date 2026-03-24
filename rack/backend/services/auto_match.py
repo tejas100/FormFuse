@@ -37,7 +37,7 @@ SCORE_WEIGHT            = 0.85
 RECENCY_WEIGHT          = 0.15
 RECENCY_HALF_LIFE_DAYS  = 7
 MIN_SCORE               = 30
-PHASE2_THRESHOLD        = 50
+PHASE2_THRESHOLD        = 40
 PHASE1_JOB_CAP          = 100
 MIN_DESC_LEN            = 100
 STALE_HOURS             = 24
@@ -563,6 +563,13 @@ async def run_auto_pipeline(
                     "years_exp": resume_match.get("years_exp"),
                     "titles":    resume_match.get("titles", []),
                     "domains":   resume_match.get("domains", []),
+                    "full_text": resume_match.get("full_text"),   # Session 19: full text for LLM scoring
+                    "structured": {
+                        "years_exp": resume_match.get("years_exp"),
+                        "titles":    resume_match.get("titles", []),
+                        "domains":   resume_match.get("domains", []),
+                        "skills":    resume_match.get("skills", []),
+                    },
                 },
                 "parsed_jd":       parsed_jd,
             })

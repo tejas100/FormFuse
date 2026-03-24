@@ -8,6 +8,10 @@ pgvector edition (Session 16):
   - Authenticated users: resume metadata + chunks loaded from DB directly
   - Anonymous users: resume metadata + chunks loaded from local JSON (unchanged)
   - All FAISS cold-start rebuild logic removed
+
+Session 19:
+  - full_text now loaded from DB and included in resume dict
+  - Flows through to llm_scorer._build_resume_summary() for accurate LLM scoring
 """
 
 import logging
@@ -63,6 +67,10 @@ async def _load_resumes_from_db(user_id: str, db: AsyncSession) -> List[Dict]:
     """
     Load resume metadata + chunks from Supabase DB for an authenticated user.
     Returns a list of dicts in the same shape the rest of the pipeline expects.
+
+    Session 19: full_text now included — read from resumes.full_text column.
+    Resumes uploaded before the migration will have full_text=None; the LLM
+    scorer handles this gracefully by falling back to the metadata summary.
     """
     from models.orm import Resume, ResumeChunk
 
@@ -100,6 +108,7 @@ async def _load_resumes_from_db(user_id: str, db: AsyncSession) -> List[Dict]:
             "titles": r.titles or [],
             "domains": r.domains or [],
             "chunk_count": r.chunk_count,
+            "full_text": r.full_text,      # ← NEW: None for pre-migration resumes
             "structured": {
                 "years_exp": r.years_exp,
                 "titles": r.titles or [],
@@ -204,7 +213,7 @@ async def match_resumes(
         score_result = score_resume(
             parsed_jd=parsed_jd,
             resume_structured=structured,
-            faiss_results=resume_vector_hits,   # same dict shape, field name kept for compat
+            faiss_results=resume_vector_hits,
             resume_chunks=resume_chunks,
             use_llm=use_llm,
         )
@@ -227,6 +236,7 @@ async def match_resumes(
             "titles": structured.get("titles", []),
             "domains": structured.get("domains", []),
             "chunk_count": resume.get("chunk_count", 0),
+            "full_text": resume.get("full_text"),   # ← NEW: flows through to LLM scorer
         })
 
     # ── Step 8: Sort by score descending ──

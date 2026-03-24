@@ -84,16 +84,40 @@ async def match_resume(
             else:
                 hybrid_score = int(hybrid_score)
 
-            full_resume = _get_full_resume(match["resume_id"])
-            if full_resume is None:
-                continue
+            # Session 19: build resume dict directly from match result.
+            # match already contains full_text + structured (from matcher.py/_load_resumes_from_db).
+            # _get_full_resume() reads local JSON only — returns None for DB-backed (auth) resumes,
+            # which previously caused all authenticated pairs to be silently dropped.
+            resume_dict = {
+                "id":        match["resume_id"],
+                "name":      match.get("name", ""),
+                "file_ext":  match.get("file_ext", ""),
+                "skills":    match.get("skills", []),
+                "years_exp": match.get("years_exp"),
+                "titles":    match.get("titles", []),
+                "domains":   match.get("domains", []),
+                "full_text": match.get("full_text"),   # populated for resumes uploaded post-Session-19
+                "structured": {
+                    "years_exp": match.get("years_exp"),
+                    "titles":    match.get("titles", []),
+                    "domains":   match.get("domains", []),
+                    "skills":    match.get("skills", []),
+                },
+            }
+
+            # Fallback for anonymous users: if full_text not present, try local JSON
+            if not resume_dict["full_text"]:
+                local = _get_full_resume(match["resume_id"])
+                if local:
+                    resume_dict["full_text"] = local.get("full_text")
+                    resume_dict["structured"] = local.get("structured", resume_dict["structured"])
 
             pairs.append({
                 **match,
                 "hybrid_score":      hybrid_score,
-                "hybrid_components": match.get("components", {}),  # preserve old 4-component data
+                "hybrid_components": match.get("components", {}),
                 "job":               job_ctx,
-                "resume":            full_resume,
+                "resume":            resume_dict,
                 "parsed_jd":         parsed_jd,
             })
 
