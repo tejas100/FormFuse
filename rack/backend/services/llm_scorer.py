@@ -49,7 +49,7 @@ LLM_TIMEOUT     = 20.0    # seconds per call
 LLM_MODEL       = "gpt-4o-mini"
 
 # ── Phase 2 threshold — only pairs above this go to LLM ────────────
-PHASE2_THRESHOLD = 75     # hybrid score % — keep in sync with auto_match.py
+PHASE2_THRESHOLD = 60     # hybrid score % — keep in sync with auto_match.py
                           # At 45%: ~2500 pairs on first run (too many)
                           # At 55%: ~30-80 pairs (fast + affordable)
 
