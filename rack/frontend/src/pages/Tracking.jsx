@@ -850,7 +850,7 @@ function ArchiveModal({ onClose }) {
             <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-dim)" }}>
               <div style={{ ...mono, fontSize: 24, marginBottom: 12, opacity: 0.3 }}>[ empty ]</div>
               <div style={{ fontSize: 13 }}>No archived jobs yet.</div>
-              <div style={{ fontSize: 12, marginTop: 4, opacity: 0.6 }}>Click "↓ Archive & Refresh" to save current matches before scanning for new ones.</div>
+              <div style={{ fontSize: 12, marginTop: 4, opacity: 0.6 }}>Dismissed jobs will appear here for future reference.</div>
             </div>
           ) : archive.map((job) => {
             const isSelected = selected.has(job.job_id);
@@ -1026,40 +1026,19 @@ function AutoMatchesTab({ profile }) {
     } catch {}
   }, []);
 
-  // ── Initial load ──────────────────────────────────────────────────
+  // Initial load — wait until hasProfile is true before firing.
+  // Profile arrives async from the parent: on first render it is null so
+  // hasProfile is false. useEffect re-fires when hasProfile changes.
+  // hasRun.current ensures we only fire once even if profile re-renders.
   useEffect(() => {
+    if (!hasProfile) return;
     if (hasRun.current) return;
     hasRun.current = true;
     (async () => {
       await loadMeta();
-      if (hasProfile) handleRefresh(false);
+      handleRefresh(false);
     })();
   }, [hasProfile]);
-
-  const handleRefreshWithArchive = async () => {
-    if (matches.length > 0) {
-      // 1. Save to localStorage archive (for UI display in the Archive modal)
-      const updated = archiveJobs(matches, loadArchive());
-      saveArchive(updated);
-      setArchiveCount(updated.length);
-
-      // 2. Tell the backend — these IDs are globally archived across all snapshots
-      const jobIds = matches.map(m => m.job_id).filter(Boolean);
-      if (jobIds.length > 0) {
-        try {
-          const headers = await getAuthHeaders();
-          await fetch(`${API}/auto/archive`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...headers },
-            body: JSON.stringify({ job_ids: jobIds }),
-          });
-        } catch (e) {
-          console.warn("[Archive] Backend archive call failed — continuing with refresh", e);
-        }
-      }
-    }
-    handleRefresh(true);
-  };
 
   const handleRefresh = async (force = true) => {
     setLoading(true); setError(null); setStats(null); setPage(1);
@@ -1140,10 +1119,10 @@ function AutoMatchesTab({ profile }) {
               <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: "rgba(232,255,107,0.12)", color: "var(--accent)", border: "1px solid rgba(232,255,107,0.2)" }}>{archiveCount}</span>
             )}
           </button>
-          <button onClick={handleRefreshWithArchive} disabled={loading}
-            title={matches.length > 0 ? "Archive current matches, then scan for new jobs" : "Scan for new jobs"}
+          <button onClick={() => handleRefresh(true)} disabled={loading}
+            title="Scan for new jobs"
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, transition: "all 0.2s" }}>
-            {loading ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span> Scanning…</> : matches.length > 0 ? "↓ Archive & Refresh" : "⟳ Refresh Auto"}
+            {loading ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span> Scanning…</> : "⟳ Refresh"}
           </button>
         </div>
       </div>

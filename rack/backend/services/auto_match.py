@@ -399,6 +399,35 @@ async def archive_jobs_for_user(
     return {"archived": len(job_ids)}
 
 
+async def _mark_jobs_seen(
+    user_uuid,  # uuid.UUID — already converted by caller
+    job_ids: list[str],
+    db: AsyncSession,
+) -> None:
+    """
+    Bulk-insert job_ids into seen_job_ids for this user.
+    ON CONFLICT DO NOTHING — idempotent, safe to call multiple times.
+    Called BEFORE Phase 1 starts so jobs that fail Phase 1 or score below
+    MIN_SCORE are still recorded and never retried on future runs.
+    """
+    from models.orm import SeenJobId
+
+    if not job_ids:
+        return
+
+    now = datetime.now(timezone.utc)
+    for jid in job_ids:
+        stmt = (
+            pg_insert(SeenJobId)
+            .values(user_id=user_uuid, job_id=jid, first_seen_at=now)
+            .on_conflict_do_nothing(constraint="pk_seen_job_ids")
+        )
+        await db.execute(stmt)
+
+    await db.commit()
+    logger.info(f"[AutoMatch] Marked {len(job_ids)} job(s) as seen in DB")
+
+
 # ── Legacy shim — kept for watchlist/custom-search callers ───────────
 def _load_auto_results_for_user(user_id: str) -> list:
     """Legacy JSON read — used only by old custom-search endpoints."""
@@ -492,18 +521,20 @@ async def run_auto_pipeline(
         logger.info("[AutoMatch] Pool fresh — loading from disk cache")
         raw_pool = _load_job_pool()
 
-    # ── Step 2: Load already-scored job IDs from DB ───────────────────
-    # Build a set once — O(1) lookup per job in the filter below.
-    # At 20k+ jobs this is still instant; set membership is hash-based.
-    from models.orm import AutoMatchResult, ArchivedJobId
+    # ── Step 2: Load seen + archived job IDs from DB ─────────────────
+    # seen_job_ids: every job ever sent to Phase 1 for this user, regardless
+    # of whether it passed Phase 1 or Phase 2. This is the correct skip filter —
+    # unlike auto_match_results which only holds jobs that cleared MIN_SCORE.
+    # Build sets once — O(1) lookup per job in the filter below.
+    from models.orm import ArchivedJobId, SeenJobId
     import uuid as _uuid
     user_uuid = _uuid.UUID(user_id)
 
-    scored_stmt = select(AutoMatchResult.job_id).where(
-        AutoMatchResult.user_id == user_uuid
+    seen_stmt = select(SeenJobId.job_id).where(
+        SeenJobId.user_id == user_uuid
     )
-    scored_result = await db.execute(scored_stmt)
-    already_scored_ids: set[str] = {r[0] for r in scored_result.fetchall()}
+    seen_result = await db.execute(seen_stmt)
+    seen_job_ids_set: set[str] = {r[0] for r in seen_result.fetchall()}
 
     # Load archived IDs — excluded from scoring and display
     archived_stmt = select(ArchivedJobId.job_id).where(
@@ -514,7 +545,7 @@ async def run_auto_pipeline(
 
     logger.info(
         f"[AutoMatch] user={user_id} DB state: "
-        f"{len(already_scored_ids)} already scored, {len(archived_ids)} archived"
+        f"{len(seen_job_ids_set)} already seen, {len(archived_ids)} archived"
     )
 
     # ── Step 3: Role filter ───────────────────────────────────────────
@@ -542,17 +573,19 @@ async def run_auto_pipeline(
         )
 
     # ── Step 5: Find truly new jobs ───────────────────────────────────
-    # A job is "new" if it is not archived AND not already scored in DB.
+    # A job is "new" if it has never been seen before for this user (not in
+    # seen_job_ids) AND is not archived. seen_job_ids covers both jobs that
+    # passed scoring AND jobs that failed Phase 1/2 — nothing gets retried.
     # Set lookup is O(1) — safe at 20k+ jobs.
     truly_new = [
         j for j in role_matched
         if j["job_id"] not in archived_ids
-        and j["job_id"] not in already_scored_ids
+        and j["job_id"] not in seen_job_ids_set
     ]
 
     logger.info(
         f"[AutoMatch] user={user_id} {len(truly_new)} new jobs to score "
-        f"({len(role_matched) - len(truly_new)} already scored or archived — skipped)"
+        f"({len(role_matched) - len(truly_new)} already seen or archived — skipped)"
     )
 
     if not truly_new:
@@ -589,6 +622,11 @@ async def run_auto_pipeline(
             f"({len(new_sorted) - PHASE1_JOB_CAP} deferred to next run)"
         )
         new_sorted = new_sorted[:PHASE1_JOB_CAP]
+
+    # ── Mark all new_sorted jobs as seen BEFORE Phase 1 ──────────────
+    # Insert now — not after scoring — so jobs that fail Phase 1 or score
+    # below MIN_SCORE are still recorded and never retried on future runs.
+    await _mark_jobs_seen(user_uuid, [j["job_id"] for j in new_sorted], db)
 
     # ── Step 7: Phase 1 — pgvector + Hybrid scoring ───────────────────
     phase1_groups: dict[str, list] = {}

@@ -9,6 +9,10 @@ Session 21: AutoMatchResult restructured — normalized rows, one per (user, job
             Removed run_date snapshot model. UNIQUE(user_id, job_id) replaces
             UNIQUE(user_id, run_date). Promoted score + posted_at as real columns
             for indexed sorting/filtering. job_data JSONB holds full payload.
+Session 22: SeenJobId table added — tracks every job_id ever fetched for a user,
+            regardless of whether it passed Phase 1 or Phase 2 scoring.
+            Used as the skip filter for truly_new jobs (replaces already_scored_ids).
+            Also used as the pool for new-resume rescoring (future feature).
 """
 
 import uuid
@@ -60,6 +64,9 @@ class User(Base):
     )
     archived_job_ids: Mapped[list["ArchivedJobId"]] = relationship(
         "ArchivedJobId", back_populates="user", cascade="all, delete-orphan"
+    )
+    seen_job_ids: Mapped[list["SeenJobId"]] = relationship(
+        "SeenJobId", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -199,3 +206,37 @@ class ArchivedJobId(Base):
     )
 
     user: Mapped["User"] = relationship("User", back_populates="archived_job_ids")
+
+
+# ── Seen Job IDs ───────────────────────────────────────────────────────────────
+# One row per (user, job_id) — inserted the moment a job enters Phase 1 scoring,
+# regardless of whether it passes Phase 1 or Phase 2.
+#
+# Purpose 1 (current): Skip filter for truly_new jobs.
+#   truly_new = [j for j in role_matched if j["job_id"] not in seen_job_ids_set]
+#   This ensures a job that scored 25 (below MIN_SCORE) is never re-attempted on
+#   the next run — unlike the old already_scored_ids which only tracked jobs that
+#   made it into auto_match_results.
+#
+# Purpose 2 (future — new resume upload):
+#   When a user uploads resume #N, we query seen_job_ids to get the full pool of
+#   jobs ever fetched for this user, then run Phase 1 + Phase 2 against resume #N
+#   only. This re-uses the existing pool without re-fetching Greenhouse.
+#
+# Composite PK (user_id, job_id) enforces uniqueness — no duplication possible.
+class SeenJobId(Base):
+    __tablename__ = "seen_job_ids"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "job_id", name="pk_seen_job_ids"),
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="seen_job_ids")
