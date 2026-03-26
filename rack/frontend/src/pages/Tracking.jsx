@@ -996,66 +996,6 @@ function ArchiveModal({ onClose }) {
   );
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   DATE CHIP ROW — horizontal scrollable history navigator
-   ══════════════════════════════════════════════════════════════════ */
-function DateChipRow({ dates, selectedDate, onSelect }) {
-  if (!dates || dates.length === 0) return null;
-
-  // Format "2026-03-25" → "Mar 25"
-  const formatChip = (iso) => {
-    try {
-      const d = new Date(iso + "T12:00:00"); // noon avoids timezone edge cases
-      return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    } catch { return iso; }
-  };
-
-  const isToday = (iso) => iso === new Date().toISOString().slice(0, 10);
-
-  return (
-    <div style={{
-      display: "flex",
-      gap: 6,
-      overflowX: "auto",
-      paddingBottom: 4,
-      marginBottom: 14,
-      // hide scrollbar but keep it scrollable
-      scrollbarWidth: "none",
-      msOverflowStyle: "none",
-    }}>
-      {dates.map((d) => {
-        const active = d === selectedDate;
-        const today  = isToday(d);
-        return (
-          <button
-            key={d}
-            onClick={() => onSelect(d)}
-            style={{
-              flexShrink: 0,
-              padding: "5px 13px",
-              borderRadius: 20,
-              border: active
-                ? "1px solid rgba(232,255,107,0.5)"
-                : "1px solid var(--border)",
-              background: active
-                ? "rgba(232,255,107,0.1)"
-                : "var(--surface)",
-              color: active ? "var(--accent)" : "var(--text-dim)",
-              fontSize: 11,
-              fontWeight: active ? 700 : 400,
-              fontFamily: "var(--font-body)",
-              cursor: "pointer",
-              transition: "all 0.15s",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {today ? `✦ ${formatChip(d)}` : formatChip(d)}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 /* ══════════════════════════════════════════════════════════════════
    AUTO MATCHES TAB
@@ -1073,42 +1013,10 @@ function AutoMatchesTab({ profile }) {
   const [page, setPage]                 = useState(1);
   const [showArchive, setShowArchive]   = useState(false);
   const [archiveCount, setArchiveCount] = useState(() => loadArchive().length);
-  // ── Date history ──────────────────────────────────────────────────
-  const [availableDates, setAvailableDates] = useState([]);
-  const [selectedDate, setSelectedDate]     = useState(null); // null = most recent
   const hasRun = useRef(false);
 
   const hasProfile = profile && (profile.target_roles || []).length > 0;
   const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
-
-  // ── Load the list of available snapshot dates ─────────────────────
-  const loadRunDates = useCallback(async () => {
-    try {
-      const headers = await getAuthHeaders();
-      const r = await fetch(`${API}/auto/run-dates`, { headers });
-      if (r.ok) {
-        const d = await r.json();
-        const dates = d.dates || [];
-        setAvailableDates(dates);
-        // If no date is selected yet, default to the most recent
-        if (dates.length > 0) {
-          setSelectedDate(prev => prev ?? dates[0]);
-        }
-      }
-    } catch {}
-  }, []);
-
-  // ── Load matches for a specific date (or most recent if null) ─────
-  const loadMatchesForDate = useCallback(async (dateStr) => {
-    try {
-      const headers = await getAuthHeaders();
-      const url = dateStr
-        ? `${API}/auto/matches?run_date=${dateStr}`
-        : `${API}/auto/matches`;
-      const r = await fetch(url, { headers });
-      if (r.ok) setMatches(await r.json());
-    } catch {}
-  }, []);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -1123,19 +1031,10 @@ function AutoMatchesTab({ profile }) {
     if (hasRun.current) return;
     hasRun.current = true;
     (async () => {
-      await Promise.all([loadRunDates(), loadMeta()]);
+      await loadMeta();
       if (hasProfile) handleRefresh(false);
     })();
   }, [hasProfile]);
-
-  // ── Reload matches when selected date changes ─────────────────────
-  useEffect(() => {
-    if (selectedDate !== null) {
-      loadMatchesForDate(selectedDate);
-      setExpandedId(null);
-      setPage(1);
-    }
-  }, [selectedDate]);
 
   const handleRefreshWithArchive = async () => {
     if (matches.length > 0) {
@@ -1174,8 +1073,7 @@ function AutoMatchesTab({ profile }) {
       const d = await r.json();
       if (d.matches) setMatches(d.matches);
       if (d.stats) setStats(d.stats);
-      // Refresh dates — today's snapshot was just created/updated
-      await Promise.all([loadRunDates(), loadMeta()]);
+      await loadMeta();
     } catch (e) { setError("Auto pipeline failed: " + e.message); }
     setLoading(false);
   };
@@ -1249,15 +1147,6 @@ function AutoMatchesTab({ profile }) {
           </button>
         </div>
       </div>
-
-      {/* ── Date chip row — only shown when there are multiple snapshots ── */}
-      {availableDates.length > 0 && (
-        <DateChipRow
-          dates={availableDates}
-          selectedDate={selectedDate}
-          onSelect={(d) => setSelectedDate(d)}
-        />
-      )}
 
       {stats && !stats.from_cache && stats.new_processed > 0 && (
         <div style={{ background: "rgba(52,211,153,0.05)", border: "1px solid rgba(52,211,153,0.12)", borderRadius: 12, padding: "9px 16px", fontSize: 12, color: "var(--accent3)", marginBottom: 14, animation: "fadeUp 0.3s ease both", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

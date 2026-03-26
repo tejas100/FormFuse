@@ -3,12 +3,14 @@ routers/tracking.py — Auto-match pipeline API endpoints.
 
 Session 16: auto_refresh() passes db into run_auto_pipeline() for pgvector.
 Session 20: DB-backed snapshot history.
-  - GET /auto/run-dates   → list of dates that have snapshots for this user
-  - GET /auto/matches     → now accepts optional ?date=YYYY-MM-DD param
-  - POST /auto/archive    → writes to archived_job_ids DB table (global archive)
+Session 21: Normalized auto_match_results schema — one row per (user, job).
+  - Removed GET /auto/run-dates  (snapshot history gone)
+  - Removed run_date param from GET /auto/matches
+  - Added recency_days param to GET /auto/matches (1 / 7 / 30 / None=all)
+  - archive_jobs_for_user() now also deletes rows from auto_match_results
+  - Imports updated: _load_snapshot_from_db/_get_run_dates_from_db removed
 """
 
-from datetime import date as date_type
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,8 +25,7 @@ from services.auto_match import (
     run_auto_pipeline,
     archive_jobs_for_user,
     _load_auto_meta_for_user,
-    _load_snapshot_from_db,
-    _get_run_dates_from_db,
+    _load_results_from_db,
     DISPLAY_CAP,
 )
 
@@ -106,7 +107,11 @@ async def auto_refresh(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Run the auto-match pipeline for the authenticated user."""
+    """
+    Run the auto-match pipeline for the authenticated user.
+    force=True bypasses the results cache (re-checks for new jobs)
+    but does NOT re-fetch the Greenhouse pool if it's still fresh.
+    """
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one_or_none()
     profile = {**DEFAULT_PREFS, **(user.preferences or {})} if user else DEFAULT_PREFS
@@ -115,51 +120,41 @@ async def auto_refresh(
     return await run_auto_pipeline(user_id=user_id, profile=profile, force=req.force, db=db)
 
 
-@router.get("/auto/run-dates")
-async def auto_run_dates(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Return all dates that have a stored snapshot for this user, newest first.
-    Response: ["2026-03-25", "2026-03-24", ...]
-    """
-    user_id = str(current_user.id)
-    dates = await _get_run_dates_from_db(user_id, db)
-    return {"dates": dates}
-
-
 @router.get("/auto/matches")
 async def auto_matches(
     limit: int = DISPLAY_CAP,
-    run_date: Optional[str] = Query(default=None, description="YYYY-MM-DD — fetch a specific snapshot. Omit for most recent."),
+    recency_days: Optional[int] = Query(
+        default=None,
+        description="Filter by posting recency: 1, 7, or 30 days. Omit for all time."
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return stored auto match results for the authenticated user.
-    Pass ?run_date=YYYY-MM-DD to retrieve a historical snapshot.
-    Omit run_date to get the most recent snapshot.
-    Archived job IDs are filtered out automatically.
+    Return scored auto-match results for the authenticated user.
+    Results are ordered by score DESC.
+
+    Optional recency_days filter:
+      ?recency_days=1  → posted in last 24 hours
+      ?recency_days=7  → posted in last 7 days
+      ?recency_days=30 → posted in last 30 days
+      (omit)           → all scored jobs, no recency filter
     """
     user_id = str(current_user.id)
-
-    parsed_date = None
-    if run_date:
-        try:
-            parsed_date = date_type.fromisoformat(run_date)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid date format: {run_date!r}. Use YYYY-MM-DD.")
-
-    results = await _load_snapshot_from_db(user_id, db, run_date=parsed_date)
-    return results[:limit]
+    results = await _load_results_from_db(
+        user_id=user_id,
+        db=db,
+        recency_days=recency_days,
+        limit=limit,
+    )
+    return results
 
 
 @router.get("/auto/meta")
 async def auto_meta(
     current_user: User = Depends(get_current_user),
 ):
-    """Return pipeline metadata (last_fetch_at, stats) for the authenticated user."""
+    """Return pipeline metadata (last_fetch_at) for the authenticated user."""
     user_id = str(current_user.id)
     return _load_auto_meta_for_user(user_id)
 
@@ -172,7 +167,8 @@ async def auto_archive(
 ):
     """
     Permanently archive job IDs for the authenticated user.
-    These IDs will be filtered from ALL snapshots going forward.
+    Archived jobs are removed from auto_match_results immediately
+    and excluded from all future pipeline runs.
     """
     if not req.job_ids:
         raise HTTPException(status_code=400, detail="job_ids list cannot be empty")

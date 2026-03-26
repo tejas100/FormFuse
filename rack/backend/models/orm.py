@@ -5,13 +5,16 @@ Session 16: ResumeChunk.embedding changed from JSONB to pgvector Vector(384).
 Session 19: Resume.full_text added — cleaned full resume text for LLM scoring.
 Session 20: AutoMatchResult restructured — one snapshot per user per run_date (DATE).
             ArchivedJobId table added — global archive scoped per user.
+Session 21: AutoMatchResult restructured — normalized rows, one per (user, job).
+            Removed run_date snapshot model. UNIQUE(user_id, job_id) replaces
+            UNIQUE(user_id, run_date). Promoted score + posted_at as real columns
+            for indexed sorting/filtering. job_data JSONB holds full payload.
 """
 
 import uuid
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -142,9 +145,15 @@ class TrackedJob(Base):
 
 
 # ── Auto Match Results ─────────────────────────────────────────────────────────
-# One row per user per run_date. job_data stores the full array of up to 50
-# matched job entries as JSONB. Re-running the pipeline on the same calendar
-# day upserts (overwrites) the existing row via ON CONFLICT (user_id, run_date).
+# One row per (user, job). Upserted each time a job is scored for a user.
+# UNIQUE(user_id, job_id) ensures no duplicate scores per user per job, ever.
+#
+# Promoted columns (real DB columns with indexes):
+#   score     — llm_score (0–100), indexed for ORDER BY score DESC
+#   posted_at — job posting date, indexed for recency filters (last 7d, 30d)
+#
+# job_data JSONB holds the complete scored payload (all pipeline fields).
+# This schema scales to 10k+ users and 5+ years without modification.
 class AutoMatchResult(Base):
     __tablename__ = "auto_match_results"
 
@@ -154,24 +163,26 @@ class AutoMatchResult(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # One snapshot per calendar day per user
-    run_date: Mapped[date] = mapped_column(Date, nullable=False)
-    # Full array of up to STORE_CAP matched jobs with all scoring fields
-    job_data: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    created_at: Mapped[datetime] = mapped_column(
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    posted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    matched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
     __table_args__ = (
-        UniqueConstraint("user_id", "run_date", name="uq_auto_match_user_run_date"),
+        UniqueConstraint("user_id", "job_id", name="uq_auto_match_user_job"),
     )
 
     user: Mapped["User"] = relationship("User", back_populates="auto_match_results")
 
 
 # ── Archived Job IDs ───────────────────────────────────────────────────────────
-# Global archive — a job dismissed from any snapshot is hidden across all
-# snapshots for that user. Composite PK (user_id, job_id) enforces uniqueness.
+# Global archive — a job dismissed by a user is hidden from all future results.
+# Composite PK (user_id, job_id) enforces uniqueness.
 class ArchivedJobId(Base):
     __tablename__ = "archived_job_ids"
 
