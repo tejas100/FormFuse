@@ -3,16 +3,20 @@ models/orm.py — SQLAlchemy ORM models for RACK
 
 Session 16: ResumeChunk.embedding changed from JSONB to pgvector Vector(384).
 Session 19: Resume.full_text added — cleaned full resume text for LLM scoring.
+Session 20: AutoMatchResult restructured — one snapshot per user per run_date (DATE).
+            ArchivedJobId table added — global archive scoped per user.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 from sqlalchemy import (
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -51,6 +55,9 @@ class User(Base):
     auto_match_results: Mapped[list["AutoMatchResult"]] = relationship(
         "AutoMatchResult", back_populates="user", cascade="all, delete-orphan"
     )
+    archived_job_ids: Mapped[list["ArchivedJobId"]] = relationship(
+        "ArchivedJobId", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 # ── Resumes ────────────────────────────────────────────────────────────────────
@@ -77,11 +84,6 @@ class Resume(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
-
-    # ── Session 19: full cleaned resume text for LLM scoring ──────────────────
-    # Populated at upload time by ingestion.py → _clean_resume_text().
-    # NULL for resumes uploaded before this migration — handled gracefully in
-    # llm_scorer.py by falling back to structured metadata summary.
     full_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="resumes")
@@ -92,10 +94,6 @@ class Resume(Base):
 
 # ── Resume Chunks ──────────────────────────────────────────────────────────────
 class ResumeChunk(Base):
-    """
-    Chunked resume text with pgvector embeddings.
-    embedding: vector(384) — all-MiniLM-L6-v2 dimensions.
-    """
     __tablename__ = "resume_chunks"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -109,8 +107,6 @@ class ResumeChunk(Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
-
-    # pgvector — 384-dim all-MiniLM-L6-v2 embeddings
     embedding: Mapped[list | None] = mapped_column(Vector(384), nullable=True)
 
     __table_args__ = (
@@ -146,6 +142,9 @@ class TrackedJob(Base):
 
 
 # ── Auto Match Results ─────────────────────────────────────────────────────────
+# One row per user per run_date. job_data stores the full array of up to 50
+# matched job entries as JSONB. Re-running the pipeline on the same calendar
+# day upserts (overwrites) the existing row via ON CONFLICT (user_id, run_date).
 class AutoMatchResult(Base):
     __tablename__ = "auto_match_results"
 
@@ -155,10 +154,37 @@ class AutoMatchResult(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    job_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    score: Mapped[float] = mapped_column(Float, nullable=False)
-    fetched_at: Mapped[datetime] = mapped_column(
+    # One snapshot per calendar day per user
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # Full array of up to STORE_CAP matched jobs with all scoring fields
+    job_data: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
+    __table_args__ = (
+        UniqueConstraint("user_id", "run_date", name="uq_auto_match_user_run_date"),
+    )
+
     user: Mapped["User"] = relationship("User", back_populates="auto_match_results")
+
+
+# ── Archived Job IDs ───────────────────────────────────────────────────────────
+# Global archive — a job dismissed from any snapshot is hidden across all
+# snapshots for that user. Composite PK (user_id, job_id) enforces uniqueness.
+class ArchivedJobId(Base):
+    __tablename__ = "archived_job_ids"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "job_id", name="pk_archived_job_ids"),
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="archived_job_ids")

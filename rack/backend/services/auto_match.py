@@ -3,10 +3,12 @@ services/auto_match.py — Fully automatic job discovery + matching pipeline.
 
 Powers the "Auto Matches" tab on the Tracking page.
 
-Session 16 change: run_auto_pipeline() now accepts a db (AsyncSession)
-parameter and passes it through to match_resumes(). This is required now
-that the matching pipeline uses pgvector instead of local FAISS indexes.
-Everything else in this file is unchanged.
+Session 16: run_auto_pipeline() accepts db (AsyncSession) for pgvector search.
+Session 20: Results and archive now stored in Supabase DB instead of JSON files.
+  - _save_auto_results_for_user()  → upserts one snapshot row per run_date
+  - _load_auto_results_for_user()  → reads most-recent snapshot from DB
+  - archive_jobs_for_user()        → writes to archived_job_ids table
+  - seen_job_ids still uses {user_id}_meta.json (low-stakes, migrate later)
 """
 
 import asyncio
@@ -17,16 +19,17 @@ import hashlib
 import re
 import math
 import httpx
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 logger = logging.getLogger(__name__)
 
 # ── Storage ──────────────────────────────────────────────────────────
 WATCHLIST_DIR = os.path.join("uploads", "watchlist")
-AUTO_RESULTS_PATH = os.path.join(WATCHLIST_DIR, "auto_match_results.json")
 AUTO_META_PATH    = os.path.join(WATCHLIST_DIR, "auto_match_meta.json")
 AUTO_POOL_PATH    = os.path.join(WATCHLIST_DIR, "auto_job_pool.json")
 
@@ -173,7 +176,7 @@ def _recency_score(posted_at: Optional[str]) -> float:
         return 0.1
 
 
-# ── Storage helpers ───────────────────────────────────────────────────
+# ── Shared meta helpers (seen_ids still on disk — low stakes) ─────────
 def _load_auto_meta() -> dict:
     try:
         with open(AUTO_META_PATH) as f:
@@ -186,20 +189,6 @@ def _save_auto_meta(meta: dict):
     os.makedirs(WATCHLIST_DIR, exist_ok=True)
     with open(AUTO_META_PATH, "w") as f:
         json.dump(meta, f, indent=2)
-
-
-def _load_auto_results() -> list:
-    try:
-        with open(AUTO_RESULTS_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _save_auto_results(results: list):
-    os.makedirs(WATCHLIST_DIR, exist_ok=True)
-    with open(AUTO_RESULTS_PATH, "w") as f:
-        json.dump(results, f, indent=2)
 
 
 def _load_job_pool() -> list:
@@ -229,37 +218,6 @@ def _is_pool_stale(meta: dict) -> bool:
         return True
 
 
-def _load_archived_ids() -> set:
-    meta = _load_auto_meta()
-    return set(meta.get("archived_job_ids", []))
-
-
-def _save_archived_ids(archived_ids: set):
-    meta = _load_auto_meta()
-    meta["archived_job_ids"] = list(archived_ids)
-    _save_auto_meta(meta)
-
-
-def archive_jobs(job_ids: list) -> dict:
-    if not job_ids:
-        return {"archived": 0, "total_archived": len(_load_archived_ids())}
-
-    archived = _load_archived_ids()
-    new_count = sum(1 for jid in job_ids if jid not in archived)
-    archived.update(job_ids)
-    _save_archived_ids(archived)
-
-    existing = _load_auto_results()
-    filtered = [r for r in existing if r["job_id"] not in archived]
-    _save_auto_results(filtered)
-
-    logger.info(
-        f"[AutoMatch] Archived {new_count} new job(s). "
-        f"Total archived: {len(archived)}. Removed from results: {len(existing) - len(filtered)}"
-    )
-    return {"archived": new_count, "total_archived": len(archived)}
-
-
 def _is_results_stale(meta: dict) -> bool:
     last = meta.get("last_fetch_at")
     if not last:
@@ -273,24 +231,10 @@ def _is_results_stale(meta: dict) -> bool:
         return True
 
 
-# ── Per-user storage helpers ──────────────────────────────────────────
-def _user_results_path(user_id: str) -> str:
-    return os.path.join(WATCHLIST_DIR, f"{user_id}_results.json")
-
+# ── Per-user meta helpers (seen_ids on disk) ──────────────────────────
 def _user_meta_path(user_id: str) -> str:
     return os.path.join(WATCHLIST_DIR, f"{user_id}_meta.json")
 
-def _load_auto_results_for_user(user_id: str) -> list:
-    try:
-        with open(_user_results_path(user_id)) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-def _save_auto_results_for_user(user_id: str, results: list):
-    os.makedirs(WATCHLIST_DIR, exist_ok=True)
-    with open(_user_results_path(user_id), "w") as f:
-        json.dump(results, f, indent=2)
 
 def _load_auto_meta_for_user(user_id: str) -> dict:
     try:
@@ -299,40 +243,155 @@ def _load_auto_meta_for_user(user_id: str) -> dict:
     except Exception:
         return {"last_fetch_at": None, "seen_job_ids": [], "last_pool_fetch_at": None}
 
+
 def _save_auto_meta_for_user(user_id: str, meta: dict):
     os.makedirs(WATCHLIST_DIR, exist_ok=True)
     with open(_user_meta_path(user_id), "w") as f:
         json.dump(meta, f, indent=2)
 
+
+# ── DB-backed result helpers ──────────────────────────────────────────
+
+async def _save_snapshot_to_db(user_id: str, results: list, db: AsyncSession) -> None:
+    """
+    Upsert one snapshot row for today's date.
+    ON CONFLICT (user_id, run_date) → update job_data in place.
+    This means running the pipeline twice on the same day overwrites,
+    not duplicates.
+    """
+    from models.orm import AutoMatchResult
+    import uuid as _uuid
+
+    today = date.today()
+    user_uuid = _uuid.UUID(user_id)
+
+    stmt = (
+        pg_insert(AutoMatchResult)
+        .values(
+            id=_uuid.uuid4(),
+            user_id=user_uuid,
+            run_date=today,
+            job_data=results,
+            created_at=datetime.now(timezone.utc),
+        )
+        .on_conflict_do_update(
+            constraint="uq_auto_match_user_run_date",
+            set_={"job_data": results, "created_at": datetime.now(timezone.utc)},
+        )
+    )
+    await db.execute(stmt)
+    await db.commit()
+    logger.info(f"[AutoMatch] user={user_id} Snapshot saved to DB for {today} ({len(results)} jobs)")
+
+
+async def _load_snapshot_from_db(
+    user_id: str,
+    db: AsyncSession,
+    run_date: Optional[date] = None,
+) -> list:
+    """
+    Load job_data from a snapshot row.
+    If run_date is None, returns the most recent snapshot.
+    Archived job IDs are filtered out before returning.
+    """
+    from models.orm import AutoMatchResult, ArchivedJobId
+    import uuid as _uuid
+
+    user_uuid = _uuid.UUID(user_id)
+
+    if run_date is not None:
+        stmt = select(AutoMatchResult).where(
+            AutoMatchResult.user_id == user_uuid,
+            AutoMatchResult.run_date == run_date,
+        )
+    else:
+        stmt = (
+            select(AutoMatchResult)
+            .where(AutoMatchResult.user_id == user_uuid)
+            .order_by(AutoMatchResult.run_date.desc())
+            .limit(1)
+        )
+
+    result = await db.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return []
+
+    # Filter out globally archived job IDs
+    archived_stmt = select(ArchivedJobId.job_id).where(
+        ArchivedJobId.user_id == user_uuid
+    )
+    archived_result = await db.execute(archived_stmt)
+    archived_ids = {r[0] for r in archived_result.fetchall()}
+
+    jobs = row.job_data or []
+    return [j for j in jobs if j.get("job_id") not in archived_ids]
+
+
+async def _get_run_dates_from_db(user_id: str, db: AsyncSession) -> list[str]:
+    """Return all run_date values for this user, descending (newest first)."""
+    from models.orm import AutoMatchResult
+    import uuid as _uuid
+
+    user_uuid = _uuid.UUID(user_id)
+    stmt = (
+        select(AutoMatchResult.run_date)
+        .where(AutoMatchResult.user_id == user_uuid)
+        .order_by(AutoMatchResult.run_date.desc())
+    )
+    result = await db.execute(stmt)
+    return [str(row[0]) for row in result.fetchall()]
+
+
+async def archive_jobs_for_user(
+    user_id: str,
+    job_ids: list[str],
+    db: AsyncSession,
+) -> dict:
+    """
+    Write job_ids to the archived_job_ids DB table.
+    These IDs will be filtered from all future snapshot reads.
+    """
+    from models.orm import ArchivedJobId
+    import uuid as _uuid
+
+    if not job_ids:
+        return {"archived": 0}
+
+    user_uuid = _uuid.UUID(user_id)
+    now = datetime.now(timezone.utc)
+
+    # INSERT … ON CONFLICT DO NOTHING (idempotent)
+    for jid in job_ids:
+        stmt = (
+            pg_insert(ArchivedJobId)
+            .values(user_id=user_uuid, job_id=jid, archived_at=now)
+            .on_conflict_do_nothing(constraint="pk_archived_job_ids")
+        )
+        await db.execute(stmt)
+
+    await db.commit()
+    logger.info(f"[AutoMatch] user={user_id} Archived {len(job_ids)} job(s) to DB")
+    return {"archived": len(job_ids)}
+
+
+# ── Compatibility shim — kept for any callers that haven't been updated ─
+# These are the old JSON-file versions. They still work for non-DB flows.
+def _load_auto_results_for_user(user_id: str) -> list:
+    """Legacy JSON read — used only by old tracking.py endpoints still on disk."""
+    results_path = os.path.join(WATCHLIST_DIR, f"{user_id}_results.json")
+    try:
+        with open(results_path) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+# ── Job pool helpers (unchanged) ──────────────────────────────────────
 def _load_archived_ids_for_user(user_id: str) -> set:
+    """Legacy — reads archived IDs from meta JSON. Used during pipeline only."""
     meta = _load_auto_meta_for_user(user_id)
     return set(meta.get("archived_job_ids", []))
-
-def _save_archived_ids_for_user(user_id: str, archived_ids: set):
-    meta = _load_auto_meta_for_user(user_id)
-    meta["archived_job_ids"] = list(archived_ids)
-    _save_auto_meta_for_user(user_id, meta)
-
-
-def archive_jobs_for_user(user_id: str, job_ids: list) -> dict:
-    """Mark job IDs as permanently archived for a specific user."""
-    if not job_ids:
-        return {"archived": 0, "total_archived": len(_load_archived_ids_for_user(user_id))}
-
-    archived = _load_archived_ids_for_user(user_id)
-    new_count = sum(1 for jid in job_ids if jid not in archived)
-    archived.update(job_ids)
-    _save_archived_ids_for_user(user_id, archived)
-
-    existing = _load_auto_results_for_user(user_id)
-    filtered = [r for r in existing if r["job_id"] not in archived]
-    _save_auto_results_for_user(user_id, filtered)
-
-    logger.info(
-        f"[AutoMatch] user={user_id} Archived {new_count} new job(s). "
-        f"Total archived: {len(archived)}. Removed from results: {len(existing) - len(filtered)}"
-    )
-    return {"archived": new_count, "total_archived": len(archived)}
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────
@@ -340,17 +399,16 @@ async def run_auto_pipeline(
     user_id: str,
     profile: dict,
     force: bool = False,
-    db: AsyncSession = None,      # ← NEW: required for pgvector search
+    db: AsyncSession = None,
 ) -> dict:
     """
     Main entry point for the Auto Matches tab.
 
     Args:
         user_id:  Authenticated user's UUID (scopes vector search + storage).
-        profile:  User's preferences dict from DB (target_roles, preferred_locations, etc.)
+        profile:  User's preferences dict from DB (target_roles, etc.)
         force:    If True, bypass cache and re-run the full pipeline.
-        db:       AsyncSession — passed through to match_resumes() for pgvector search.
-                  Must be provided by the calling router (tracking.py).
+        db:       AsyncSession — required for pgvector search AND result storage.
     """
     from services.matcher import match_resumes
     from services.llm_scorer import llm_score_jobs_grouped
@@ -360,7 +418,7 @@ async def run_auto_pipeline(
     # ── Serve cache if fresh and not forced ───────────────────────────
     if not force and not _is_results_stale(meta):
         logger.info(f"[AutoMatch] user={user_id} Cache fresh — returning stored results")
-        stored = _load_auto_results_for_user(user_id)
+        stored = await _load_snapshot_from_db(user_id, db)
         return {
             "matches": stored[:DISPLAY_CAP],
             "stats": {
@@ -429,9 +487,20 @@ async def run_auto_pipeline(
             f"prefs={preferred_locations}"
         )
 
-    # ── Step 3: Remove already-seen and permanently-archived jobs ───────
-    seen_ids     = set(meta.get("seen_job_ids", []))
-    archived_ids = _load_archived_ids_for_user(user_id)
+    # ── Step 3: Remove already-seen and permanently-archived jobs ────
+    # seen_ids: still from meta JSON (fine — just a display optimization)
+    # archived_ids: now from DB
+    seen_ids = set(meta.get("seen_job_ids", []))
+
+    # Load archived IDs from DB
+    from models.orm import ArchivedJobId
+    import uuid as _uuid
+    user_uuid = _uuid.UUID(user_id)
+    archived_stmt = select(ArchivedJobId.job_id).where(
+        ArchivedJobId.user_id == user_uuid
+    )
+    archived_result = await db.execute(archived_stmt)
+    archived_ids = {r[0] for r in archived_result.fetchall()}
 
     non_archived = [j for j in role_matched if j["job_id"] not in archived_ids]
     unseen       = [j for j in non_archived  if j["job_id"] not in seen_ids]
@@ -449,7 +518,7 @@ async def run_auto_pipeline(
         meta["seen_job_ids"] = []
 
     if not unseen:
-        existing = _load_auto_results_for_user(user_id)
+        existing = await _load_snapshot_from_db(user_id, db)
         meta["last_fetch_at"] = datetime.now(timezone.utc).isoformat()
         _save_auto_meta_for_user(user_id, meta)
         return {
@@ -495,7 +564,6 @@ async def run_auto_pipeline(
             continue
 
         try:
-            # ── KEY CHANGE: pass db so pgvector search works ──
             result = await match_resumes(
                 jd_text=desc,
                 user_id=user_id,
@@ -563,7 +631,7 @@ async def run_auto_pipeline(
                     "years_exp": resume_match.get("years_exp"),
                     "titles":    resume_match.get("titles", []),
                     "domains":   resume_match.get("domains", []),
-                    "full_text": resume_match.get("full_text"),   # Session 19: full text for LLM scoring
+                    "full_text": resume_match.get("full_text"),
                     "structured": {
                         "years_exp": resume_match.get("years_exp"),
                         "titles":    resume_match.get("titles", []),
@@ -588,7 +656,7 @@ async def run_auto_pipeline(
     # ── Step 6: Phase 2 — LLM deep scoring ───────────────────────────
     logger.info(
         f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_groups)} jobs "
-        f"({total_pairs} resume pairs) → {len(phase1_groups)} LLM calls"
+        f"({total_pairs} resume pairs)"
     )
 
     llm_scored_groups = await llm_score_jobs_grouped(phase1_groups)
@@ -646,15 +714,17 @@ async def run_auto_pipeline(
 
     logger.info(f"[AutoMatch] user={user_id} Phase 2 complete: {len(new_entries)} final entries after LLM scoring")
 
-    # ── Step 9: Merge with existing, sort, keep top STORE_CAP ─────────
-    existing = _load_auto_results_for_user(user_id)
+    # ── Step 9: Merge with most-recent snapshot, sort, keep top STORE_CAP ──
+    existing = await _load_snapshot_from_db(user_id, db)
     merged = {r["job_id"]: r for r in existing}
     for e in new_entries:
         merged[e["job_id"]] = e
 
     final = sorted(merged.values(), key=lambda x: x.get("rank_score", 0), reverse=True)
     final = final[:STORE_CAP]
-    _save_auto_results_for_user(user_id, final)
+
+    # Save to DB (upsert today's snapshot)
+    await _save_snapshot_to_db(user_id, final, db)
 
     # ── Step 10: Persist meta ─────────────────────────────────────────
     seen_list = list(seen_ids)
