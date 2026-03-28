@@ -67,17 +67,35 @@ function timeAgo(iso) {
 async function downloadResume(resumeId, resumeName, fileExt) {
   if (!resumeId) return;
   try {
-    const resp = await fetch(`${RESUMES_API}/${resumeId}/file`);
-    if (!resp.ok) throw new Error("Download failed");
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
+    // Step 1: ask backend for a signed URL (requires auth)
+    const headers = await getAuthHeaders();
+    const resp = await fetch(`${RESUMES_API}/${resumeId}/file`, { headers });
+    if (!resp.ok) throw new Error(`Signed URL fetch failed: ${resp.status}`);
+
+    const data = await resp.json();
+    // Backend returns { signedURL: "https://..." } or { signed_url: "..." }
+    const signedUrl = data.signedURL || data.signed_url || data.url;
+    if (!signedUrl) throw new Error("No signed URL in response");
+
+    // Step 2: fetch the actual file bytes from Supabase Storage
+    // Pre-signed URLs don't need an auth header
+    const fileResp = await fetch(signedUrl);
+    if (!fileResp.ok) throw new Error(`File fetch failed: ${fileResp.status}`);
+
+    const blob = await fileResp.blob();
+    const objectUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = `${resumeName || "resume"}${fileExt ? `.${fileExt}` : ""}`;
+    a.href = objectUrl;
+    // Reconstruct filename: display_name already includes the extension in most cases,
+    // but fall back to appending fileExt if it's not already there.
+    const baseName = resumeName || "resume";
+    const ext = fileExt ? `.${fileExt}` : "";
+    const hasExt = fileExt && baseName.toLowerCase().endsWith(ext.toLowerCase());
+    a.download = hasExt ? baseName : `${baseName}${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(objectUrl);
   } catch (e) {
     console.error("Resume download error:", e);
   }
