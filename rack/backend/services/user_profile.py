@@ -381,24 +381,40 @@ def matches_any_preferred_location(job_location: str, preferred_locations: list[
 
 
 # ── Job filtering (used by watchlist.py and auto_match.py) ──────────
-def filter_jobs_by_profile(jobs: list[dict]) -> tuple[list[dict], dict]:
+def filter_jobs_by_profile(jobs: list[dict], preferences: dict | None = None) -> tuple[list[dict], dict]:
     """
     Filter a list of fetched jobs against the user profile.
     Returns (filtered_jobs, filter_stats).
 
     Filtering logic:
     1. exclude_keywords — job title must NOT contain any (hard exclude)
-    2. target_roles     — job title must fuzzy-match at least one role
+    2. target_roles     — job title must fuzzy-match at least one role OR one of its aliases
     3. preferred_locations — job location must match (country-aware, no remote free pass)
     4. include_keywords — additive: force-include even if role doesn't match
 
     If no profile filters are set at all, all jobs are returned unchanged.
+
+    preferences: if provided, use this dict directly (DB-backed, per-user).
+                 If None, falls back to the legacy file-based profile (anonymous users).
     """
-    profile = _load_profile()
+    if preferences is not None:
+        profile = {**DEFAULT_PROFILE, **preferences}
+    else:
+        profile = _load_profile()
+
     target_roles        = profile.get("target_roles", [])
     preferred_locations = profile.get("preferred_locations", [])
     include_kw          = profile.get("include_keywords", [])
     exclude_kw          = profile.get("exclude_keywords", [])
+    # role_aliases: {"AI Engineer": ["machine learning engineer", "ml engineer", ...], ...}
+    role_aliases: dict[str, list[str]] = profile.get("role_aliases", {})
+
+    # Build a flat set of all alias strings for fast lookup
+    # Also build per-role alias lists for word-overlap matching
+    alias_flat: set[str] = set()
+    for aliases in role_aliases.values():
+        for a in aliases:
+            alias_flat.add(a.lower().strip())
 
     # If no filters set, return everything
     if not target_roles and not preferred_locations and not exclude_kw:
@@ -415,14 +431,26 @@ def filter_jobs_by_profile(jobs: list[dict]) -> tuple[list[dict], dict]:
             stats["excluded"] += 1
             continue
 
-        # Step 2: Role matching (fuzzy word overlap)
+        # Step 2: Role matching — target_roles word overlap OR alias substring match
         role_match = False
         if target_roles:
             for role in target_roles:
+                # Original word-overlap check (e.g. "AI Engineer" → ["ai","engineer"])
                 role_words = role.lower().split()
                 hits = sum(1 for w in role_words if w in title_lower)
                 if hits >= len(role_words) * 0.6:
                     role_match = True
+                    break
+
+                # Alias check: does the job title contain any alias for this role?
+                aliases_for_role = role_aliases.get(role, [])
+                for alias in aliases_for_role:
+                    alias_words = alias.lower().split()
+                    alias_hits = sum(1 for w in alias_words if w in title_lower)
+                    if alias_hits >= len(alias_words) * 0.6:
+                        role_match = True
+                        break
+                if role_match:
                     break
         else:
             role_match = True  # no role filter = all roles pass
