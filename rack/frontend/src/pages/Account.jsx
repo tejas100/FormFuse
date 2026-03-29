@@ -210,12 +210,23 @@ function AuthenticatedAccount({ user, onSignOut }) {
   const [saved, setSaved] = useState(false)
   const [loading, setLoading] = useState(true)
   const [activeSection, setActiveSection] = useState(null)
+  // role_aliases: { "AI Engineer": ["machine learning engineer", ...], ... }
+  const [roleAliases, setRoleAliases] = useState({})
+  // which roles are currently fetching aliases
+  const [fetchingAliases, setFetchingAliases] = useState(new Set())
 
   const loadProfile = useCallback(async () => {
     try {
       const headers = await getAuthHeaders()
       const r = await fetch(`${API}/profile`, { headers })
-      if (r.ok) setProfile(await r.json())
+      if (r.ok) {
+        const data = await r.json()
+        setProfile(data)
+        // Restore saved aliases into local state
+        if (data.role_aliases && Object.keys(data.role_aliases).length > 0) {
+          setRoleAliases(data.role_aliases)
+        }
+      }
     } catch {}
     setLoading(false)
   }, [])
@@ -236,11 +247,50 @@ function AuthenticatedAccount({ user, onSignOut }) {
       const r = await fetch(`${API}/profile`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify(profile),
+        body: JSON.stringify({ ...profile, role_aliases: roleAliases }),
       })
       if (r.ok) { setProfile(await r.json()); setSaved(true); setTimeout(() => setSaved(false), 3000) }
     } catch {}
     setSaving(false)
+  }
+
+  const fetchAliasesForRole = useCallback(async (role) => {
+    // Skip if already have aliases for this role
+    if (roleAliases[role] && roleAliases[role].length > 0) return
+    setFetchingAliases(prev => new Set([...prev, role]))
+    try {
+      const headers = await getAuthHeaders()
+      const r = await fetch(`${API}/role-aliases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ role }),
+      })
+      if (r.ok) {
+        const data = await r.json()
+        setRoleAliases(prev => ({ ...prev, [role]: data.aliases }))
+      }
+    } catch (e) {
+      console.error('Alias fetch failed:', e)
+    }
+    setFetchingAliases(prev => { const n = new Set(prev); n.delete(role); return n })
+  }, [roleAliases])
+
+  const updateRoles = (newRoles) => {
+    // Find newly added roles (not in current profile)
+    const currentRoles = profile?.target_roles || []
+    const added = newRoles.filter(r => !currentRoles.includes(r))
+    updateField('target_roles', newRoles)
+    // Remove aliases for roles that were deleted
+    const removed = currentRoles.filter(r => !newRoles.includes(r))
+    if (removed.length > 0) {
+      setRoleAliases(prev => {
+        const next = { ...prev }
+        removed.forEach(r => delete next[r])
+        return next
+      })
+    }
+    // Fetch aliases for newly added roles
+    added.forEach(r => fetchAliasesForRole(r))
   }
 
   const updateField = (field, value) => { setProfile((p) => ({ ...p, [field]: value })); setSaved(false) }
@@ -358,7 +408,65 @@ function AuthenticatedAccount({ user, onSignOut }) {
           title="Target Roles"
           subtitle={roleCount ? `${roleCount} roles configured` : 'Not set — all jobs will be matched'}
         >
-          <ChipInput items={profile.target_roles || []} onUpdate={(v) => updateField('target_roles', v)} presets={presets.roles} placeholder="Type a role and press Enter…" accent="var(--accent)" />
+          <ChipInput
+            items={profile.target_roles || []}
+            onUpdate={updateRoles}
+            presets={presets.roles}
+            placeholder="Type a role and press Enter…"
+            accent="var(--accent)"
+          />
+          {/* Alias display — one block per role */}
+          {(profile.target_roles || []).length > 0 && (
+            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {(profile.target_roles || []).map(role => {
+                const aliases = roleAliases[role] || []
+                const fetching = fetchingAliases.has(role)
+                return (
+                  <div key={role} style={{
+                    padding: '10px 14px', borderRadius: 10,
+                    background: 'var(--surface2)', border: '1px solid var(--border)',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: fetching || aliases.length > 0 ? 8 : 0 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                        {role}
+                      </span>
+                      <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>also matches:</span>
+                      {fetching && (
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>⟳</span>
+                          generating…
+                        </span>
+                      )}
+                    </div>
+                    {!fetching && aliases.length > 0 && (
+                      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                        {aliases.map(alias => (
+                          <span key={alias} style={{
+                            fontSize: 10, padding: '2px 8px', borderRadius: 20,
+                            background: 'rgba(232,255,107,0.06)',
+                            border: '1px solid rgba(232,255,107,0.12)',
+                            color: 'var(--text-dim)',
+                          }}>{alias}</span>
+                        ))}
+                      </div>
+                    )}
+                    {!fetching && aliases.length === 0 && (
+                      <button
+                        onClick={() => fetchAliasesForRole(role)}
+                        style={{
+                          fontSize: 10, padding: '2px 10px', borderRadius: 20,
+                          border: '1px solid var(--border)', background: 'transparent',
+                          color: 'var(--text-dim)', cursor: 'pointer',
+                        }}
+                      >
+                        + generate related titles
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </Section>
 
         <Section id="locations" icon="📍" delay={0.15}
