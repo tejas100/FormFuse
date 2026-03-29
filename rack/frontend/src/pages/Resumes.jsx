@@ -57,7 +57,9 @@ export default function Resumes() {
   const [uploading, setUploading]     = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [toast, setToast]             = useState(null)
+  const [texUploading, setTexUploading] = useState(null) // resume id currently uploading tex
   const fileInputRef                  = useRef(null)
+  const texInputRefs                  = useRef({}) // { [resumeId]: <input> }
 
   // Blob URLs we've created — tracked so we can revoke them
   const blobUrlsRef = useRef({})
@@ -236,7 +238,39 @@ export default function Resumes() {
     }
   }
 
-  // ── Time formatting ─────────────────────────────────────────────────────────
+  // ── LaTeX upload ────────────────────────────────────────────────────────────
+
+  const handleTexUpload = async (resumeId, file) => {
+    if (!file) return
+    if (!file.name.endsWith('.tex')) {
+      showToast('Only .tex files are accepted.', 'error')
+      return
+    }
+    setTexUploading(resumeId)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE}/api/resumes/${resumeId}/tex`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Upload failed')
+      }
+      // Mark this resume as having tex in local state
+      setResumes(prev => prev.map(r => r.id === resumeId ? { ...r, has_tex: true } : r))
+      showToast('LaTeX source attached. autrack activated.')
+    } catch (err) {
+      showToast(err.message || 'Failed to attach LaTeX source.', 'error')
+    } finally {
+      setTexUploading(null)
+      // Reset the file input
+      if (texInputRefs.current[resumeId]) texInputRefs.current[resumeId].value = ''
+    }
+  }
 
   const formatTime = (isoString) => {
     if (!isoString) return ''
@@ -393,7 +427,53 @@ export default function Resumes() {
         </div>
       )}
 
-      {/* Grid */}
+      {/* autrack activation banner — auth users only */}
+      {isAuthed && !loading && resumes.length > 0 && (
+        <div style={{
+          width: '100%', maxWidth: '960px', marginBottom: '20px',
+          padding: '11px 16px', borderRadius: '12px',
+          background: 'rgba(232,255,107,0.04)',
+          border: '1px solid rgba(232,255,107,0.12)',
+          display: 'flex', alignItems: 'flex-start', gap: '8px', flexWrap: 'wrap',
+          animation: 'fadeUp 0.3s ease both',
+          position: 'relative',
+        }}>
+          {/* shimmer sweep — clipping scoped to a child so it doesn't crop text */}
+          <div style={{
+            position: 'absolute', inset: 0, borderRadius: '12px', overflow: 'hidden',
+            pointerEvents: 'none', zIndex: 0,
+          }}>
+            <div style={{
+              position: 'absolute', inset: 0,
+              background: 'linear-gradient(90deg, transparent 0%, rgba(232,255,107,0.05) 50%, transparent 100%)',
+              animation: 'bannerShimmer 3s ease-in-out infinite',
+            }} />
+          </div>
+          <span style={{
+            fontSize: '11px', fontWeight: 700, fontFamily: 'monospace',
+            color: 'rgba(232,255,107,0.7)', flexShrink: 0,
+            background: 'rgba(232,255,107,0.1)', border: '1px solid rgba(232,255,107,0.25)',
+            padding: '2px 7px', borderRadius: '5px', marginTop: '1px',
+            position: 'relative', zIndex: 1,
+          }}>TeX</span>
+          <span style={{
+            fontSize: '12px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.65,
+            flex: '1 1 180px', position: 'relative', zIndex: 1,
+          }}>
+            Attach a <code style={{ fontSize: '11px', background: 'rgba(255,255,255,0.07)', padding: '1px 5px', borderRadius: 4, color: 'rgba(232,255,107,0.7)' }}>.tex</code> file to each resume to activate{' '}
+            <span style={{ color: 'rgba(232,255,107,0.9)', fontWeight: 600 }}>autrack</span>.{' '}
+            RACK tailors your resume to every role, automatically.
+          </span>
+          {resumes.every(r => r.has_tex) && (
+            <span style={{
+              fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+              background: 'rgba(52,211,153,0.1)', color: '#34d399',
+              border: '1px solid rgba(52,211,153,0.2)', flexShrink: 0,
+              position: 'relative', zIndex: 1,
+            }}>ALL ACTIVE</span>
+          )}
+        </div>
+      )}
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
@@ -436,7 +516,62 @@ export default function Resumes() {
                       color: r.status === 'active' ? '#34d399' : 'rgba(255,255,255,0.4)'
                     }}>{r.status}</span>
 
-                    {/* View button */}
+                    {/* autrack / LaTeX attach button — auth only */}
+                    {isAuthed && (
+                      <>
+                        <button
+                          onClick={() => texInputRefs.current[r.id]?.click()}
+                          disabled={texUploading === r.id}
+                          title={r.has_tex ? 'LaTeX attached — click to replace' : 'Attach .tex to activate autrack'}
+                          style={{
+                            height: '28px', padding: '0 8px', borderRadius: '8px',
+                            background: r.has_tex
+                              ? 'rgba(232,255,107,0.14)'
+                              : 'rgba(232,255,107,0.06)',
+                            border: r.has_tex
+                              ? '1px solid rgba(232,255,107,0.45)'
+                              : '1px solid rgba(232,255,107,0.2)',
+                            color: r.has_tex
+                              ? 'rgba(232,255,107,1)'
+                              : 'rgba(232,255,107,0.55)',
+                            cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
+                            fontSize: '10px', fontWeight: 700, fontFamily: 'monospace',
+                            letterSpacing: '0px',
+                            transition: 'all 0.2s',
+                            opacity: texUploading === r.id ? 0.5 : 1,
+                            animation: !r.has_tex && texUploading !== r.id ? 'texPulse 2.4s ease-in-out infinite' : 'none',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {texUploading === r.id ? (
+                            <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite', fontSize: '12px' }}>⟳</span>
+                          ) : r.has_tex ? (
+                            <>
+                              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+                                <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                              <span>TeX</span>
+                            </>
+                          ) : (
+                            <>
+                              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+                                <path d="M6 1v7M3 4l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                <path d="M1 10h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                              </svg>
+                              <span>TeX</span>
+                            </>
+                          )}
+                        </button>
+                        <input
+                          ref={el => { if (el) texInputRefs.current[r.id] = el }}
+                          type="file"
+                          accept=".tex"
+                          style={{ display: 'none' }}
+                          onChange={e => handleTexUpload(r.id, e.target.files[0])}
+                        />
+                      </>
+                    )}
                     <button
                       onClick={() => handleView(r)}
                       title="View resume"
@@ -558,6 +693,21 @@ export default function Resumes() {
       <style>{`
         @keyframes spin {
           to { transform: rotate(360deg); }
+        }
+        @keyframes texPulse {
+          0%, 100% {
+            box-shadow: 0 0 0 0 rgba(232,255,107,0);
+            border-color: rgba(232,255,107,0.2);
+          }
+          50% {
+            box-shadow: 0 0 0 3px rgba(232,255,107,0.08);
+            border-color: rgba(232,255,107,0.45);
+          }
+        }
+        @keyframes bannerShimmer {
+          0%   { transform: translateX(-100%); }
+          60%  { transform: translateX(100%); }
+          100% { transform: translateX(100%); }
         }
       `}</style>
     </div>

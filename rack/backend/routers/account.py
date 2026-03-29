@@ -7,22 +7,22 @@ Endpoints:
   GET  /api/account/presets     — Get role/location presets for the form
 """
 
+import json
 import logging
 import os
-import json
+import re
 from typing import Optional
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from pydantic import BaseModel
-from openai import AsyncOpenAI
 
 from db.database import get_db
 from models.orm import User
 from routers.auth import get_current_user
 from services.user_profile import get_presets
-
-_openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/account", tags=["account"])
@@ -113,49 +113,71 @@ async def generate_role_aliases(
 ):
     """
     Call GPT-4o-mini to generate 15-20 related job title variants for a given
-    target role. Returns a list of lowercase title strings that Filter A can
-    match against the job pool.
+    target role. Uses raw httpx — same pattern as llm_scorer.py.
     """
     role = req.role.strip()
     if not role:
         raise HTTPException(status_code=400, detail="role is required")
 
-    prompt = f"""You are a job market expert. For the target role "{role}", list all closely related job titles that a recruiter might use when posting that same type of position.
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
 
-Rules:
-- Return ONLY a JSON array of strings, no other text
-- 15 to 20 items
-- All lowercase
-- Include common variants, abbreviations, and synonym titles
-- Include both senior and non-senior variants if the base role is mid-level
-- Do NOT include roles from entirely different fields
-- Do NOT include management or director roles unless the input is already senior
-
-Example for "ML Engineer":
-["machine learning engineer", "ml engineer", "machine learning software engineer", "ai/ml engineer", "ml platform engineer", "ml infrastructure engineer", "applied ml engineer", "mlops engineer", "ml research engineer", "senior ml engineer", "staff ml engineer", "machine learning developer", "deep learning engineer", "ai engineer", "machine learning scientist"]
-
-Now return the array for: "{role}" """
+    prompt = (
+        f'You are a job market expert. For the target role "{role}", list all closely '
+        f"related job titles that a recruiter might use when posting that same type of position.\n\n"
+        f"Rules:\n"
+        f"- Return ONLY a JSON array of strings, no other text, no markdown fences\n"
+        f"- 15 to 20 items\n"
+        f"- All lowercase\n"
+        f"- Include common variants, abbreviations, and synonym titles\n"
+        f"- Include both senior and non-senior variants if the base role is mid-level\n"
+        f"- Do NOT include roles from entirely different fields\n"
+        f"- Do NOT include management or director roles unless the input is already senior\n\n"
+        f'Now return the JSON array for: "{role}"'
+    )
 
     try:
-        response = await _openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=400,
-        )
-        raw = response.choices[0].message.content.strip()
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 400,
+                },
+                timeout=20.0,
+            )
+
+        if response.status_code != 200:
+            logger.warning(f"[RoleAliases] OpenAI {response.status_code} for '{role}'")
+            raise HTTPException(status_code=502, detail="OpenAI request failed")
+
+        raw = response.json()["choices"][0]["message"]["content"].strip()
+        # Strip markdown fences if present — same pattern as llm_scorer.py
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+
         aliases = json.loads(raw.strip())
         if not isinstance(aliases, list):
             raise ValueError("expected a list")
+
         # Normalise: lowercase, deduplicate, cap at 20
-        aliases = list(dict.fromkeys(a.lower().strip() for a in aliases if isinstance(a, str) and a.strip()))[:20]
-        logger.info(f"Generated {len(aliases)} aliases for '{role}'")
+        aliases = list(dict.fromkeys(
+            a.lower().strip() for a in aliases if isinstance(a, str) and a.strip()
+        ))[:20]
+
+        logger.info(f"[RoleAliases] Generated {len(aliases)} aliases for '{role}'")
         return {"role": role, "aliases": aliases}
+
+    except json.JSONDecodeError as e:
+        logger.error(f"[RoleAliases] JSON parse error for '{role}': {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse alias response")
     except Exception as e:
-        logger.error(f"Role alias generation failed for '{role}': {e}")
-        raise HTTPException(status_code=500, detail=f"Alias generation failed: {str(e)}")
+        logger.error(f"[RoleAliases] Failed for '{role}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))

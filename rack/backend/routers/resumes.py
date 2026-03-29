@@ -309,6 +309,7 @@ async def list_resumes(
                 "years_exp": r.years_exp,
                 "titles": r.titles or [],
                 "domains": r.domains or [],
+                "has_tex": bool(getattr(r, "tex_storage_path", None)),
             }
             for r in resumes
         ]
@@ -416,3 +417,66 @@ async def serve_resume_file(
 
     signed_url = await _get_signed_url(resume.storage_path)
     return {"url": signed_url, "filename": resume.filename}
+
+
+# ── Upload LaTeX source for a resume (auth only) ──────────────────────────────
+
+@router.post("/{resume_id}/tex")
+async def upload_tex(
+    resume_id: str,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Attach a .tex source file to an existing resume.
+    Stored at {user_id}/{resume_id}.tex in Supabase Storage.
+    Activates autrack (AI resume optimization) for this resume.
+    """
+    try:
+        rid = uuid.UUID(resume_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid resume ID.")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext != ".tex":
+        raise HTTPException(status_code=400, detail="Only .tex files are accepted.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # Verify resume belongs to this user
+    result = await db.execute(
+        select(Resume).where(Resume.id == rid, Resume.user_id == current_user.id)
+    )
+    resume = result.scalar_one_or_none()
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found.")
+
+    # Store at a deterministic path: {user_id}/{resume_id}.tex
+    # Using resume_id as filename means re-uploading replaces the old file cleanly
+    tex_storage_path = f"{current_user.id}/{resume_id}.tex"
+    supabase = _get_supabase()
+    try:
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            path=tex_storage_path,
+            file=content,
+            file_options={"content-type": "text/plain", "upsert": "true"},
+        )
+    except Exception as e:
+        logger.error(f"LaTeX storage upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload .tex file.")
+
+    # Persist path on the resume row
+    # tex_storage_path column must exist — add via Supabase dashboard:
+    # ALTER TABLE resumes ADD COLUMN tex_storage_path text;
+    resume.tex_storage_path = tex_storage_path
+    await db.flush()
+
+    logger.info(f"LaTeX source attached to resume {rid} for user {current_user.id}")
+    return {
+        "status": "success",
+        "message": "LaTeX source attached. autrack is now active for this resume.",
+        "has_tex": True,
+    }
