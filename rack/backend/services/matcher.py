@@ -161,6 +161,13 @@ async def match_resumes(
     print(f"[matcher] Semantic query: {len(semantic_query.split())} words")
 
     # ── Step 4: pgvector search — scoped to this user ──
+    import re as _re
+    _UUID_RE = _re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        _re.IGNORECASE,
+    )
+    is_anon = not _UUID_RE.match(user_id)
+
     vector_results = await vector_search(
         query_embedding=jd_embedding,
         user_id=user_id,
@@ -169,19 +176,50 @@ async def match_resumes(
     )
     print(f"[matcher] pgvector returned {len(vector_results)} chunks")
 
-    if not vector_results:
-        return {
-            "results": [],
-            "jd_parsed": parsed_jd,
-            "meta": {
-                "total_resumes": 0,
-                "pipeline_time_ms": _elapsed_ms(start_time),
-                "message": "No resumes indexed. Upload resumes first.",
-            },
-        }
+    # ── Step 5: Load resume metadata + chunks ──
+    # Anonymous users: pgvector returns [] (non-UUID guard in vector_store.py).
+    # Fall back to local disk store via ingestion.get_all_resumes(session_id).
+    if is_anon:
+        from services.ingestion import get_all_resumes as _get_all_resumes, get_resume_by_id as _get_resume_by_id
+        raw_resumes = _get_all_resumes(session_id=user_id)
 
-    # ── Step 5: Load resume metadata + chunks from DB ──
-    all_resumes = await _load_resumes_from_db(user_id, db)
+        # get_all_resumes() flattens structured fields to top-level and strips chunks.
+        # Re-fetch full records (which include chunks + structured dict) so the
+        # scorer has everything it needs. Fall back to the flat record if not found.
+        all_resumes = []
+        for r in raw_resumes:
+            full = _get_resume_by_id(r["id"])
+            if full:
+                # Full record from metadata JSON has "structured" key and "chunks" list
+                all_resumes.append(full)
+            else:
+                # Fallback: reconstruct structured dict from flat fields
+                r.setdefault("structured", {
+                    "years_exp": r.get("years_exp"),
+                    "titles":    r.get("titles", []),
+                    "domains":   r.get("domains", []),
+                    "skills":    r.get("skills", []),
+                })
+                r.setdefault("chunks", [])
+                all_resumes.append(r)
+
+        logger.info(f"[matcher] Anonymous fallback: loaded {len(all_resumes)} resumes from local store for session={user_id}")
+
+        # Build synthetic vector_results from chunk dicts so scoring has signal.
+        # Similarity score is set to 0.5 (neutral) since we have no pgvector scores.
+        if not vector_results and all_resumes:
+            for resume in all_resumes:
+                for chunk in resume.get("chunks", []):
+                    vector_results.append({
+                        "resume_id":   resume["id"],
+                        "chunk_index": chunk.get("chunk_index", 0),
+                        "text":        chunk.get("text", chunk.get("chunk_text", "")),
+                        "score":       0.5,
+                        "section":     chunk.get("section", "experience"),
+                        "weight":      chunk.get("weight", 1.0),
+                    })
+    else:
+        all_resumes = await _load_resumes_from_db(user_id, db)
 
     if not all_resumes:
         return {

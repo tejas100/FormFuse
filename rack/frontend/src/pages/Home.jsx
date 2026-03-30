@@ -186,12 +186,12 @@ const mobileCardStyles = `
     animation: smoothExpand 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
-  /* ── Bottom chat input bar — elevated, not submerged ── */
+  /* ── Bottom chat input bar — floats on the background, no dark box ── */
   .rack-chat-input-bar {
     flex-shrink: 0;
     padding: 12px 24px 20px;
     padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
-    background: linear-gradient(to bottom, transparent 0%, rgba(8,8,8,0.88) 22%, rgba(8,8,8,0.97) 60%);
+    background: transparent;
     position: relative;
   }
   .rack-chat-input-inner {
@@ -221,7 +221,7 @@ const mobileCardStyles = `
     font-family: var(--font-body);
     font-size: 15px;
     font-weight: 300;
-    line-height: 1.6;
+    // line-height: 1.6;
     max-height: 180px;
     min-height: 28px;
     caret-color: var(--accent);
@@ -309,7 +309,7 @@ const mobileCardStyles = `
     .rack-greeting-sub { font-size: 14px; }
     .rack-bubble-user { max-width: 85%; font-size: 13px; }
     .rack-bubble-rack { max-width: 100%; }
-    .rack-chat-input-bar { padding: 10px 16px 14px; padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
+    .rack-chat-input-bar { padding: 10px 16px 14px; padding-bottom: calc(75px + env(safe-area-inset-bottom, 0px)); }
     .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 16px; }
     .rack-chat-textarea { font-size: 16px; /* prevent iOS zoom */ }
     .rack-suggestion-chips { gap: 6px; }
@@ -928,15 +928,17 @@ export default function Home() {
   })()
 
   const [jd, setJd]               = useState('')
-  const [submittedJd, setSubmittedJd] = useState('')   // what was sent — shown in user bubble
+  const [messages, setMessages]   = useState([])        // multi-turn conversation thread
   const [loading, setLoading]     = useState(false)
-  const [results, setResults]     = useState(null)
-  const [jdParsed, setJdParsed]   = useState(null)
-  const [meta, setMeta]           = useState(null)
-  const [error, setError]         = useState(null)
-  const [expandedId, setExpandedId] = useState(null)
+  const [filterLoading, setFilterLoading] = useState(false)
+  const [expandedIds, setExpandedIds] = useState(new Set()) // per-card key: `${msg.id}-${resume_id}`
   const [resumeCount, setResumeCount] = useState(null)
   const [resumeWarning, setResumeWarning] = useState(false)
+
+  // Derived: last completed message's results (for ValuePreviewCard)
+  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
+  const lastResults = lastMsg?.results ?? null
+  const hasConversation = messages.length > 0
 
   // ── Anonymous upload queue ──────────────────────────────────────
   // fileQueue: File[] staged before clicking Match It
@@ -971,6 +973,11 @@ export default function Home() {
   ]
 
   const ANON_CAP = 5
+  const AUTH_CAP = 5   // matches MAX_RESUMES_AUTH in resumes.py
+  const effectiveCap  = isAuthed ? AUTH_CAP : ANON_CAP
+  const savedCount    = resumeCount || 0
+  const slotsLeft     = Math.max(0, effectiveCap - savedCount - fileQueue.length)
+  const atCap         = savedCount + fileQueue.length >= effectiveCap
 
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files || [])
@@ -981,9 +988,8 @@ export default function Home() {
       const existingNames = new Set(prev.map(f => f.name))
       const fresh = valid.filter(f => !existingNames.has(f.name))
 
-      // Enforce cap: slots remaining = ANON_CAP - already saved - already queued
-      const saved = resumeCount || 0
-      const slotsRemaining = Math.max(0, ANON_CAP - saved - prev.length)
+      // Enforce cap: slots remaining = effectiveCap - already saved - already queued
+      const slotsRemaining = Math.max(0, effectiveCap - (resumeCount || 0) - prev.length)
 
       if (fresh.length > slotsRemaining) {
         const accepted = fresh.slice(0, slotsRemaining)
@@ -1013,14 +1019,14 @@ export default function Home() {
     r.readAsDataURL(file)
   })
 
-  // ── Auto-scroll chat area to bottom when results arrive ────────
+  // ── Auto-scroll chat area to bottom when new messages arrive ──
   useEffect(() => {
-    if (results !== null && chatScrollRef.current) {
+    if (messages.length > 0 && chatScrollRef.current) {
       setTimeout(() => {
         chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
       }, 100)
     }
-  }, [results])
+  }, [messages, loading])
 
   // ── Auto-resize textarea ─────────────────────────────────────────
   useEffect(() => {
@@ -1029,6 +1035,84 @@ export default function Home() {
     ta.style.height = 'auto'
     ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'
   }, [jd])
+
+  // ── Auto-match filter chips (auth'd greeting state) ──────────────
+  const handleAutoMatchFilter = async (action) => {
+    if (filterLoading) return
+    setFilterLoading(true)
+
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch('http://localhost:8000/api/auto-matches', { headers })
+      if (!res.ok) throw new Error('Failed to load matches')
+      const data = await res.json()
+      let jobs = data.matches || data.results || []
+
+      // Apply filter
+      const now = Date.now()
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
+      if      (action === 'filter:85')   jobs = jobs.filter(j => (j.score ?? 0) >= 85)
+      else if (action === 'filter:75')   jobs = jobs.filter(j => (j.score ?? 0) >= 75)
+      else if (action === 'filter:week') jobs = jobs.filter(j => {
+        const posted = j.posted_at || j.matched_at
+        return posted && (now - new Date(posted).getTime()) <= sevenDaysMs
+      })
+      // 'filter:all' — no filter
+
+      // Append as a special message type (no JD bubble — chip action)
+      const msgId = Date.now()
+      const label = {
+        'filter:all':  `All matched jobs (${jobs.length})`,
+        'filter:85':   `Jobs matching 85%+ (${jobs.length})`,
+        'filter:75':   `Jobs matching 75%+ (${jobs.length})`,
+        'filter:week': `Jobs from last 7 days (${jobs.length})`,
+      }[action] || 'Matched jobs'
+
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: label,         // shown in user bubble as the "query"
+        isFilterResult: true,
+        filterJobs: jobs,
+        results: null,
+        loading: false,
+        error: jobs.length === 0 ? 'No jobs found for this filter.' : null,
+      }])
+    } catch (err) {
+      console.error('Filter error:', err)
+    } finally {
+      setFilterLoading(false)
+    }
+  }
+
+  // ── Download a resume file ──────────────────────────────────────
+  const handleDownload = async (e, resumeId, resumeName) => {
+    e.stopPropagation() // don't expand the card
+    try {
+      const headers = isAuthed ? await getAuthHeaders() : { 'X-Session-ID': sessionId }
+      // Step 1: get the signed URL from the backend
+      const res = await fetch(`http://localhost:8000/api/resumes/${resumeId}/file`, { headers })
+      if (!res.ok) throw new Error('Failed to fetch download URL')
+      const data = await res.json()
+
+      // Step 2: fetch the file as a blob — the Supabase URL never appears in the address bar
+      const fileRes = await fetch(data.url)
+      if (!fileRes.ok) throw new Error('Failed to fetch file')
+      const blob = await fileRes.blob()
+
+      // Step 3: create a local object URL and trigger download silently
+      const objectUrl = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = resumeName || 'resume'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      // Release memory
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10000)
+    } catch (err) {
+      console.error('Download failed:', err)
+    }
+  }
 
   // ── Match handler ───────────────────────────────────────────────
   const handleMatch = async () => {
@@ -1042,13 +1126,22 @@ export default function Home() {
       return
     }
 
+    const capturedJd = jd.trim()
+    const msgId = Date.now()
+
     setLoading(true)
-    setResults(null)
-    setJdParsed(null)
-    setMeta(null)
-    setError(null)
-    setSubmittedJd(jd)   // snapshot what the user sent
     setJd('')            // clear the textarea immediately
+
+    // Append loading placeholder for this turn
+    setMessages(prev => [...prev, {
+      id: msgId,
+      jd: capturedJd,
+      results: null,
+      jdParsed: null,
+      meta: null,
+      loading: true,
+      error: null,
+    }])
 
     // ── Act 1: Upload queued files (anonymous only) ─────────────
     if (!isAuthed && hasQueuedFiles) {
@@ -1107,7 +1200,7 @@ export default function Home() {
           'Content-Type': 'application/json',
           'X-Session-ID': isAuthed ? (user?.id || 'default') : sessionId,
         },
-        body: JSON.stringify({ job_description: jd, use_llm: true }),
+        body: JSON.stringify({ job_description: capturedJd, use_llm: true }),
       })
 
       if (!res.ok) {
@@ -1116,11 +1209,15 @@ export default function Home() {
       }
 
       const data = await res.json()
-      setResults(data.results || [])
-      setJdParsed(data.jd_parsed || null)
-      setMeta(data.meta || null)
+      setMessages(prev => prev.map(m => m.id === msgId
+        ? { ...m, results: data.results || [], jdParsed: data.jd_parsed || null, meta: data.meta || null, loading: false }
+        : m
+      ))
     } catch (err) {
-      setError(err.message || 'Failed to connect to backend')
+      setMessages(prev => prev.map(m => m.id === msgId
+        ? { ...m, error: err.message || 'Failed to connect to backend', loading: false }
+        : m
+      ))
     } finally {
       setLoading(false)
       setUploadQueue([])
@@ -1134,15 +1231,10 @@ export default function Home() {
     textareaRef.current?.focus()
   }
 
-  // ── Helpers for the input bar ────────────────────────────────────
-  const saved     = resumeCount || 0
-  const atCap     = saved + fileQueue.length >= ANON_CAP
-  const slotsLeft = Math.max(0, ANON_CAP - saved - fileQueue.length)
   const capWarning    = typeof resumeWarning === 'string' && resumeWarning.startsWith('cap:')
   const droppedCount  = capWarning ? parseInt(resumeWarning.split(':')[1]) : 0
 
-  // Truncate submitted JD for user bubble display (use submittedJd, not live jd)
-  const jdPreview = submittedJd.length > 220 ? submittedJd.slice(0, 220).trimEnd() + '…' : submittedJd
+  // jdPreview is now per-message — computed inline in the render loop
 
   return (
     <>
@@ -1155,9 +1247,9 @@ export default function Home() {
       <div className="rack-chat-scroll" ref={chatScrollRef}>
 
         {/* "new chat" pill — floats top-right inside scroll area when a convo is active */}
-        {(results || loading || error) && (
+        {hasConversation && (
           <button
-            onClick={() => { setResults(null); setJdParsed(null); setMeta(null); setError(null); setJd(''); setSubmittedJd('') }}
+            onClick={() => { setMessages([]); setJd(''); setExpandedIds(new Set()) }}
             style={{
               position: 'sticky', top: '0px', alignSelf: 'flex-end',
               fontSize: '11px', padding: '5px 12px', borderRadius: '20px',
@@ -1174,7 +1266,7 @@ export default function Home() {
         )}
 
         {/* ── Greeting state (no conversation yet) ── */}
-        {!results && !loading && !error && (
+        {!hasConversation && !loading && (
           <div className="rack-greeting">
             <div className="rack-greeting-hero">
               <div className="rack-greeting-eyebrow">
@@ -1193,292 +1285,410 @@ export default function Home() {
               </p>
             </div>
 
-            {/* Suggestion chips */}
+            {/* Suggestion chips — context-aware */}
             <div className="rack-suggestion-chips">
-              {[
-                '🔍 Paste a job description',
-                '🤖 Try an ML Engineer role',
-                '💼 Software Engineer — Senior',
-                '📊 Data Scientist position',
-              ].map(chip => (
-                <button
-                  key={chip}
-                  className="rack-suggestion-chip"
-                  onClick={() => handleSuggestion(chip.replace(/^[\p{Emoji}\s]+/u, ''))}
-                >
-                  {chip}
-                </button>
-              ))}
+              {isAuthed ? (
+                // Auth'd users: quick-filters into their auto-match results
+                [
+                  { label: '⚡ View all matched jobs',        action: 'filter:all'  },
+                  { label: '🏆 85%+ match jobs',              action: 'filter:85'   },
+                  { label: '✅ 75%+ match jobs',              action: 'filter:75'   },
+                  { label: '📬 Jobs from last 7 days',        action: 'filter:week' },
+                ].map(chip => (
+                  <button
+                    key={chip.action}
+                    className="rack-suggestion-chip"
+                    onClick={() => handleAutoMatchFilter(chip.action)}
+                  >
+                    {chip.label}
+                  </button>
+                ))
+              ) : (
+                // Anon users: sample JD starters
+                [
+                  '🔍 Paste a job description',
+                  '🤖 Try an ML Engineer role',
+                  '💼 Software Engineer — Senior',
+                  '📊 Data Scientist position',
+                ].map(chip => (
+                  <button
+                    key={chip}
+                    className="rack-suggestion-chip"
+                    onClick={() => handleSuggestion(chip.replace(/^[\p{Emoji}\s]+/u, ''))}
+                  >
+                    {chip}
+                  </button>
+                ))
+              )}
             </div>
           </div>
         )}
 
-        {/* ── Conversation thread ── */}
-        {(results !== null || loading || error) && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0, width: '100%', maxWidth: '900px', margin: '0 auto' }}>
+        {/* ── Conversation thread — multi-turn, one entry per submitted JD ── */}
+        {messages.map((msg) => {
+          const msgJdPreview = msg.jd.length > 220 ? msg.jd.slice(0, 220).trimEnd() + '…' : msg.jd
 
-            {/* User bubble — the JD they sent */}
-            <div className="rack-msg-row user">
-              <div className="rack-bubble-user">
-                <div className="rack-bubble-user-label">You</div>
-                {jdPreview}
-              </div>
-            </div>
+          return (
+            <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: 0, width: '100%', maxWidth: '900px', margin: '0 auto' }}>
 
-            {/* RACK reply bubble */}
-            <div className="rack-msg-row rack">
-              <div className="rack-bubble-rack">
-                <div className="rack-bubble-rack-label">
-                  <span className="rack-bubble-rack-label-dot" />
-                  Rack
+              {/* User bubble — the JD they sent */}
+              <div className="rack-msg-row user">
+                <div className="rack-bubble-user">
+                  <div className="rack-bubble-user-label">You</div>
+                  {msgJdPreview}
                 </div>
+              </div>
 
-                {/* Pipeline animation while loading */}
-                {loading && (
-                  <div style={{ marginBottom: '8px' }}>
-                    <JDPipelineAnimation uploadQueue={uploadQueue} />
+              {/* RACK reply bubble */}
+              <div className="rack-msg-row rack">
+                <div className="rack-bubble-rack">
+                  <div className="rack-bubble-rack-label">
+                    <span className="rack-bubble-rack-label-dot" />
+                    Rack
                   </div>
-                )}
 
-                {/* Error */}
-                {error && (
-                  <div style={{
-                    padding: '14px 18px', borderRadius: '12px',
-                    background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
-                    color: 'var(--danger)', fontSize: '14px',
-                    animation: 'bubbleIn 0.3s ease both',
-                  }}>
-                    {error}
-                  </div>
-                )}
-
-                {/* Results */}
-                {results && results.length === 0 && (
-                  <div style={{
-                    padding: '28px 24px', borderRadius: '14px',
-                    background: 'var(--surface)', border: '1px solid var(--border-bright)',
-                    textAlign: 'center', animation: 'bubbleIn 0.35s ease both',
-                  }}>
-                    <div style={{ fontSize: '28px', marginBottom: '10px' }}>📄</div>
-                    <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 600, color: 'var(--text)', marginBottom: '6px' }}>
-                      No resumes to match against
+                  {/* Pipeline animation while this turn is loading */}
+                  {msg.loading && (
+                    <div style={{ marginBottom: '8px' }}>
+                      <JDPipelineAnimation uploadQueue={uploadQueue} />
                     </div>
-                    <p style={{ fontSize: '13px', color: 'var(--text-dim)', fontWeight: 300, margin: 0 }}>
-                      Upload your resumes in the Resumes tab first, then come back to match.
-                    </p>
-                  </div>
-                )}
+                  )}
 
-                {results && results.length > 0 && (
-                  <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
-                    {/* JD Parse Summary */}
-                    {jdParsed && (
-                      <div style={{
-                        marginBottom: '14px', padding: '10px 14px', borderRadius: '10px',
-                        background: 'rgba(232,255,107,0.03)', border: '1px solid rgba(232,255,107,0.1)',
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
-                          {jdParsed.title && (
-                            <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700, color: 'var(--text)' }}>
-                              {jdParsed.title}
-                            </span>
-                          )}
-                          {jdParsed.min_years && (
-                            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
-                              · {jdParsed.min_years}+ yrs
-                            </span>
-                          )}
-                          <span style={{
-                            fontSize: '10px', padding: '2px 8px', borderRadius: '10px', marginLeft: 'auto',
-                            background: jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.12)' : 'rgba(255,255,255,0.06)',
-                            color: jdParsed.extraction_method === 'hybrid' ? 'var(--accent3)' : 'var(--text-dim)',
-                            border: `1px solid ${jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.08)'}`,
-                            fontWeight: 600,
-                          }}>
-                            {jdParsed.extraction_method === 'hybrid' ? 'Rule + LLM' : 'Rule-based'}
-                          </span>
-                          {meta?.llm_scored > 0 && (
-                            <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(167,139,250,0.12)', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.22)', fontWeight: 600 }}>
-                              ✦ {meta.llm_scored} AI-scored
-                            </span>
-                          )}
-                          {meta && (
-                            <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{meta.pipeline_time_ms}ms</span>
+                  {/* Error */}
+                  {msg.error && (
+                    <div style={{
+                      padding: '14px 18px', borderRadius: '12px',
+                      background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
+                      color: 'var(--danger)', fontSize: '14px',
+                      animation: 'bubbleIn 0.3s ease both',
+                    }}>
+                      {msg.error}
+                    </div>
+                  )}
+
+                  {/* Filter results — auto-match chip queries */}
+                  {msg.isFilterResult && (
+                    <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
+                      {msg.error ? (
+                        <div style={{ padding:'16px 18px', borderRadius:'12px', background:'rgba(255,255,255,0.04)', border:'1px solid var(--border-bright)', color:'var(--text-dim)', fontSize:'13px' }}>
+                          {msg.error}
+                        </div>
+                      ) : (
+                        <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                          {(msg.filterJobs || []).slice(0, 20).map((job, ji) => {
+                            const jScore = Math.round(job.score ?? 0)
+                            const jd = job.job_data || job
+                            const title   = jd.job_title   || jd.title   || 'Untitled'
+                            const company = jd.company                   || '—'
+                            const url     = jd.url                       || null
+                            const posted  = jd.posted_at  || job.posted_at
+                            const daysAgo = posted
+                              ? Math.max(0, Math.round((Date.now() - new Date(posted).getTime()) / 86400000))
+                              : null
+                            return (
+                              <div key={ji} style={{
+                                display:'flex', alignItems:'center', gap:'14px',
+                                padding:'12px 16px', borderRadius:'12px',
+                                background:'var(--surface)', border:'1px solid var(--border-bright)',
+                                animation: `bubbleIn 0.3s ease ${ji * 0.04}s both`,
+                              }}>
+                                <div style={{ flex:1, minWidth:0 }}>
+                                  <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'2px', flexWrap:'wrap' }}>
+                                    <span style={{ fontFamily:'var(--font-display)', fontSize:'14px', fontWeight:600, color:'var(--text)' }}>{title}</span>
+                                    <span style={{ fontSize:'11px', color:'var(--text-dim)' }}>{company}</span>
+                                  </div>
+                                  {daysAgo !== null && (
+                                    <span style={{ fontSize:'10px', color:'var(--text-dim)' }}>{daysAgo === 0 ? 'today' : `${daysAgo}d ago`}</span>
+                                  )}
+                                </div>
+                                <div style={{ display:'flex', alignItems:'center', gap:'8px', flexShrink:0 }}>
+                                  <div style={{
+                                    fontFamily:'var(--font-display)', fontSize:'20px', fontWeight:800,
+                                    color: jScore >= 85 ? 'var(--accent)' : jScore >= 65 ? '#60a5fa' : 'var(--danger)',
+                                  }}>{jScore}</div>
+                                  {url && (
+                                    <a
+                                      href={url} target="_blank" rel="noopener noreferrer"
+                                      onClick={e => e.stopPropagation()}
+                                      style={{
+                                        fontSize:'11px', padding:'4px 10px', borderRadius:'8px',
+                                        background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
+                                        color:'var(--text-dim)', textDecoration:'none',
+                                        transition:'all 0.15s ease',
+                                      }}
+                                      onMouseEnter={e => { e.currentTarget.style.background='rgba(232,255,107,0.08)'; e.currentTarget.style.color='var(--accent)' }}
+                                      onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.06)'; e.currentTarget.style.color='var(--text-dim)' }}
+                                    >
+                                      Apply →
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })}
+                          {(msg.filterJobs || []).length > 20 && (
+                            <div style={{ fontSize:'12px', color:'var(--text-dim)', textAlign:'center', padding:'8px 0' }}>
+                              Showing 20 of {msg.filterJobs.length} — visit Tracking for full list
+                            </div>
                           )}
                         </div>
-                        <div className="rack-jd-chips" style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                          {(jdParsed.required_skills || []).slice(0, 7).map(s => (
-                            <span key={s} className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '2px 9px', borderRadius: '20px', background: 'rgba(232,255,107,0.06)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.15)', whiteSpace: 'nowrap' }}>
-                              {s}
-                            </span>
-                          ))}
-                          {(jdParsed.required_skills || []).length > 7 && (
-                            <span className="rack-jd-chip" style={{ fontSize: '11px', padding: '2px 9px', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-                              +{jdParsed.required_skills.length - 7} more
-                            </span>
-                          )}
-                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Results */}
+                  {!msg.isFilterResult && msg.results && msg.results.length === 0 && (
+                    <div style={{
+                      padding: '28px 24px', borderRadius: '14px',
+                      background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                      textAlign: 'center', animation: 'bubbleIn 0.35s ease both',
+                    }}>
+                      <div style={{ fontSize: '28px', marginBottom: '10px' }}>📄</div>
+                      <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 600, color: 'var(--text)', marginBottom: '6px' }}>
+                        No resumes to match against
                       </div>
-                    )}
-
-                    {/* Ranked result header */}
-                    <div style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: '10px', paddingLeft: '2px' }}>
-                      Ranked Results — {results.length} resume{results.length !== 1 ? 's' : ''}
+                      <p style={{ fontSize: '13px', color: 'var(--text-dim)', fontWeight: 300, margin: 0 }}>
+                        Upload your resumes in the Resumes tab first, then come back to match.
+                      </p>
                     </div>
+                  )}
 
-                    {/* Result cards */}
-                    {results.map((r, i) => {
-                      const isExpanded  = expandedId === r.resume_id
-                      const isLLM       = r.scoring_method === 'llm+hybrid'
-                      const displayScore = r.llm_score ?? r.score ?? 0
-                      const rec         = r.llm_recommendation
-                      const recStyle    = rec ? recommendationStyle(rec) : null
-
-                      return (
-                        <div key={r.resume_id} className="rack-card-padding" style={{
-                          background: i === 0 ? 'rgba(232,255,107,0.04)' : 'var(--surface)',
-                          border: `1px solid ${i === 0 ? 'rgba(232,255,107,0.3)' : 'var(--border-bright)'}`,
-                          borderRadius: '14px', padding: '18px 22px', marginBottom: '10px',
-                          cursor: 'pointer', transition: 'all 0.2s ease',
-                          animation: `bubbleIn 0.4s ease ${i * 0.07}s both`,
-                          boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-                        }}
-                        onClick={() => setExpandedId(isExpanded ? null : r.resume_id)}
-                        >
-                          {/* Collapsed row */}
-                          <div className="rack-card-row" style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
-                            <div className="rack-card-rank" style={{ fontFamily:'var(--font-display)', fontSize:'24px', fontWeight:800, color: i===0 ? 'var(--accent)' : 'rgba(255,255,255,0.15)', minWidth:'36px' }}>
-                              #{i+1}
-                            </div>
-                            <div style={{ flex:1, minWidth:0 }}>
-                              <div className="rack-card-badges" style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'6px', flexWrap:'wrap' }}>
-                                <span className="rack-card-name" style={{ fontFamily:'var(--font-display)', fontSize:'16px', fontWeight:600, color:'var(--text)' }}>{r.name}</span>
-                                <span style={{ fontSize:'10px', padding:'2px 6px', borderRadius:'6px', background:'rgba(255,255,255,0.06)', color:'var(--text-dim)', fontWeight:500 }}>
-                                  {r.file_ext?.replace('.','').toUpperCase()}
-                                </span>
-                                {isLLM && (
-                                  <span style={{ fontSize:'10px', padding:'2px 7px', borderRadius:'6px', background:'rgba(167,139,250,0.12)', color:'#a78bfa', border:'1px solid rgba(167,139,250,0.22)', fontWeight:700, letterSpacing:'0.04em' }}>AI</span>
-                                )}
-                                {rec && recStyle && (
-                                  <span style={{ fontSize:'10px', padding:'2px 9px', borderRadius:'20px', background:recStyle.bg, color:recStyle.color, border:`1px solid ${recStyle.border}`, fontWeight:600 }}>
-                                    {rec}
-                                  </span>
-                                )}
-                              </div>
-                              {/* Score bar */}
-                              <div style={{ height:'4px', background:'rgba(255,255,255,0.08)', borderRadius:'4px', overflow:'hidden' }}>
-                                <div style={{ height:'100%', borderRadius:'4px', background:scoreColor(displayScore), width:`${displayScore}%`, transition:'width 1s cubic-bezier(0.22,1,0.36,1)' }} />
-                              </div>
-                              {/* Skill pills */}
-                              <div className="rack-card-collapsed-skills" style={{ display:'flex', gap:'6px', marginTop:'8px', flexWrap:'wrap' }}>
-                                {(r.matched_skills||[]).slice(0,4).map(t => (
-                                  <span key={t} style={{ fontSize:'11px', fontWeight:500, padding:'3px 10px', borderRadius:'20px', background:'rgba(52,211,153,0.1)', color:'var(--accent3)', border:'1px solid rgba(52,211,153,0.2)' }}>✓ {t}</span>
-                                ))}
-                                {(r.missing_skills||[]).slice(0,3).map(t => (
-                                  <span key={t} style={{ fontSize:'11px', fontWeight:500, padding:'3px 10px', borderRadius:'20px', background:'rgba(248,113,113,0.08)', color:'var(--danger)', border:'1px solid rgba(248,113,113,0.15)' }}>✗ {t}</span>
-                                ))}
-                              </div>
-                            </div>
-                            <div style={{ textAlign:'right', minWidth:'60px' }}>
-                              <div className="rack-card-score-num" style={{ fontFamily:'var(--font-display)', fontSize:'28px', fontWeight:800, letterSpacing:'-1px', color: i===0 ? 'var(--accent)' : 'var(--text)' }}>{displayScore}</div>
-                              <div className="rack-card-score-label" style={{ fontSize:'14px', color:'var(--text-dim)', fontWeight:300 }}>match</div>
-                            </div>
+                  {!msg.isFilterResult && msg.results && msg.results.length > 0 && (
+                    <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
+                      {/* JD Parse Summary */}
+                      {msg.jdParsed && (
+                        <div style={{
+                          marginBottom: '14px', padding: '10px 14px', borderRadius: '10px',
+                          background: 'rgba(232,255,107,0.03)', border: '1px solid rgba(232,255,107,0.1)',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                            {msg.jdParsed.title && (
+                              <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700, color: 'var(--text)' }}>
+                                {msg.jdParsed.title}
+                              </span>
+                            )}
+                            {msg.jdParsed.min_years && (
+                              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                                · {msg.jdParsed.min_years}+ yrs
+                              </span>
+                            )}
+                            <span style={{
+                              fontSize: '10px', padding: '2px 8px', borderRadius: '10px', marginLeft: 'auto',
+                              background: msg.jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.12)' : 'rgba(255,255,255,0.06)',
+                              color: msg.jdParsed.extraction_method === 'hybrid' ? 'var(--accent3)' : 'var(--text-dim)',
+                              border: `1px solid ${msg.jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.08)'}`,
+                              fontWeight: 600,
+                            }}>
+                              {msg.jdParsed.extraction_method === 'hybrid' ? 'Rule + LLM' : 'Rule-based'}
+                            </span>
+                            {msg.meta?.llm_scored > 0 && (
+                              <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(167,139,250,0.12)', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.22)', fontWeight: 600 }}>
+                                ✦ {msg.meta.llm_scored} AI-scored
+                              </span>
+                            )}
+                            {msg.meta && (
+                              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{msg.meta.pipeline_time_ms}ms</span>
+                            )}
                           </div>
+                          <div className="rack-jd-chips" style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                            {(msg.jdParsed.required_skills || []).slice(0, 7).map(s => (
+                              <span key={s} className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '2px 9px', borderRadius: '20px', background: 'rgba(232,255,107,0.06)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.15)', whiteSpace: 'nowrap' }}>
+                                {s}
+                              </span>
+                            ))}
+                            {(msg.jdParsed.required_skills || []).length > 7 && (
+                              <span className="rack-jd-chip" style={{ fontSize: '11px', padding: '2px 9px', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+                                +{msg.jdParsed.required_skills.length - 7} more
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
 
-                          {/* Expanded panel */}
-                          {isExpanded && (
-                            <div className="rack-expand-panel" style={{ marginTop:'16px', paddingTop:'16px', borderTop:'1px solid var(--border)' }}>
-                              {/* AI Analysis */}
-                              {isLLM && r.llm_reasoning && (
-                                <div style={{ marginBottom:'16px', padding:'14px 16px', borderRadius:'10px', background:'rgba(167,139,250,0.05)', borderLeft:'3px solid rgba(167,139,250,0.4)' }}>
-                                  <div style={{ fontSize:'11px', fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', color:'#a78bfa', marginBottom:'8px' }}>✦ AI Analysis</div>
-                                  <p style={{ fontSize:'13px', color:'var(--text-mid)', fontStyle:'italic', lineHeight:1.65, margin:'0 0 10px' }}>{r.llm_reasoning}</p>
-                                  {r.llm_key_strengths?.length > 0 && (
-                                    <div style={{ marginBottom:'8px' }}>
-                                      {r.llm_key_strengths.map((s,si) => (
-                                        <div key={si} style={{ display:'flex', gap:'8px', fontSize:'12px', marginBottom:'4px' }}>
-                                          <span style={{ flexShrink:0, color:'var(--accent3)' }}>✓</span>
-                                          <span style={{ color:'var(--text-mid)' }}>{s}</span>
-                                        </div>
-                                      ))}
-                                    </div>
+                      {/* Ranked result header */}
+                      <div style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: '10px', paddingLeft: '2px' }}>
+                        Ranked Results — {msg.results.length} resume{msg.results.length !== 1 ? 's' : ''}
+                      </div>
+
+                      {/* Result cards */}
+                      {msg.results.map((r, i) => {
+                        const cardKey     = `${msg.id}-${r.resume_id}`
+                        const isExpanded  = expandedIds.has(cardKey)
+                        const isLLM       = r.scoring_method === 'llm+hybrid'
+                        const displayScore = r.llm_score ?? r.score ?? 0
+                        const rec         = r.llm_recommendation
+                        const recStyle    = rec ? recommendationStyle(rec) : null
+
+                        return (
+                          <div key={cardKey} className="rack-card-padding" style={{
+                            background: i === 0 ? 'rgba(232,255,107,0.04)' : 'var(--surface)',
+                            border: `1px solid ${i === 0 ? 'rgba(232,255,107,0.3)' : 'var(--border-bright)'}`,
+                            borderRadius: '14px', padding: '18px 22px', marginBottom: '10px',
+                            cursor: 'pointer', transition: 'all 0.2s ease',
+                            animation: `bubbleIn 0.4s ease ${i * 0.07}s both`,
+                            boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                          }}
+                          onClick={() => setExpandedIds(prev => {
+                            const next = new Set(prev)
+                            next.has(cardKey) ? next.delete(cardKey) : next.add(cardKey)
+                            return next
+                          })}
+                          >
+                            {/* Collapsed row */}
+                            <div className="rack-card-row" style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+                              <div className="rack-card-rank" style={{ fontFamily:'var(--font-display)', fontSize:'24px', fontWeight:800, color: i===0 ? 'var(--accent)' : 'rgba(255,255,255,0.15)', minWidth:'36px' }}>
+                                #{i+1}
+                              </div>
+                              <div style={{ flex:1, minWidth:0 }}>
+                                <div className="rack-card-badges" style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'6px', flexWrap:'wrap' }}>
+                                  <span className="rack-card-name" style={{ fontFamily:'var(--font-display)', fontSize:'16px', fontWeight:600, color:'var(--text)' }}>{r.name}</span>
+                                  <span style={{ fontSize:'10px', padding:'2px 6px', borderRadius:'6px', background:'rgba(255,255,255,0.06)', color:'var(--text-dim)', fontWeight:500 }}>
+                                    {r.file_ext?.replace('.','').toUpperCase()}
+                                  </span>
+                                  {isLLM && (
+                                    <span style={{ fontSize:'10px', padding:'2px 7px', borderRadius:'6px', background:'rgba(167,139,250,0.12)', color:'#a78bfa', border:'1px solid rgba(167,139,250,0.22)', fontWeight:700, letterSpacing:'0.04em' }}>AI</span>
                                   )}
-                                  {r.llm_key_gaps?.length > 0 && (
-                                    <div>
-                                      {r.llm_key_gaps.map((g,gi) => (
-                                        <div key={gi} style={{ display:'flex', gap:'8px', fontSize:'12px', marginBottom:'4px' }}>
-                                          <span style={{ flexShrink:0, color:'var(--danger)' }}>✗</span>
-                                          <span style={{ color:'var(--text-mid)' }}>{g}</span>
-                                        </div>
-                                      ))}
-                                    </div>
+                                  {rec && recStyle && (
+                                    <span style={{ fontSize:'10px', padding:'2px 9px', borderRadius:'20px', background:recStyle.bg, color:recStyle.color, border:`1px solid ${recStyle.border}`, fontWeight:600 }}>
+                                      {rec}
+                                    </span>
                                   )}
                                 </div>
-                              )}
-                              {/* Score breakdown */}
-                              <div style={{ marginBottom:'14px' }}>
-                                <div style={{ fontSize:'11px', fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:'var(--text-dim)', marginBottom:'8px' }}>
-                                  {isLLM ? 'AI Score Breakdown' : 'Score Breakdown'}
+                                {/* Score bar */}
+                                <div style={{ height:'4px', background:'rgba(255,255,255,0.08)', borderRadius:'4px', overflow:'hidden' }}>
+                                  <div style={{ height:'100%', borderRadius:'4px', background:scoreColor(displayScore), width:`${displayScore}%`, transition:'width 1s cubic-bezier(0.22,1,0.36,1)' }} />
                                 </div>
-                                <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                                  {isLLM && r.llm_components && Object.keys(r.llm_components).length > 0 && (
-                                    <>
-                                      {componentBar('Skills Fit',  r.llm_components.skills_fit     ?? 0, 'linear-gradient(90deg,#e8ff6b,#a3e635)')}
-                                      {componentBar('Experience',  r.llm_components.experience_fit ?? 0, 'linear-gradient(90deg,#f59e0b,#f97316)')}
-                                      {componentBar('Trajectory',  r.llm_components.trajectory_fit ?? 0, 'linear-gradient(90deg,#a78bfa,#c084fc)')}
-                                      <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'11px', marginTop:'2px', opacity:0.45 }}>
-                                        <span style={{ color:'var(--text-dim)', minWidth:'80px', fontWeight:500 }}>Keyword/Sem</span>
-                                        <div style={{ flex:1, height:'3px', background:'rgba(255,255,255,0.06)', borderRadius:'4px', overflow:'hidden' }}>
-                                          <div style={{ height:'100%', borderRadius:'4px', background:'rgba(255,255,255,0.2)', width:`${r.hybrid_score ?? 0}%` }} />
-                                        </div>
-                                        <span style={{ color:'var(--text-dim)', minWidth:'28px', textAlign:'right', fontFamily:'var(--font-display)', fontWeight:600 }}>{r.hybrid_score ?? 0}</span>
-                                      </div>
-                                    </>
-                                  )}
-                                  {!isLLM && r.components && (
-                                    <>
-                                      {componentBar('Semantic',   (r.components.semantic?.score   ?? 0)*100, 'linear-gradient(90deg,#60a5fa,#818cf8)')}
-                                      {componentBar('Skills',     (r.components.skill?.score      ?? 0)*100, 'linear-gradient(90deg,#e8ff6b,#a3e635)')}
-                                      {componentBar('Experience', (r.components.experience?.score ?? 0)*100, 'linear-gradient(90deg,#f59e0b,#f97316)')}
-                                      {componentBar('Keywords',   (r.components.keyword?.score    ?? 0)*100, 'linear-gradient(90deg,#a78bfa,#c084fc)')}
-                                    </>
-                                  )}
+                                {/* Skill pills */}
+                                <div className="rack-card-collapsed-skills" style={{ display:'flex', gap:'6px', marginTop:'8px', flexWrap:'wrap' }}>
+                                  {(r.matched_skills||[]).slice(0,4).map(t => (
+                                    <span key={t} style={{ fontSize:'11px', fontWeight:500, padding:'3px 10px', borderRadius:'20px', background:'rgba(52,211,153,0.1)', color:'var(--accent3)', border:'1px solid rgba(52,211,153,0.2)' }}>✓ {t}</span>
+                                  ))}
+                                  {(r.missing_skills||[]).slice(0,3).map(t => (
+                                    <span key={t} style={{ fontSize:'11px', fontWeight:500, padding:'3px 10px', borderRadius:'20px', background:'rgba(248,113,113,0.08)', color:'var(--danger)', border:'1px solid rgba(248,113,113,0.15)' }}>✗ {t}</span>
+                                  ))}
                                 </div>
                               </div>
-                              {/* Gap analysis */}
-                              {r.gap_analysis && r.gap_analysis.gap_count > 0 && (
-                                <div style={{ marginBottom:'12px' }}>
-                                  <div style={{ fontSize:'11px', fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:'var(--text-dim)', marginBottom:'6px' }}>Gaps ({r.gap_analysis.gap_count})</div>
-                                  {r.gap_analysis.critical_gaps?.length > 0 && (
-                                    <div style={{ display:'flex', gap:'4px', flexWrap:'wrap', marginBottom:'4px' }}>
-                                      {r.gap_analysis.critical_gaps.map(g => (
-                                        <span key={g} style={{ fontSize:'10px', fontWeight:600, padding:'2px 8px', borderRadius:'10px', background:'rgba(248,113,113,0.12)', color:'#f87171', border:'1px solid rgba(248,113,113,0.2)' }}>⚠ {g}</span>
-                                      ))}
-                                    </div>
-                                  )}
-                                  <div style={{ fontSize:'11px', color:'var(--text-dim)' }}>
-                                    Coverage: {Math.round((r.gap_analysis.coverage?.required||0)*100)}% required · {Math.round((r.gap_analysis.coverage?.preferred||0)*100)}% preferred
+                              <div style={{ textAlign:'right', minWidth:'60px', display:'flex', flexDirection:'column', alignItems:'flex-end', gap:'6px' }}>
+                                <div className="rack-card-score-num" style={{ fontFamily:'var(--font-display)', fontSize:'28px', fontWeight:800, letterSpacing:'-1px', color: i===0 ? 'var(--accent)' : 'var(--text)' }}>{displayScore}</div>
+                                <div className="rack-card-score-label" style={{ fontSize:'14px', color:'var(--text-dim)', fontWeight:300 }}>match</div>
+                                <button
+                                  onClick={(e) => handleDownload(e, r.resume_id, r.name)}
+                                  title="Download resume"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.06)',
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    borderRadius: '8px',
+                                    padding: '4px 8px',
+                                    cursor: 'pointer',
+                                    fontSize: '11px',
+                                    color: 'var(--text-dim)',
+                                    display: 'flex', alignItems: 'center', gap: '4px',
+                                    transition: 'all 0.15s ease',
+                                    fontFamily: 'var(--font-body)',
+                                  }}
+                                  onMouseEnter={e => { e.currentTarget.style.background='rgba(232,255,107,0.08)'; e.currentTarget.style.borderColor='rgba(232,255,107,0.25)'; e.currentTarget.style.color='var(--accent)' }}
+                                  onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.06)'; e.currentTarget.style.borderColor='rgba(255,255,255,0.1)'; e.currentTarget.style.color='var(--text-dim)' }}
+                                >
+                                  ↓
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Expanded panel */}
+                            {isExpanded && (
+                              <div className="rack-expand-panel" style={{ marginTop:'16px', paddingTop:'16px', borderTop:'1px solid var(--border)' }}>
+                                {/* AI Analysis */}
+                                {isLLM && r.llm_reasoning && (
+                                  <div style={{ marginBottom:'16px', padding:'14px 16px', borderRadius:'10px', background:'rgba(167,139,250,0.05)', borderLeft:'3px solid rgba(167,139,250,0.4)' }}>
+                                    <div style={{ fontSize:'11px', fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', color:'#a78bfa', marginBottom:'8px' }}>✦ AI Analysis</div>
+                                    <p style={{ fontSize:'13px', color:'var(--text-mid)', fontStyle:'italic', lineHeight:1.65, margin:'0 0 10px' }}>{r.llm_reasoning}</p>
+                                    {r.llm_key_strengths?.length > 0 && (
+                                      <div style={{ marginBottom:'8px' }}>
+                                        {r.llm_key_strengths.map((s,si) => (
+                                          <div key={si} style={{ display:'flex', gap:'8px', fontSize:'12px', marginBottom:'4px' }}>
+                                            <span style={{ flexShrink:0, color:'var(--accent3)' }}>✓</span>
+                                            <span style={{ color:'var(--text-mid)' }}>{s}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {r.llm_key_gaps?.length > 0 && (
+                                      <div>
+                                        {r.llm_key_gaps.map((g,gi) => (
+                                          <div key={gi} style={{ display:'flex', gap:'8px', fontSize:'12px', marginBottom:'4px' }}>
+                                            <span style={{ flexShrink:0, color:'var(--danger)' }}>✗</span>
+                                            <span style={{ color:'var(--text-mid)' }}>{g}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Score breakdown */}
+                                <div style={{ marginBottom:'14px' }}>
+                                  <div style={{ fontSize:'11px', fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:'var(--text-dim)', marginBottom:'8px' }}>
+                                    {isLLM ? 'AI Score Breakdown' : 'Score Breakdown'}
+                                  </div>
+                                  <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                                    {isLLM && r.llm_components && Object.keys(r.llm_components).length > 0 && (
+                                      <>
+                                        {componentBar('Skills Fit',  r.llm_components.skills_fit     ?? 0, 'linear-gradient(90deg,#e8ff6b,#a3e635)')}
+                                        {componentBar('Experience',  r.llm_components.experience_fit ?? 0, 'linear-gradient(90deg,#f59e0b,#f97316)')}
+                                        {componentBar('Trajectory',  r.llm_components.trajectory_fit ?? 0, 'linear-gradient(90deg,#a78bfa,#c084fc)')}
+                                        <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'11px', marginTop:'2px', opacity:0.45 }}>
+                                          <span style={{ color:'var(--text-dim)', minWidth:'80px', fontWeight:500 }}>Keyword/Sem</span>
+                                          <div style={{ flex:1, height:'3px', background:'rgba(255,255,255,0.06)', borderRadius:'4px', overflow:'hidden' }}>
+                                            <div style={{ height:'100%', borderRadius:'4px', background:'rgba(255,255,255,0.2)', width:`${r.hybrid_score ?? 0}%` }} />
+                                          </div>
+                                          <span style={{ color:'var(--text-dim)', minWidth:'28px', textAlign:'right', fontFamily:'var(--font-display)', fontWeight:600 }}>{r.hybrid_score ?? 0}</span>
+                                        </div>
+                                      </>
+                                    )}
+                                    {!isLLM && r.components && (
+                                      <>
+                                        {componentBar('Semantic',   (r.components.semantic?.score   ?? 0)*100, 'linear-gradient(90deg,#60a5fa,#818cf8)')}
+                                        {componentBar('Skills',     (r.components.skill?.score      ?? 0)*100, 'linear-gradient(90deg,#e8ff6b,#a3e635)')}
+                                        {componentBar('Experience', (r.components.experience?.score ?? 0)*100, 'linear-gradient(90deg,#f59e0b,#f97316)')}
+                                        {componentBar('Keywords',   (r.components.keyword?.score    ?? 0)*100, 'linear-gradient(90deg,#a78bfa,#c084fc)')}
+                                      </>
+                                    )}
                                   </div>
                                 </div>
-                              )}
-                              {/* Resume meta */}
-                              <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'11px', color:'var(--text-dim)' }}>
-                                {r.years_exp && <span>{r.years_exp} yrs exp</span>}
-                                {r.titles?.length > 0 && <span>{r.titles[0]}</span>}
-                                {r.domains?.length > 0 && <span>{r.domains.join(', ')}</span>}
-                                <span>{r.chunk_count} chunks</span>
+                                {/* Gap analysis */}
+                                {r.gap_analysis && r.gap_analysis.gap_count > 0 && (
+                                  <div style={{ marginBottom:'12px' }}>
+                                    <div style={{ fontSize:'11px', fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:'var(--text-dim)', marginBottom:'6px' }}>Gaps ({r.gap_analysis.gap_count})</div>
+                                    {r.gap_analysis.critical_gaps?.length > 0 && (
+                                      <div style={{ display:'flex', gap:'4px', flexWrap:'wrap', marginBottom:'4px' }}>
+                                        {r.gap_analysis.critical_gaps.map(g => (
+                                          <span key={g} style={{ fontSize:'10px', fontWeight:600, padding:'2px 8px', borderRadius:'10px', background:'rgba(248,113,113,0.12)', color:'#f87171', border:'1px solid rgba(248,113,113,0.15)' }}>⚠ {g}</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div style={{ fontSize:'11px', color:'var(--text-dim)' }}>
+                                      Coverage: {Math.round((r.gap_analysis.coverage?.required||0)*100)}% required · {Math.round((r.gap_analysis.coverage?.preferred||0)*100)}% preferred
+                                    </div>
+                                  </div>
+                                )}
+                                {/* Resume meta */}
+                                <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'11px', color:'var(--text-dim)' }}>
+                                  {r.years_exp && <span>{r.years_exp} yrs exp</span>}
+                                  {r.titles?.length > 0 && <span>{r.titles[0]}</span>}
+                                  {r.domains?.length > 0 && <span>{r.domains.join(', ')}</span>}
+                                  <span>{r.chunk_count} chunks</span>
+                                </div>
                               </div>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )
+        })}
       </div>{/* end chat-scroll */}
 
       {/* ── Bottom input bar ── */}
@@ -1518,17 +1728,15 @@ export default function Home() {
           />
 
           <div className="rack-chat-input-actions">
-            {/* Attach button — anonymous only */}
-            {!isAuthed && (
-              <button
-                className="rack-chat-attach-btn"
-                onClick={() => { if (!atCap) fileInputRef.current?.click() }}
-                disabled={atCap}
-                title={atCap ? `${ANON_CAP}-resume limit reached` : 'Attach resume(s)'}
-              >
-                📎
-              </button>
-            )}
+            {/* Attach button — all users, capped at effectiveCap */}
+            <button
+              className="rack-chat-attach-btn"
+              onClick={() => { if (!atCap) fileInputRef.current?.click() }}
+              disabled={atCap}
+              title={atCap ? `${effectiveCap}-resume limit reached` : 'Attach resume(s)'}
+            >
+              📎
+            </button>
 
             {/* Send button */}
             <button
@@ -1548,17 +1756,17 @@ export default function Home() {
         {/* Input meta: warnings + char count */}
         <div className="rack-input-meta">
           {capWarning && (
-            <span style={{ color:'#fbbf24' }}>⚠ {droppedCount} file{droppedCount !== 1 ? 's' : ''} dropped — {ANON_CAP}-resume limit</span>
+            <span style={{ color:'#fbbf24' }}>⚠ {droppedCount} file{droppedCount !== 1 ? 's' : ''} dropped — {effectiveCap}-resume limit</span>
           )}
           {resumeWarning === true && (
             <span style={{ color:'#fbbf24' }}>⚠ Attach at least one resume to match</span>
           )}
-          {!capWarning && resumeWarning !== true && !isAuthed && (
+          {!capWarning && resumeWarning !== true && (
             <span>
               {atCap
-                ? `${ANON_CAP}/${ANON_CAP} · sign in to upload more`
-                : saved + fileQueue.length > 0
-                ? `${saved + fileQueue.length}/${ANON_CAP} · ${slotsLeft} slot${slotsLeft !== 1 ? 's' : ''} left`
+                ? `${effectiveCap}/${effectiveCap} · ${isAuthed ? 'manage in Resumes tab' : 'sign in to upload more'}`
+                : savedCount + fileQueue.length > 0
+                ? `${savedCount + fileQueue.length}/${effectiveCap} · ${slotsLeft} slot${slotsLeft !== 1 ? 's' : ''} left`
                 : 'PDF or DOCX · attach up to 5 resumes'
               }
             </span>
@@ -1581,8 +1789,8 @@ export default function Home() {
     </div>{/* end chat-root */}
 
     {/* Value preview overlay — portal, always above everything */}
-    {results && results.length > 0 && authChecked && !isAuthed && (
-      <ValuePreviewCard results={results} onSignIn={signInWithGoogle} />
+    {lastResults && lastResults.length > 0 && authChecked && !isAuthed && (
+      <ValuePreviewCard results={lastResults} onSignIn={signInWithGoogle} />
     )}
     </>
   )

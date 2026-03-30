@@ -71,6 +71,18 @@ async def vector_search(
 
         Empty list if the user has no indexed chunks.
     """
+    # ── Guard: anonymous session IDs are not UUIDs ────────────────────────────
+    # Postgres will reject the ::uuid cast for strings like 'anon_vthxzia5t_mnck4mag'.
+    # Anonymous users never have DB chunks — skip the query entirely.
+    import re as _re
+    _UUID_RE = _re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        _re.IGNORECASE,
+    )
+    if not _UUID_RE.match(user_id):
+        logger.debug(f"[vector_store] user_id={user_id!r} is not a UUID — skipping pgvector search")
+        return []
+
     vec_str = "[" + ",".join(str(float(x)) for x in query_embedding.tolist()) + "]"
 
     # ── Step 1: Get all distinct resume IDs for this user ─────────────────────

@@ -106,14 +106,15 @@ function AppInner() {
           position: fixed;
           top: 0; left: 0; right: 0;
           z-index: 200;
-          height: 52px;
+          height: 65px;
           align-items: center;
           justify-content: center;
           background: linear-gradient(
             to bottom,
             rgba(8,8,8,0.96) 0%,
             rgba(8,8,8,0.85) 60%,
-            rgba(8,8,8,0.0) 100%
+            rgba(8,8,8,0.65) 80%,
+            rgba(8,8,8,0.0) 130%
           );
         }
         .mobile-header::after {
@@ -131,7 +132,7 @@ function AppInner() {
         }
         .mobile-header-logo {
           font-family: var(--font-display);
-          font-size: 20px;
+          font-size: 32px;
           font-weight: 800;
           letter-spacing: -0.5px;
           color: var(--text);
