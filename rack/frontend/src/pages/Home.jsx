@@ -17,6 +17,31 @@ const mobileCardStyles = `
     from { opacity: 0; transform: translateY(16px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+  @keyframes shimmer {
+    0%   { background-position: -400px 0; }
+    100% { background-position:  400px 0; }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.85); }
+    50%       { opacity: 1;   transform: scale(1.15); }
+  }
+  .rack-tracking-cta {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; font-family: var(--font-body);
+    color: var(--accent); text-decoration: none; cursor: pointer;
+    background: linear-gradient(90deg,
+      rgba(232,255,107,0.0) 0%,
+      rgba(232,255,107,0.25) 40%,
+      rgba(232,255,107,0.5) 50%,
+      rgba(232,255,107,0.25) 60%,
+      rgba(232,255,107,0.0) 100%
+    );
+    background-size: 400px 100%;
+    background-clip: text; -webkit-background-clip: text;
+    animation: shimmer 2.2s ease-in-out infinite;
+    letter-spacing: 0.01em;
+  }
+  .rack-tracking-cta:hover { opacity: 0.8; }
 
   /* ── Chat layout ── */
   .rack-chat-root {
@@ -1043,42 +1068,59 @@ export default function Home() {
 
     try {
       const headers = await getAuthHeaders()
-      const res = await fetch('http://localhost:8000/api/auto-matches', { headers })
+      // Correct endpoint — same one Tracking.jsx uses
+      const res = await fetch('http://localhost:8000/api/tracking/auto/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ force: false }),
+      })
       if (!res.ok) throw new Error('Failed to load matches')
       const data = await res.json()
-      let jobs = data.matches || data.results || []
+      let jobs = data.matches || []
 
-      // Apply filter
-      const now = Date.now()
-      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
-      if      (action === 'filter:85')   jobs = jobs.filter(j => (j.score ?? 0) >= 85)
-      else if (action === 'filter:75')   jobs = jobs.filter(j => (j.score ?? 0) >= 75)
-      else if (action === 'filter:week') jobs = jobs.filter(j => {
-        const posted = j.posted_at || j.matched_at
-        return posted && (now - new Date(posted).getTime()) <= sevenDaysMs
-      })
-      // 'filter:all' — no filter
+      // Apply filter — server already sorts by score*0.85 + recency*0.15
+      if      (action === 'filter:85')  jobs = jobs.filter(j => (j.score ?? 0) >= 85)
+      else if (action === 'filter:75')  jobs = jobs.filter(j => (j.score ?? 0) >= 75)
+      else if (action === 'filter:new') {
+        // Sort by posted_at descending — most recently posted first
+        jobs = [...jobs].sort((a, b) => {
+          const ta = new Date(a.posted_at || a.matched_at || 0).getTime()
+          const tb = new Date(b.posted_at || b.matched_at || 0).getTime()
+          return tb - ta
+        })
+      }
+      // 'filter:all' — keep default server sort (score + recency)
 
-      // Append as a special message type (no JD bubble — chip action)
-      const msgId = Date.now()
       const label = {
-        'filter:all':  `All matched jobs (${jobs.length})`,
-        'filter:85':   `Jobs matching 85%+ (${jobs.length})`,
-        'filter:75':   `Jobs matching 75%+ (${jobs.length})`,
-        'filter:week': `Jobs from last 7 days (${jobs.length})`,
+        'filter:all': `All matched jobs`,
+        'filter:85':  `85%+ match jobs`,
+        'filter:75':  `75%+ match jobs`,
+        'filter:new': `Newly matched jobs`,
       }[action] || 'Matched jobs'
 
+      const msgId = Date.now()
       setMessages(prev => [...prev, {
         id: msgId,
-        jd: label,         // shown in user bubble as the "query"
+        jd: label,
         isFilterResult: true,
+        filterAction: action,
         filterJobs: jobs,
         results: null,
         loading: false,
-        error: jobs.length === 0 ? 'No jobs found for this filter.' : null,
+        error: jobs.length === 0 ? 'No jobs found for this filter. Try refreshing Auto Matches in the Tracking tab.' : null,
       }])
     } catch (err) {
       console.error('Filter error:', err)
+      const msgId = Date.now()
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: 'Auto-match filter',
+        isFilterResult: true,
+        filterJobs: [],
+        results: null,
+        loading: false,
+        error: 'Could not load matched jobs. Make sure you have run Auto Matches in the Tracking tab first.',
+      }])
     } finally {
       setFilterLoading(false)
     }
@@ -1114,23 +1156,104 @@ export default function Home() {
     }
   }
 
+  // ── Input triage — asks backend to classify before touching the match pipeline ──
+  // Returns: { intent: 'JD' | 'CAREER_QUESTION' | 'OFF_TOPIC', reply: string | null }
+  const triageInput = async (text) => {
+    try {
+      const headers = isAuthed
+        ? await getAuthHeaders()
+        : { 'X-Session-ID': sessionId }
+      const res = await fetch('http://localhost:8000/api/match/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ text }),
+      })
+      if (!res.ok) throw new Error('Triage failed')
+      return await res.json()  // { intent, reply }
+    } catch {
+      // Backend unreachable — assume JD so the match pipeline still runs
+      return { intent: 'JD', reply: null }
+    }
+  }
+
   // ── Match handler ───────────────────────────────────────────────
   const handleMatch = async () => {
     if (!jd.trim() || loading) return
-
-    const hasExistingResumes = resumeCount > 0
-    const hasQueuedFiles     = fileQueue.length > 0
-
-    if (!hasExistingResumes && !hasQueuedFiles) {
-      setResumeWarning(true)
-      return
-    }
 
     const capturedJd = jd.trim()
     const msgId = Date.now()
 
     setLoading(true)
-    setJd('')            // clear the textarea immediately
+    setJd('')  // clear textarea immediately so it feels responsive
+
+    // ── Step 0: Triage — classify input before touching the match pipeline ──
+    const triage = await triageInput(capturedJd)
+    const intent = triage.intent
+
+    // OFF_TOPIC — warm redirect, no backend match call
+    if (intent === 'OFF_TOPIC') {
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: capturedJd,
+        isAssistantReply: true,
+        replyText: "I'm built to help you land your next job — paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
+        loading: false,
+        error: null,
+      }])
+      setLoading(false)
+      return
+    }
+
+    // CAREER_QUESTION — reply already came back from the backend, render it directly
+    if (intent === 'CAREER_QUESTION') {
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: capturedJd,
+        isAssistantReply: true,
+        replyText: triage.reply,
+        loading: false,
+        error: null,
+      }])
+      setLoading(false)
+      return
+    }
+
+    // FILTER_RESULT — backend ran get_matched_jobs and returned structured rows.
+    // Render through the same paginated table as the filter chips — no new code needed.
+    if (intent === 'FILTER_RESULT') {
+      const jobs = triage.jobs || []
+      const label = triage.filter_label || 'Matched jobs'
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: label,
+        isFilterResult: true,
+        filterJobs: jobs,
+        results: null,
+        loading: false,
+        error: jobs.length === 0
+          ? 'No jobs matched that filter. Try running Auto Matches in the Tracking tab first.'
+          : null,
+      }])
+      setLoading(false)
+      return
+    }
+
+    // JD — run the full matching pipeline below
+    const hasExistingResumes = resumeCount > 0
+    const hasQueuedFiles     = fileQueue.length > 0
+
+    if (!hasExistingResumes && !hasQueuedFiles) {
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: capturedJd,
+        isAssistantReply: true,
+        replyText: "You'll need at least one resume uploaded to match against. Head to the Resumes tab to add yours — it only takes a moment.",
+        loading: false,
+        error: null,
+      }])
+      setLoading(false)
+      return
+    }
 
     // Append loading placeholder for this turn
     setMessages(prev => [...prev, {
@@ -1290,10 +1413,10 @@ export default function Home() {
               {isAuthed ? (
                 // Auth'd users: quick-filters into their auto-match results
                 [
-                  { label: '⚡ View all matched jobs',        action: 'filter:all'  },
-                  { label: '🏆 85%+ match jobs',              action: 'filter:85'   },
-                  { label: '✅ 75%+ match jobs',              action: 'filter:75'   },
-                  { label: '📬 Jobs from last 7 days',        action: 'filter:week' },
+                  { label: '⚡ View all matched jobs',        action: 'filter:all' },
+                  { label: '🏆 85%+ match jobs',              action: 'filter:85'  },
+                  { label: '✅ 75%+ match jobs',              action: 'filter:75'  },
+                  { label: '🆕 View newly matched jobs',      action: 'filter:new' },
                 ].map(chip => (
                   <button
                     key={chip.action}
@@ -1347,8 +1470,8 @@ export default function Home() {
                     Rack
                   </div>
 
-                  {/* Pipeline animation while this turn is loading */}
-                  {msg.loading && (
+                  {/* Pipeline animation while this turn is loading — JD turns only */}
+                  {msg.loading && !msg.isAssistantReply && (
                     <div style={{ marginBottom: '8px' }}>
                       <JDPipelineAnimation uploadQueue={uploadQueue} />
                     </div>
@@ -1366,69 +1489,278 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* Filter results — auto-match chip queries */}
-                  {msg.isFilterResult && (
-                    <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
-                      {msg.error ? (
-                        <div style={{ padding:'16px 18px', borderRadius:'12px', background:'rgba(255,255,255,0.04)', border:'1px solid var(--border-bright)', color:'var(--text-dim)', fontSize:'13px' }}>
-                          {msg.error}
+                  {/* Filter results — auto-match chip queries, paginated 5/page */}
+                  {msg.isFilterResult && !msg.error && (() => {
+                    const PAGE_SIZE_F = 5
+                    const allJobs     = msg.filterJobs || []
+                    const totalJobs   = allJobs.length
+                    const fPage       = msg.filterPage || 1
+                    const totalPages  = Math.max(1, Math.ceil(Math.min(totalJobs, 20) / PAGE_SIZE_F))
+                    const pageJobs    = allJobs.slice((fPage - 1) * PAGE_SIZE_F, fPage * PAGE_SIZE_F)
+                    const setFPage    = (p) => setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, filterPage: p } : m))
+
+                    return (
+                      <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
+
+                        {/* ── Header bar ── */}
+                        <div style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          marginBottom: '12px', padding: '0 2px',
+                        }}>
+                          <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
+                            {Math.min(totalJobs, 20)} job{totalJobs !== 1 ? 's' : ''} · page {fPage}/{totalPages}
+                          </span>
+                          {totalJobs > 20 && (
+                            <span className="rack-tracking-cta" onClick={() => {}}>
+                              ✦ See all {totalJobs} in Tracking →
+                            </span>
+                          )}
                         </div>
-                      ) : (
-                        <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-                          {(msg.filterJobs || []).slice(0, 20).map((job, ji) => {
-                            const jScore = Math.round(job.score ?? 0)
-                            const jd = job.job_data || job
-                            const title   = jd.job_title   || jd.title   || 'Untitled'
-                            const company = jd.company                   || '—'
-                            const url     = jd.url                       || null
-                            const posted  = jd.posted_at  || job.posted_at
-                            const daysAgo = posted
+
+                        {/* ── Table header row ── */}
+                        <div style={{
+                          display: 'grid',
+                          gridTemplateColumns: '40px 1fr 56px',
+                          gap: '0 12px',
+                          padding: '6px 14px',
+                          marginBottom: '4px',
+                          borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        }}>
+                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>#</span>
+                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Role · Company</span>
+                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Score</span>
+                        </div>
+
+                        {/* ── Job rows ── */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {pageJobs.map((job, ji) => {
+                            const globalIdx = (fPage - 1) * PAGE_SIZE_F + ji
+                            const jScore    = Math.round(job.score ?? 0)
+                            const sc        = jScore >= 85 ? 'var(--accent)' : jScore >= 65 ? '#60a5fa' : '#fb923c'
+                            const gradient  = jScore >= 85
+                              ? 'linear-gradient(90deg,#e8ff6b,#a3e635)'
+                              : jScore >= 65
+                              ? 'linear-gradient(90deg,#60a5fa,#818cf8)'
+                              : 'linear-gradient(90deg,#fb923c,#f87171)'
+                            const title     = job.job_title || 'Untitled'
+                            const company   = job.company
+                              ? job.company.charAt(0).toUpperCase() + job.company.slice(1)
+                              : '—'
+                            const posted    = job.posted_at || job.matched_at
+                            const daysAgo   = posted
                               ? Math.max(0, Math.round((Date.now() - new Date(posted).getTime()) / 86400000))
                               : null
+                            const isAI      = job.scoring_method === 'llm+hybrid'
+                            const rec       = job.llm_recommendation
+
                             return (
-                              <div key={ji} style={{
-                                display:'flex', alignItems:'center', gap:'14px',
-                                padding:'12px 16px', borderRadius:'12px',
-                                background:'var(--surface)', border:'1px solid var(--border-bright)',
-                                animation: `bubbleIn 0.3s ease ${ji * 0.04}s both`,
+                              <div key={globalIdx} style={{
+                                borderRadius: '10px', overflow: 'hidden',
+                                background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                                animation: `bubbleIn 0.25s ease ${ji * 0.04}s both`,
                               }}>
-                                <div style={{ flex:1, minWidth:0 }}>
-                                  <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'2px', flexWrap:'wrap' }}>
-                                    <span style={{ fontFamily:'var(--font-display)', fontSize:'14px', fontWeight:600, color:'var(--text)' }}>{title}</span>
-                                    <span style={{ fontSize:'11px', color:'var(--text-dim)' }}>{company}</span>
+                                {/* Score accent bar */}
+                                <div style={{ height: '2px', background: gradient, width: `${jScore}%`, transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)' }} />
+
+                                <div style={{ padding: '14px 16px 12px' }}>
+                                  {/* Main row: rank · content · score */}
+                                  <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr 52px', gap: '0 12px', alignItems: 'start' }}>
+
+                                    {/* Rank number */}
+                                    <div style={{
+                                      fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 800,
+                                      color: globalIdx === 0 ? 'var(--accent)' : 'rgba(255,255,255,0.18)',
+                                      lineHeight: '20px', paddingTop: '1px',
+                                    }}>
+                                      #{globalIdx + 1}
+                                    </div>
+
+                                    {/* Title + company + time */}
+                                    <div style={{ minWidth: 0 }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' }}>
+                                        <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700, color: 'var(--text)', wordBreak: 'break-word', lineHeight: 1.3 }}>
+                                          {title}
+                                        </span>
+                                        {isAI && (
+                                          <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.08em', flexShrink: 0 }}>AI</span>
+                                        )}
+                                        {rec && (
+                                          <span style={{
+                                            fontSize: '9px', fontWeight: 700, padding: '1px 7px', borderRadius: '20px', flexShrink: 0,
+                                            background: rec === 'Strong Match' ? 'rgba(52,211,153,0.12)' : rec === 'Good Match' ? 'rgba(232,255,107,0.1)' : 'rgba(251,146,60,0.1)',
+                                            color:      rec === 'Strong Match' ? 'var(--accent3)'        : rec === 'Good Match' ? 'var(--accent)'        : '#fb923c',
+                                            border: `1px solid ${rec === 'Strong Match' ? 'rgba(52,211,153,0.25)' : rec === 'Good Match' ? 'rgba(232,255,107,0.22)' : 'rgba(251,146,60,0.22)'}`,
+                                          }}>
+                                            {rec}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div style={{ fontSize: '12px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                        <span style={{ fontWeight: 500 }}>{company}</span>
+                                        {daysAgo !== null && <span>· {daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`}</span>}
+                                      </div>
+                                    </div>
+
+                                    {/* Score */}
+                                    <div style={{ textAlign: 'right' }}>
+                                      <div style={{ fontFamily: 'var(--font-display)', fontSize: '22px', fontWeight: 800, color: sc, lineHeight: 1 }}>{jScore}</div>
+                                      <div style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 300, marginTop: '2px' }}>match</div>
+                                    </div>
                                   </div>
-                                  {daysAgo !== null && (
-                                    <span style={{ fontSize:'10px', color:'var(--text-dim)' }}>{daysAgo === 0 ? 'today' : `${daysAgo}d ago`}</span>
+
+                                  {/* Skill pills */}
+                                  {((job.matched_skills || []).length > 0 || (job.missing_skills || []).length > 0) && (
+                                    <div style={{ display: 'flex', gap: '5px', marginTop: '10px', flexWrap: 'wrap' }}>
+                                      {(job.matched_skills || []).slice(0, 3).map(s => (
+                                        <span key={s} style={{ fontSize: '10px', fontWeight: 600, padding: '2px 8px', borderRadius: '20px', background: 'rgba(52,211,153,0.1)', color: 'var(--accent3)' }}>✓ {s}</span>
+                                      ))}
+                                      {(job.missing_skills || []).slice(0, 2).map(s => (
+                                        <span key={s} style={{ fontSize: '10px', fontWeight: 600, padding: '2px 8px', borderRadius: '20px', background: 'rgba(248,113,113,0.08)', color: 'var(--danger)' }}>✗ {s}</span>
+                                      ))}
+                                    </div>
                                   )}
-                                </div>
-                                <div style={{ display:'flex', alignItems:'center', gap:'8px', flexShrink:0 }}>
-                                  <div style={{
-                                    fontFamily:'var(--font-display)', fontSize:'20px', fontWeight:800,
-                                    color: jScore >= 85 ? 'var(--accent)' : jScore >= 65 ? '#60a5fa' : 'var(--danger)',
-                                  }}>{jScore}</div>
-                                  {url && (
-                                    <a
-                                      href={url} target="_blank" rel="noopener noreferrer"
-                                      onClick={e => e.stopPropagation()}
-                                      style={{
-                                        fontSize:'11px', padding:'4px 10px', borderRadius:'8px',
-                                        background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
-                                        color:'var(--text-dim)', textDecoration:'none',
-                                        transition:'all 0.15s ease',
-                                      }}
-                                      onMouseEnter={e => { e.currentTarget.style.background='rgba(232,255,107,0.08)'; e.currentTarget.style.color='var(--accent)' }}
-                                      onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.06)'; e.currentTarget.style.color='var(--text-dim)' }}
-                                    >
-                                      Apply →
-                                    </a>
+
+                                  {/* Resume download — no Apply button (use Tracking for that) */}
+                                  {job.resume_name && (
+                                    <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-dim)' }}>
+                                      Best resume:{' '}
+                                      {job.resume_id ? (
+                                        <button
+                                          onClick={(e) => handleDownload(e, job.resume_id, job.resume_name)}
+                                          style={{
+                                            background: 'none', border: 'none', padding: '0 2px',
+                                            cursor: 'pointer', color: 'var(--accent)', fontWeight: 600,
+                                            fontSize: '11px', fontFamily: 'var(--font-body)',
+                                            textDecoration: 'underline', textDecorationStyle: 'dotted',
+                                            textUnderlineOffset: '2px',
+                                          }}
+                                        >
+                                          {job.resume_name} ↓
+                                        </button>
+                                      ) : (
+                                        <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{job.resume_name}</span>
+                                      )}
+                                    </div>
                                   )}
                                 </div>
                               </div>
                             )
                           })}
-                          {(msg.filterJobs || []).length > 20 && (
-                            <div style={{ fontSize:'12px', color:'var(--text-dim)', textAlign:'center', padding:'8px 0' }}>
-                              Showing 20 of {msg.filterJobs.length} — visit Tracking for full list
+                        </div>
+
+                        {/* ── Pagination controls ── */}
+                        {totalPages > 1 && (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '14px', padding: '0 2px' }}>
+                            <button
+                              onClick={() => setFPage(Math.max(1, fPage - 1))}
+                              disabled={fPage <= 1}
+                              style={{
+                                padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: 600,
+                                background: fPage <= 1 ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.08)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                color: fPage <= 1 ? 'var(--text-dim)' : 'var(--text)',
+                                cursor: fPage <= 1 ? 'not-allowed' : 'pointer',
+                                fontFamily: 'var(--font-body)', transition: 'all 0.15s ease',
+                              }}
+                            >← Prev</button>
+
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                                <button
+                                  key={p}
+                                  onClick={() => setFPage(p)}
+                                  style={{
+                                    width: '28px', height: '28px', borderRadius: '50%',
+                                    background: p === fPage ? 'var(--accent)' : 'transparent',
+                                    border: p === fPage ? 'none' : '1px solid rgba(255,255,255,0.12)',
+                                    color: p === fPage ? '#080808' : 'var(--text-dim)',
+                                    fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 700,
+                                    cursor: 'pointer', transition: 'all 0.15s ease',
+                                  }}
+                                >{p}</button>
+                              ))}
+                            </div>
+
+                            <button
+                              onClick={() => setFPage(Math.min(totalPages, fPage + 1))}
+                              disabled={fPage >= totalPages}
+                              style={{
+                                padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: 600,
+                                background: fPage >= totalPages ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.08)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                color: fPage >= totalPages ? 'var(--text-dim)' : 'var(--text)',
+                                cursor: fPage >= totalPages ? 'not-allowed' : 'pointer',
+                                fontFamily: 'var(--font-body)', transition: 'all 0.15s ease',
+                              }}
+                            >Next →</button>
+                          </div>
+                        )}
+
+                        {/* ── Shimmer CTA — always shown at bottom ── */}
+                        <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: '10px', background: 'rgba(232,255,107,0.03)', border: '1px solid rgba(232,255,107,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 400 }}>
+                            Want to apply, filter by company, or see all {totalJobs} jobs?
+                          </span>
+                          <span className="rack-tracking-cta">
+                            Open Tracking ✦
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── Assistant reply bubble (career question or off-topic redirect) ── */}
+                  {msg.isAssistantReply && (
+                    <div style={{ animation: 'bubbleIn 0.35s ease both' }}>
+                      {msg.loading ? (
+                        // Thinking indicator
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: '10px',
+                          padding: '16px 20px', borderRadius: '14px',
+                          background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                        }}>
+                          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                            {[0, 1, 2].map(i => (
+                              <div key={i} style={{
+                                width: '5px', height: '5px', borderRadius: '50%',
+                                background: 'var(--accent)', opacity: 0.7,
+                                animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+                              }} />
+                            ))}
+                          </div>
+                          <span style={{ fontSize: '13px', color: 'var(--text-dim)', fontWeight: 300 }}>Thinking…</span>
+                        </div>
+                      ) : (
+                        <div style={{
+                          padding: '16px 20px', borderRadius: '14px',
+                          background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                          fontSize: '14px', lineHeight: '1.65', color: 'var(--text)',
+                          fontWeight: 300, whiteSpace: 'pre-wrap',
+                        }}>
+                          {msg.replyText}
+                          {/* Soft nudge to paste a JD — only shown for career questions, not off-topic */}
+                          {msg.replyText && msg.replyText.length > 60 && (
+                            <div style={{
+                              marginTop: '14px', paddingTop: '12px',
+                              borderTop: '1px solid rgba(255,255,255,0.06)',
+                              display: 'flex', alignItems: 'center', gap: '8px',
+                            }}>
+                              <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                                Ready to match?
+                              </span>
+                              <button
+                                onClick={() => textareaRef.current?.focus()}
+                                style={{
+                                  fontSize: '11px', fontWeight: 600, padding: '3px 12px',
+                                  borderRadius: '20px', cursor: 'pointer', fontFamily: 'var(--font-body)',
+                                  background: 'rgba(232,255,107,0.08)', border: '1px solid rgba(232,255,107,0.25)',
+                                  color: 'var(--accent)', transition: 'all 0.15s ease',
+                                }}
+                                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.15)' }}
+                                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.08)' }}
+                              >
+                                Paste a JD ↑
+                              </button>
                             </div>
                           )}
                         </div>
@@ -1437,7 +1769,7 @@ export default function Home() {
                   )}
 
                   {/* Results */}
-                  {!msg.isFilterResult && msg.results && msg.results.length === 0 && (
+                  {!msg.isFilterResult && !msg.isAssistantReply && msg.results && msg.results.length === 0 && (
                     <div style={{
                       padding: '28px 24px', borderRadius: '14px',
                       background: 'var(--surface)', border: '1px solid var(--border-bright)',
@@ -1453,7 +1785,7 @@ export default function Home() {
                     </div>
                   )}
 
-                  {!msg.isFilterResult && msg.results && msg.results.length > 0 && (
+                  {!msg.isFilterResult && !msg.isAssistantReply && msg.results && msg.results.length > 0 && (
                     <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
                       {/* JD Parse Summary */}
                       {msg.jdParsed && (
@@ -1715,14 +2047,15 @@ export default function Home() {
           </div>
         )}
 
-        {/* Main input row */}
-        <div className="rack-chat-input-inner">
+        {/* Main input row — clicking anywhere in the box focuses the textarea */}
+        <div className="rack-chat-input-inner" onClick={() => textareaRef.current?.focus()} style={{ cursor: 'text' }}>
           <textarea
             ref={textareaRef}
             className="rack-chat-textarea"
             placeholder="Paste a job description…"
             value={jd}
             rows={1}
+            autoFocus
             onChange={e => { setJd(e.target.value); setResumeWarning(false) }}
             onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleMatch() }}
           />
