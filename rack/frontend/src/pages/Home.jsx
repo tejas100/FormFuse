@@ -1101,7 +1101,8 @@ export default function Home() {
       const msgId = Date.now()
       setMessages(prev => [...prev, {
         id: msgId,
-        jd: label,
+        jd: label,             // chip label is the user's "message"
+        filterLabel: label,    // table header
         isFilterResult: true,
         filterAction: action,
         filterJobs: jobs,
@@ -1225,7 +1226,8 @@ export default function Home() {
       const label = triage.filter_label || 'Matched jobs'
       setMessages(prev => [...prev, {
         id: msgId,
-        jd: label,
+        jd: capturedJd,        // user bubble always shows what they actually typed
+        filterLabel: label,    // table header uses the structured label
         isFilterResult: true,
         filterJobs: jobs,
         results: null,

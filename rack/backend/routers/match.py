@@ -246,6 +246,10 @@ _TOOLS = [
                         "enum": ["score", "recent"],
                         "description": "Sort by best score or most recently posted.",
                     },
+                    "hours": {
+                        "type": "integer",
+                        "description": "Only return jobs matched within the last N hours. Use 1 for 'past hour', 24 for 'today', 168 for 'past week'. Omit for no time filter.",
+                    },
                 },
                 "required": [],
             },
@@ -297,15 +301,17 @@ async def _tool_get_user_resumes(user_uuid, db) -> dict:
     }
 
 
-async def _tool_get_matched_jobs(user_uuid, db, min_score: int = 0, limit: int = 5, sort_by: str = "score") -> dict:
+async def _tool_get_matched_jobs(user_uuid, db, min_score: int = 0, limit: int = 5, sort_by: str = "score", hours: int = 0) -> dict:
+    from datetime import datetime, timezone, timedelta as _timedelta
     limit = min(max(1, limit), 20)
-    query = (
-        _select(_AutoMatchResult)
-        .where(_AutoMatchResult.user_id == user_uuid, _AutoMatchResult.score >= min_score)
-    )
+    conditions = [_AutoMatchResult.user_id == user_uuid, _AutoMatchResult.score >= min_score]
+    if hours and hours > 0:
+        cutoff = datetime.now(timezone.utc) - _timedelta(hours=hours)
+        conditions.append(_AutoMatchResult.matched_at >= cutoff)
+    query = _select(_AutoMatchResult).where(*conditions)
     query = query.order_by(
-        _AutoMatchResult.posted_at.desc().nullslast()
-        if sort_by == "recent"
+        _AutoMatchResult.matched_at.desc().nullslast()
+        if sort_by == "recent" or hours
         else _AutoMatchResult.score.desc()
     )
     result = await db.execute(query.limit(limit))
@@ -430,6 +436,7 @@ async def _execute_tool(name: str, args: dict, user_id: Optional[str], db) -> st
                 min_score=int(args.get("min_score", 0)),
                 limit=int(args.get("limit", 5)),
                 sort_by=args.get("sort_by", "score"),
+                hours=int(args.get("hours", 0)),
             )
         elif name == "get_role_suggestions":
             data = await _tool_get_role_suggestions(user_uuid, db)
@@ -502,7 +509,7 @@ async def chat(
         if intent == "OFF_TOPIC":
             return ChatResponse(
                 intent="OFF_TOPIC",
-                reply="I'm built to help you land your next job — paste a job description and I'll instantly rank your resumes, or ask me anything about your job search, resume, or interview prep.",
+                reply="I'm built to help you land your next job, paste a job description and I'll instantly rank your resumes, or ask me anything about your job search, resume, or interview prep.",
             )
 
         # Step 3: JD — tell frontend to run the match pipeline
@@ -581,7 +588,17 @@ async def chat(
                     min_score = int(jobs_tc_args.get("min_score", 0))
                     limit     = int(jobs_tc_args.get("limit", 5))
                     sort_by   = jobs_tc_args.get("sort_by", "score")
-                    if sort_by == "recent":
+                    hours     = int(jobs_tc_args.get("hours", 0))
+                    if hours and hours > 0:
+                        if hours == 1:
+                            label = "Jobs matched in the past hour"
+                        elif hours <= 24:
+                            label = f"Jobs matched in the past {hours}h"
+                        elif hours <= 168:
+                            label = f"Jobs matched in the past {hours // 24} day{'s' if hours // 24 != 1 else ''}"
+                        else:
+                            label = f"Jobs matched in the past {hours // 168} week{'s' if hours // 168 != 1 else ''}"
+                    elif sort_by == "recent":
                         label = "Newly matched jobs"
                     elif min_score >= 85:
                         label = "85%+ match jobs"
