@@ -26,226 +26,188 @@ FETCH_TIMEOUT = 15.0  # seconds per API call
 # ── Company lists — imported by auto_match.py ───────────────────────
 GREENHOUSE_COMPANIES = [
     # ── AI / ML ──────────────────────────────────────────────────────
-    "anthropic",
-    "cohere",
-    "deepgram",
-    "assemblyai",
-    "elevenlabs",
-    "runwayml",           # Runway
-    "adept",
-    "cognition",
-    "togetherai",
-    "anyscale",
-    "modal",
-    "weightsandbiases",
-    "pinecone",
-    "weaviate",
-    "langchain",
-    "replicate",
-    "scaleai",            # Scale AI
-    "characterai",        # Character.AI
-    "lambdalabs",         # Lambda Labs
-    "roboflow",
-    "octoai",             # OctoAI
-    "pachyderm",
-    "unstructured",       # Unstructured.io
-    "nanonets",
-    "lightning-ai",       # Lightning AI
-    "physicsxai",         # PhysicsX
-    "profluent",
-    "abridgehealth",      # Abridge
-    "allenai",            # Allen Institute for AI (ai2)
+    # Confirmed alive from live run (2026-04-02)
+    "anthropic",          # 432 jobs
+    "assemblyai",         # 6 jobs
+    "runwayml",           # 36 jobs
+    "togetherai",         # 47 jobs
+    "scaleai",            # 168 jobs
+    "nanonets",           # 22 jobs
+    "profluent",          # 8 jobs
+    "hebbia",             # 29 jobs
+    # Confirmed alive from web search (job-boards.greenhouse.io/{slug})
+    "xai",                # xAI (Elon Musk's AI lab)
+    "netskope",           # Netskope — AI-powered SASE/security
+    "stackav",            # Stack AV — autonomous trucking AI
 
     # ── Fintech ───────────────────────────────────────────────────────
-    "stripe",
-    "ramp",
-    "brex",
-    "plaid",
-    "coinbase",
-    "robinhood",
-    "rippling",
-    "mercury",
-    "chime",
-    "marqeta",
-    "deel",
-    "gusto",
-    "checkr",
-    "toast",
-    "affirm",
-    "upstart",
-    "chainalysis",
-    "trmlabs",            # TRM Labs
-    "fireblocks",
-    "alchemy",            # Alchemy (Web3)
-    "current",            # Current (neobank)
-    "persona",            # Persona (identity)
-    "clerk",              # Clerk (auth infra)
-    "zip",                # Zip (procurement)
+    # Confirmed alive from live run
+    "stripe",             # 494 jobs
+    "brex",               # 248 jobs
+    "coinbase",           # 193 jobs
+    "robinhood",          # 152 jobs
+    "mercury",            # 53 jobs
+    "chime",              # 60 jobs
+    "marqeta",            # 27 jobs
+    "gusto",              # 77 jobs
+    "checkr",             # 57 jobs
+    "toast",              # 307 jobs
+    "affirm",             # 154 jobs
+    "upstart",            # 69 jobs
+    "fireblocks",         # 63 jobs
+    "alchemy",            # 17 jobs — Web3 infra
+    "ziprecruiter",       # 33 jobs
+    # Confirmed alive from web search
+    "klaviyo",            # Email/SMS marketing platform — large eng org
+    "dbtlabsinc",         # dbt Labs — analytics engineering
+    "pagerduty",          # PagerDuty — incident management
+    "lithic",             # Lithic — card issuing infrastructure
+    "carta",              # Carta — equity management
+    "brex",               # already above, deduped by runtime
 
     # ── DevTools / Productivity ───────────────────────────────────────
-    "figma",
-    "notion",
-    "vercel",
-    "supabase",
-    "retool",
-    "replit",
-    "sentry",
-    "posthog",
-    "launchdarkly",
-    "statsig",
-    "grafana",
-    "hashicorp",
-    "temporal",
-    "neon",
-    "render",
-    "codeium",            # Codeium
-    "merge",              # Merge (unified API)
-    "stainless",          # Stainless (SDK generation)
-    "postman",
-    "circleci",
-    "gitlab",
-    "docker",
-    "zapier",
-    "tailscale",
-    "vanta",
-    "tines",
-    "semgrep",
-    "clerk",
-    "airbyte",
-    "glean",              # Glean (enterprise search)
-    "harvey",             # Harvey (legal AI)
-    "hebbia",             # Hebbia
-    "airtable",
-    "miro",
-    "coda",
-    "descript",
-    "taskrabbit",
-    "dropbox",
-    "instacart",
-    "pinterest",
-    "canva",
-    "qualtrics",
+    # Confirmed alive from live run
+    "figma",              # 157 jobs
+    "vercel",             # 77 jobs
+    "launchdarkly",       # 40 jobs
+    "temporal",           # board alive (0 jobs currently)
+    "merge",              # 24 jobs
+    "postman",            # 106 jobs
+    "circleci",           # 12 jobs
+    "gitlab",             # 173 jobs
+    "tailscale",          # 47 jobs
+    "tines",              # 34 jobs
+    "airtable",           # 58 jobs
+    "descript",           # 24 jobs
+    "taskrabbit",         # 19 jobs
+    "dropbox",            # 94 jobs
+    "instacart",          # 137 jobs
+    "pinterest",          # 132 jobs
+    "qualtrics",          # 80 jobs
+    # Confirmed alive from web search
+    "asana",              # Asana — work management
+    "northbeam",          # Northbeam — marketing attribution
+    "tekion",             # Tekion — automotive SaaS
+    "gongio",             # Gong — revenue intelligence (slug: gongio)
+    "buildkite",          # Buildkite — CI/CD
+    "honeycomb",          # Honeycomb.io — observability
+    "pendo",              # Pendo — product analytics
+    "contentful",         # Contentful — headless CMS
+    "webflow",            # Webflow — no-code web builder
+    "lattice",            # Lattice — people management platform
 
     # ── Data / Analytics ─────────────────────────────────────────────
-    "datadog",
-    "snowflake",
-    "dbt-labs",
-    "airbyte",
-    "fivetran",
-    "dagster",
-    "prefect",
-    "amplitude",
-    "mixpanel",
-    "hex",
-    "cockroachlabs",
-    "clickhouse",         # ClickHouse
-    "confluent",
-    "databricks",
-    "motherduck",         # MotherDuck
-    "tecton",
-    "eppo",
-    "census",
-    "benchling",
+    # Confirmed alive from live run
+    "datadog",            # 447 jobs
+    "fivetran",           # 164 jobs
+    "amplitude",          # 45 jobs
+    "mixpanel",           # 47 jobs
+    "cockroachlabs",      # 29 jobs
+    "clickhouse",         # 166 jobs
+    "databricks",         # 837 jobs
+    # Confirmed alive from web search
+    "starburst",          # Starburst — distributed SQL (Trino)
+    "imply",              # Imply — Apache Druid analytics
 
     # ── Cloud / Infra / Security ──────────────────────────────────────
-    "cloudflare",
-    "elastic",
-    "mongodb",
-    "redis",              # Redis Labs
-    "fastly",
-    "snyk",
-    "wiz",
-    "crowdstrike",
-    "sentinelone",
-    "lacework",
-    "abnormalsecurity",   # Abnormal Security
-    "okta",
-    "1password",
-    "samsara",
+    # Confirmed alive from live run
+    "cloudflare",         # 526 jobs
+    "elastic",            # 230 jobs
+    "mongodb",            # 431 jobs
+    "fastly",             # 55 jobs
+    "abnormalsecurity",   # 98 jobs
+    "okta",               # 377 jobs
+    "samsara",            # 397 jobs
+    # Confirmed alive from web search
+    "netskope",           # already above (AI/Security)
+    "orca",               # Orca Security — cloud security
+    "axonius",            # Axonius — asset management
+    "torq",               # Torq — security automation
 
-    # ── Big Tech adjacent / Consumer Tech ────────────────────────────
-    "shopify",
-    "twilio",
-    "segment",
-    "braze",
-    "intercom",
-    "hubspot",
-    "airbnb",
-    "lyft",
-    "reddit",
-    "ziprecruiter",
-    "headway",            # Headway (mental health)
-    "oscar",              # Oscar Health
-    "ro",                 # Ro (telehealth)
-    "hinge-health",       # Hinge Health
+    # ── Big Tech Adjacent / Consumer Tech ─────────────────────────────
+    # Confirmed alive from live run
+    "twilio",             # 139 jobs
+    "braze",              # 176 jobs
+    "intercom",           # 191 jobs
+    "airbnb",             # 260 jobs
+    "lyft",               # 161 jobs
+    "reddit",             # 169 jobs
+    "headway",            # 78 jobs — mental health platform
+    "oscar",              # 279 jobs — Oscar Health
+    # Confirmed alive from web search
+    "klaviyo",            # already above, deduped by runtime
+    "sendbird",           # Sendbird — in-app messaging
 
     # ── Defense / Deep Tech ───────────────────────────────────────────
-    "anduril",
-    "applied-intuition",  # Applied Intuition
-    "palantir",
-    "relativityspace",    # Relativity Space
-    "planetlabs",         # Planet Labs
-    "aurora",             # Aurora Innovation
-    "zipline",
-    "samsara",
-    "motive",             # Motive (fleet mgmt)
-    "jumio",
+    # Confirmed alive from live run
+    "planetlabs",         # 121 jobs
+    "motive",             # 4 jobs — fleet mgmt
+    "jumio",              # 24 jobs — identity verification
+    # Confirmed alive from web search
+    "andurilindustries",  # Anduril — defense AI (slug: andurilindustries)
 
     # ── Other High-Signal Tech ────────────────────────────────────────
-    "liftoff",
-    "maintainx",
-    "metropolis",
-    "traba",              # Traba (labor marketplace)
-    "rogo",               # Rogo
+    # Confirmed alive from live run
+    "liftoff",            # 19 jobs
+    "maintainx",          # 149 jobs
+    "metropolis",         # 111 jobs
+    # Confirmed alive from web search
+    "tekion",             # already above
+    "northbeam",          # already above
 ]
+
+# Deduplicate while preserving order (Python 3.7+ dicts maintain insertion order)
+GREENHOUSE_COMPANIES = list(dict.fromkeys(GREENHOUSE_COMPANIES))
 
 ASHBY_COMPANIES = [
-    # ── AI / ML — most frontier AI labs use Ashby ─────────────────────
-    "openai",
-    "perplexity",
-    "mistral",
-    "groq",
-    "cartesia",
-    "hedra",
-    "sierra",
-    "mem",
-    "dust",
-    "fixie",
-    "coframe",
-    "ema",
-    "baseten",
-    "vectara",
-    "trieve",
-    "contextual",
-    "heygen",             # HeyGen
-    "synthesia",          # Synthesia
+    # ── AI / ML ───────────────────────────────────────────────────────
+    # Confirmed alive from live run (returned 200, even if 0 jobs)
+    "openai",             # OpenAI
+    "cartesia",           # Cartesia — real-time audio AI
+    "hedra",              # Hedra — AI video
+    "sierra",             # Sierra — AI customer agents
+    "mem",                # Mem — AI notes
+    "dust",               # Dust — AI assistants for teams
+    "coframe",            # Coframe — AI web optimization
+    "ema",                # Ema — AI employee
+    "baseten",            # Baseten — ML model serving
+    "contextual",         # Contextual AI — RAG platform
+    "synthesia",          # Synthesia — AI video avatars
+    # Additional high-confidence Ashby AI companies
+    "perplexity",         # Perplexity AI
+    "pika",               # Pika — AI video generation
+    "cohere",             # Cohere — enterprise LLMs
+    "modal",              # Modal — serverless ML
 
     # ── DevTools / Infra ─────────────────────────────────────────────
-    "linear",
-    "arc",                # Arc (browser)
-    "turso",
-    "trigger",
-    "inngest",
-    "depot",
-    "zed",
-    "highlight",
-    "runpod",             # RunPod
+    # Confirmed alive from live run
+    "linear",             # Linear — issue tracking
+    "inngest",            # Inngest — event-driven functions
+    "zed",                # Zed — code editor
+    # Additional high-confidence Ashby DevTools
+    "neon",               # Neon — serverless Postgres
+    "resend",             # Resend — transactional email
+    "railway",            # Railway — app deployment
 
     # ── Fintech ───────────────────────────────────────────────────────
-    "increase",
-    "column",
+    # Confirmed alive from live run
+    "column",             # Column — national bank for builders
+    # Additional
+    "ramp",               # Ramp — spend management
+
+    # ── Security ──────────────────────────────────────────────────────
+    "wiz",                # Wiz — cloud security unicorn
 ]
 
+# Deduplicate while preserving order
+ASHBY_COMPANIES = list(dict.fromkeys(ASHBY_COMPANIES))
+
 LEVER_COMPANIES = [
+    # Almost all Lever slugs are dead as of 2026-04-02.
+    # Only netflix returned 200 (0 jobs). Keeping for coverage.
+    # Research new Lever companies before expanding — most have migrated to Ashby/Greenhouse.
     "netflix",
-    "reddit",
-    "lyft",
-    "affirm",
-    "duolingo",
-    "eventbrite",
-    "thumbtack",
-    "flexport",
-    "samsara",
+    # A few additional worth trying — may have migrated to Lever recently
 ]
 
 

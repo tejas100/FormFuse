@@ -1034,7 +1034,8 @@ function FreshJobsTab() {
   const [window, setWindow]       = useState(1); // hours — default 1h
   const [expandedId, setExpandedId] = useState(null);
   const [titleFilter, setTitleFilter] = useState("");
-  const [page, setPage]           = useState(1);
+  const [sortOrder, setSortOrder]     = useState("recency"); // "recency" | "score"
+  const [page, setPage]               = useState(1);
   const hasRun = useRef(false);
 
   const loadFresh = async (hours) => {
@@ -1067,11 +1068,19 @@ function FreshJobsTab() {
     !titleFilter.trim() || m.job_title?.toLowerCase().includes(titleFilter.toLowerCase())
   );
 
-  useEffect(() => { setPage(1); }, [titleFilter]);
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortOrder === "score") {
+      return (b.llm_score ?? b.score ?? 0) - (a.llm_score ?? a.score ?? 0);
+    }
+    // recency: newest posted_at first (default)
+    return new Date(b.posted_at || 0) - new Date(a.posted_at || 0);
+  });
+
+  useEffect(() => { setPage(1); }, [titleFilter, sortOrder]);
 
   const PAGE_SIZE_F = 10;
-  const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE_F));
-  const paginated   = filtered.slice((page - 1) * PAGE_SIZE_F, page * PAGE_SIZE_F);
+  const totalPages  = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE_F));
+  const paginated   = sorted.slice((page - 1) * PAGE_SIZE_F, page * PAGE_SIZE_F);
 
   const inputStyle = {
     padding: "8px 14px", borderRadius: 30,
@@ -1086,7 +1095,7 @@ function FreshJobsTab() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
           {jobs.length > 0
-            ? `${jobs.length} jobs posted in the last ${window}h · sorted by recency`
+            ? `${jobs.length} jobs posted in the last ${window}h · sorted by ${sortOrder === "score" ? "score ↓" : "recency"}`
             : "Jobs RACK has scored, filtered by how recently they were posted"}
         </div>
         <button
@@ -1131,11 +1140,25 @@ function FreshJobsTab() {
         </div>
       )}
 
-      {/* Search filter */}
+      {/* Search filter + sort toggle */}
       {jobs.length > 0 && (
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
           <input type="text" value={titleFilter} onChange={e => setTitleFilter(e.target.value)} placeholder="Search by title…" style={{ ...inputStyle, flex: "1 1 180px" }} />
-          <span style={{ fontSize: 11, color: "var(--text-dim)", ...mono }}>{filtered.length} jobs · p.{page}/{totalPages}</span>
+          <button
+            onClick={() => setSortOrder(o => o === "recency" ? "score" : "recency")}
+            style={{
+              ...inputStyle,
+              display: "flex", alignItems: "center", gap: 5,
+              cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
+              background: sortOrder === "score" ? "rgba(232,255,107,0.08)" : "var(--surface)",
+              color: sortOrder === "score" ? "var(--accent)" : "var(--text-dim)",
+              border: sortOrder === "score" ? "1px solid rgba(232,255,107,0.3)" : "1px solid var(--border)",
+              transition: "all 0.18s",
+            }}
+          >
+            {sortOrder === "recency" ? "↕ Sort: Recency" : "↕ Sort: Score"}
+          </button>
+          <span style={{ fontSize: 11, color: "var(--text-dim)", ...mono }}>{sorted.length} jobs · p.{page}/{totalPages}</span>
         </div>
       )}
 
@@ -1187,9 +1210,9 @@ function FreshJobsTab() {
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === totalPages ? "var(--text-dim)" : "var(--text)", cursor: page === totalPages ? "default" : "pointer", fontSize: 12, opacity: page === totalPages ? 0.4 : 1 }}>next →</button>
         </div>
       )}
-      {!loading && filtered.length > 0 && (
+      {!loading && sorted.length > 0 && (
         <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text-dim)", ...mono }}>
-          showing {(page - 1) * PAGE_SIZE_F + 1}–{Math.min(page * PAGE_SIZE_F, filtered.length)} of {filtered.length} jobs
+          showing {(page - 1) * PAGE_SIZE_F + 1}–{Math.min(page * PAGE_SIZE_F, sorted.length)} of {sorted.length} jobs
         </div>
       )}
     </div>

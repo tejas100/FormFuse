@@ -49,7 +49,7 @@ LLM_TIMEOUT     = 20.0    # seconds per call
 LLM_MODEL       = "gpt-4o-mini"
 
 # ── Phase 2 threshold — only pairs above this go to LLM ────────────
-PHASE2_THRESHOLD = 40     # hybrid score % — keep in sync with auto_match.py
+PHASE2_THRESHOLD = 55     # hybrid score % — keep in sync with auto_match.py
                           # At 45%: ~2500 pairs on first run (too many)
                           # At 55%: ~30-80 pairs (fast + affordable)
 
@@ -601,31 +601,39 @@ async def _score_job_multi_resume(
         List of enriched pair entries (same as input but with llm_* fields added).
         On failure, all entries get scoring_method="hybrid_only".
     """
-    async with semaphore:
-        # Build the JD summary once (shared across all resumes for this job)
-        parsed_jd = resume_entries[0].get("parsed_jd", {})
-        jd_summary = _build_jd_summary(job, parsed_jd)
+    # ── Build prompts BEFORE acquiring semaphore — pure CPU/string work, no I/O ──
+    # Keeping this outside the semaphore means all 421 tasks can build their
+    # prompts in parallel while only 8 at a time hold the semaphore for HTTP I/O.
+    parsed_jd = resume_entries[0].get("parsed_jd", {})
+    jd_summary = _build_jd_summary(job, parsed_jd)
 
-        # Build resume summaries — numbered so GPT can reference by index
-        resume_blocks = []
-        for i, entry in enumerate(resume_entries):
-            resume_summary = _build_resume_summary(entry["resume"])
-            hybrid = entry.get("hybrid_score", 0)
-            resume_blocks.append(
-                f"CANDIDATE {i} (initial hybrid score: {hybrid}%):\n{resume_summary}"
-            )
-
-        resumes_text = "\n\n---\n\n".join(resume_blocks)
-
-        user_message = (
-            f"JOB DESCRIPTION:\n{jd_summary}\n\n"
-            f"{'=' * 60}\n\n"
-            f"CANDIDATES TO SCORE ({len(resume_entries)} total):\n\n"
-            f"{resumes_text}\n\n"
-            f"Score each candidate independently against this job. "
-            f"Return a JSON array with {len(resume_entries)} entries."
+    resume_blocks = []
+    for i, entry in enumerate(resume_entries):
+        resume_summary = _build_resume_summary(entry["resume"])
+        hybrid = entry.get("hybrid_score", 0)
+        resume_blocks.append(
+            f"CANDIDATE {i} (initial hybrid score: {hybrid}%):\n{resume_summary}"
         )
 
+    resumes_text = "\n\n---\n\n".join(resume_blocks)
+
+    user_message = (
+        f"JOB DESCRIPTION:\n{jd_summary}\n\n"
+        f"{'=' * 60}\n\n"
+        f"CANDIDATES TO SCORE ({len(resume_entries)} total):\n\n"
+        f"{resumes_text}\n\n"
+        f"Score each candidate independently against this job. "
+        f"Return a JSON array with {len(resume_entries)} entries."
+    )
+
+    # Each resume's JSON response is ~150–200 tokens in practice.
+    # 600 * N was overallocating — OpenAI latency scales with max_tokens,
+    # so over-allocating directly inflates wall-clock time per call.
+    # Cap at 1500 (enough for 5 resumes with headroom).
+    max_tokens = min(250 * len(resume_entries) + 200, 1500)
+
+    async with semaphore:
+        # Only the HTTP call (and its await) is inside the semaphore
         try:
             api_key = os.environ.get("OPENAI_API_KEY")
             if not api_key:
@@ -644,10 +652,9 @@ async def _score_job_multi_resume(
                         {"role": "user", "content": user_message},
                     ],
                     "temperature": 0.1,
-                    # ~600 tokens per resume + overhead — scale with resume count
-                    "max_tokens": 600 * len(resume_entries) + 200,
+                    "max_tokens": max_tokens,
                 },
-                timeout=LLM_TIMEOUT + (5 * len(resume_entries)),  # extra time per resume
+                timeout=LLM_TIMEOUT,
             )
 
             if response.status_code != 200:

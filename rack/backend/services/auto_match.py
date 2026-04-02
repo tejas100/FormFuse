@@ -44,13 +44,13 @@ STORE_CAP              = 90
 SCORE_WEIGHT           = 0.85
 RECENCY_WEIGHT         = 0.15
 RECENCY_HALF_LIFE_DAYS = 7
-MIN_SCORE              = 30
-PHASE2_THRESHOLD       = 55   # Raised from 40 — cuts LLM calls ~60%. Hybrid <55% almost always confirms Weak/Partial Fit anyway.
+MIN_SCORE              = 55   # LLM score floor — anything below is noise, never stored
+PHASE2_THRESHOLD       = 35   # Phase 1 pre-filter only — LLM is the real judge. 35% filters clearly irrelevant roles while passing ambiguous matches to GPT-4o-mini.
 BATCH_SIZE             = 50
 MIN_DESC_LEN           = 100
 STALE_HOURS            = 0.5
 MAX_CONCURRENT         = 15
-ROLE_MATCH_RATIO       = 0.65  # Raised from 0.60 — tighter title match, fewer false positives like DBRE/Trust&Safety
+ROLE_MATCH_RATIO       = 0.60  # Word overlap ratio for title matching — 0.60 balances precision vs recall
 
 
 # ── Role matching ─────────────────────────────────────────────────────
@@ -551,18 +551,27 @@ async def run_auto_pipeline(
         if len(desc) < MIN_DESC_LEN:
             return
 
+        result = None
         async with phase1_sem:
-            try:
-                result = await match_resumes(
-                    jd_text=desc,
-                    user_id=user_id,
-                    use_llm=False,
-                    db=db,
-                )
-            except Exception as e:
-                logger.error(f"[AutoMatch] Phase 1 error for '{job.get('title')}': {e}")
-                return
+            # Each concurrent task gets its own DB session.
+            # The outer `db` session is NOT concurrency-safe — sharing it across
+            # asyncio.gather tasks causes "session is provisioning a new connection;
+            # concurrent operations are not permitted" on all but the first task.
+            from db.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as task_db:
+                try:
+                    result = await match_resumes(
+                        jd_text=desc,
+                        user_id=user_id,
+                        use_llm=False,
+                        db=task_db,
+                    )
+                except Exception as e:
+                    logger.error(f"[AutoMatch] Phase 1 error for '{job.get('title')}': {e}")
+                    return
 
+        if result is None:
+            return
         matches   = result.get("results", [])
         parsed_jd = result.get("jd_parsed", {})
 
