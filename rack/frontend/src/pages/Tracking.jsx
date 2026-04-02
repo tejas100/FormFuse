@@ -104,7 +104,7 @@ async function downloadResume(resumeId, resumeName, fileExt) {
 /* ══════════════════════════════════════════════════════════════════
    TAB BAR — subtle two-tab switcher
    ══════════════════════════════════════════════════════════════════ */
-function TabSwitcher({ activeTab, onSwitch, autoCount, customCount }) {
+function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount }) {
   return (
     <div style={{
       display: "inline-flex",
@@ -116,7 +116,8 @@ function TabSwitcher({ activeTab, onSwitch, autoCount, customCount }) {
       marginBottom: 20,
     }}>
       {[
-        { id: "auto", label: "Auto Matches", icon: "✦", count: autoCount },
+        { id: "auto",   label: "Auto Matches", icon: "✦", count: autoCount   },
+        { id: "fresh",  label: "Fresh Jobs",   icon: "🆕", count: freshCount  },
         { id: "custom", label: "Custom Search", icon: "⚙", count: customCount },
       ].map((tab) => {
         const active = activeTab === tab.id;
@@ -1016,6 +1017,187 @@ function ArchiveModal({ onClose }) {
 
 
 /* ══════════════════════════════════════════════════════════════════
+   FRESH JOBS TAB — recently posted scored jobs, sorted by posted_at
+   ══════════════════════════════════════════════════════════════════ */
+const FRESH_WINDOWS = [
+  { label: "1h",  hours: 1   },
+  { label: "3h",  hours: 3   },
+  { label: "6h",  hours: 6   },
+  { label: "12h", hours: 12  },
+  { label: "24h", hours: 24  },
+];
+
+function FreshJobsTab() {
+  const [jobs, setJobs]           = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState(null);
+  const [window, setWindow]       = useState(1); // hours — default 1h
+  const [expandedId, setExpandedId] = useState(null);
+  const [titleFilter, setTitleFilter] = useState("");
+  const [page, setPage]           = useState(1);
+  const hasRun = useRef(false);
+
+  const loadFresh = async (hours) => {
+    setLoading(true); setError(null); setPage(1); setExpandedId(null);
+    try {
+      const headers = await getAuthHeaders();
+      const r = await fetch(`${API}/auto/fresh?hours=${hours}`, { headers });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setJobs(d.jobs || []);
+    } catch (e) {
+      setError("Failed to load fresh jobs: " + e.message);
+    }
+    setLoading(false);
+  };
+
+  // Auto-load on mount
+  useEffect(() => {
+    if (hasRun.current) return;
+    hasRun.current = true;
+    loadFresh(1);
+  }, []);
+
+  const handleWindowChange = (hours) => {
+    setWindow(hours);
+    loadFresh(hours);
+  };
+
+  const filtered = jobs.filter(m =>
+    !titleFilter.trim() || m.job_title?.toLowerCase().includes(titleFilter.toLowerCase())
+  );
+
+  useEffect(() => { setPage(1); }, [titleFilter]);
+
+  const PAGE_SIZE_F = 10;
+  const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE_F));
+  const paginated   = filtered.slice((page - 1) * PAGE_SIZE_F, page * PAGE_SIZE_F);
+
+  const inputStyle = {
+    padding: "8px 14px", borderRadius: 30,
+    border: "1px solid var(--border)", background: "var(--surface)",
+    color: "var(--text)", fontFamily: "var(--font-body)", fontSize: 12, outline: "none",
+  };
+  const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
+          {jobs.length > 0
+            ? `${jobs.length} jobs posted in the last ${window}h · sorted by recency`
+            : "Jobs RACK has scored, filtered by how recently they were posted"}
+        </div>
+        <button
+          onClick={() => loadFresh(window)}
+          disabled={loading}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, transition: "all 0.2s" }}
+        >
+          {loading ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span> Loading…</> : "⟳ Refresh"}
+        </button>
+      </div>
+
+      {/* Time filter bar */}
+      <div style={{ display: "flex", gap: 5, marginBottom: 16, flexWrap: "wrap" }}>
+        {FRESH_WINDOWS.map(({ label, hours }) => {
+          const active = window === hours;
+          return (
+            <button
+              key={hours}
+              onClick={() => handleWindowChange(hours)}
+              disabled={loading}
+              style={{
+                padding: "6px 14px", borderRadius: 30, border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+                background: active ? "rgba(232,255,107,0.1)" : "transparent",
+                color: active ? "var(--accent)" : "var(--text-dim)",
+                fontFamily: "var(--font-body)", fontSize: 12, fontWeight: active ? 700 : 400,
+                cursor: loading ? "default" : "pointer", transition: "all 0.18s",
+                ...mono,
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+        <span style={{ fontSize: 11, color: "var(--text-dim)", alignSelf: "center", marginLeft: 4, ...mono }}>
+          posted within
+        </span>
+      </div>
+
+      {error && (
+        <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.15)", borderRadius: 14, padding: "10px 16px", fontSize: 12, color: "var(--danger)", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          {error}<button onClick={() => setError(null)} style={{ background: "none", border: "none", color: "var(--danger)", cursor: "pointer", fontSize: 13, padding: 0 }}>✕</button>
+        </div>
+      )}
+
+      {/* Search filter */}
+      {jobs.length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <input type="text" value={titleFilter} onChange={e => setTitleFilter(e.target.value)} placeholder="Search by title…" style={{ ...inputStyle, flex: "1 1 180px" }} />
+          <span style={{ fontSize: 11, color: "var(--text-dim)", ...mono }}>{filtered.length} jobs · p.{page}/{totalPages}</span>
+        </div>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--text-dim)", animation: "fadeUp 0.3s ease both" }}>
+          <div style={{ width: 36, height: 36, border: "3px solid rgba(232,255,107,0.15)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 14px" }} />
+          <div style={{ fontSize: 13, color: "var(--accent)", fontFamily: "var(--font-display)", fontWeight: 700, marginBottom: 4 }}>Loading fresh jobs…</div>
+          <div style={{ fontSize: 11 }}>Filtering matched jobs posted in the last {window}h</div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && jobs.length === 0 && !error && (
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 24, marginBottom: 14, color: "var(--accent)", opacity: 0.4 }}>[ no fresh jobs ]</div>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>Nothing posted in the last {window}h</div>
+          <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto 20px", lineHeight: 1.6 }}>
+            Try a wider time window, or run Auto Matches to score more jobs first.
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+            {FRESH_WINDOWS.filter(w => w.hours > window).slice(0, 2).map(({ label, hours }) => (
+              <button key={hours} onClick={() => handleWindowChange(hours)} style={{ padding: "9px 20px", borderRadius: 30, border: "1px solid rgba(232,255,107,0.3)", background: "transparent", color: "var(--accent)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                Try {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Job cards */}
+      {!loading && paginated.map((m, i) => (
+        <MatchCard key={m.job_id} match={m} index={(page - 1) * PAGE_SIZE_F + i}
+          expanded={expandedId === m.job_id}
+          onToggle={() => setExpandedId(expandedId === m.job_id ? null : m.job_id)}
+          isAuto={true} />
+      ))}
+
+      {/* Pagination */}
+      {!loading && totalPages > 1 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 20, ...mono }}>
+          <button onClick={() => { setPage(p => Math.max(1, p - 1)); setExpandedId(null); }} disabled={page === 1}
+            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === 1 ? "var(--text-dim)" : "var(--text)", cursor: page === 1 ? "default" : "pointer", fontSize: 12, opacity: page === 1 ? 0.4 : 1 }}>← prev</button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+            <button key={p} onClick={() => { setPage(p); setExpandedId(null); }}
+              style={{ width: 32, height: 32, borderRadius: 8, fontSize: 12, border: `1px solid ${p === page ? "var(--accent)" : "var(--border)"}`, background: p === page ? "rgba(232,255,107,0.1)" : "transparent", color: p === page ? "var(--accent)" : "var(--text-dim)", cursor: "pointer", fontWeight: p === page ? 700 : 400 }}>{p}</button>
+          ))}
+          <button onClick={() => { setPage(p => Math.min(totalPages, p + 1)); setExpandedId(null); }} disabled={page === totalPages}
+            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === totalPages ? "var(--text-dim)" : "var(--text)", cursor: page === totalPages ? "default" : "pointer", fontSize: 12, opacity: page === totalPages ? 0.4 : 1 }}>next →</button>
+        </div>
+      )}
+      {!loading && filtered.length > 0 && (
+        <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text-dim)", ...mono }}>
+          showing {(page - 1) * PAGE_SIZE_F + 1}–{Math.min(page * PAGE_SIZE_F, filtered.length)} of {filtered.length} jobs
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
    AUTO MATCHES TAB
    ══════════════════════════════════════════════════════════════════ */
 const PAGE_SIZE = 10;
@@ -1632,6 +1814,7 @@ export default function Tracking() {
   const [activeTab, setActiveTab] = useState("auto");
   const [profile, setProfile] = useState(null);
   const [autoMatches, setAutoMatches] = useState([]);
+  const [freshCount, setFreshCount] = useState(0);
   const [customMatches, setCustomMatches] = useState([]);
 
   // Load profile + cached counts for tab badges
@@ -1639,13 +1822,15 @@ export default function Tracking() {
     (async () => {
       try {
         const headers = await getAuthHeaders();
-        const [pr, am, cm] = await Promise.all([
+        const [pr, am, fr, cm] = await Promise.all([
           fetch(`${PROFILE_API}/profile`, { headers }),
           fetch(`${API}/auto/matches`, { headers }),
+          fetch(`${API}/auto/fresh?hours=1`, { headers }),
           fetch(`${API}/matches?limit=50`),
         ]);
         if (pr.ok) setProfile(await pr.json());
         if (am.ok) setAutoMatches(await am.json());
+        if (fr.ok) { const d = await fr.json(); setFreshCount(d.total || 0); }
         if (cm.ok) { const d = await cm.json(); setCustomMatches(Array.isArray(d) ? d : []); }
       } catch {}
     })();
@@ -1672,12 +1857,16 @@ export default function Tracking() {
           activeTab={activeTab}
           onSwitch={setActiveTab}
           autoCount={autoMatches.length}
+          freshCount={freshCount}
           customCount={customMatches.length}
         />
 
         {/* ── Tab content ─────────────────────────────────────── */}
         {activeTab === "auto" && (
           <AutoMatchesTab profile={profile} />
+        )}
+        {activeTab === "fresh" && (
+          <FreshJobsTab />
         )}
         {activeTab === "custom" && (
           <CustomSearchTab profile={profile} />

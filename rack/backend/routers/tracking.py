@@ -159,6 +159,53 @@ async def auto_meta(
     return _load_auto_meta_for_user(user_id)
 
 
+@router.get("/auto/fresh")
+async def auto_fresh(
+    hours: int = Query(default=24, ge=1, le=168, description="Return jobs posted within the last N hours. Max 168 (7 days)."),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return recently posted jobs from auto_match_results, sorted by posted_at DESC.
+    These are jobs RACK has already scored — filtered by how recently they were posted.
+
+    ?hours=1   → posted in the last hour
+    ?hours=6   → posted in the last 6 hours
+    ?hours=24  → posted today (default)
+    ?hours=168 → posted in the last 7 days
+    """
+    from models.orm import AutoMatchResult, ArchivedJobId
+    from sqlalchemy import select as sa_select
+    import uuid as _uuid
+    from datetime import datetime, timezone, timedelta
+
+    user_uuid = _uuid.UUID(str(current_user.id))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    # Exclude archived jobs
+    archived_stmt = sa_select(ArchivedJobId.job_id).where(
+        ArchivedJobId.user_id == user_uuid
+    )
+    archived_result = await db.execute(archived_stmt)
+    archived_ids = {r[0] for r in archived_result.fetchall()}
+
+    stmt = (
+        sa_select(AutoMatchResult)
+        .where(AutoMatchResult.user_id == user_uuid)
+        .where(AutoMatchResult.posted_at >= cutoff)
+        .order_by(AutoMatchResult.posted_at.desc())
+        .limit(100)
+    )
+    if archived_ids:
+        stmt = stmt.where(AutoMatchResult.job_id.notin_(archived_ids))
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    jobs = [row.job_data for row in rows]
+
+    return {"jobs": jobs, "total": len(jobs), "hours": hours}
+
+
 @router.post("/auto/archive")
 async def auto_archive(
     req: AutoArchiveRequest,

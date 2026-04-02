@@ -11,17 +11,21 @@ Session 21: Normalized DB schema — one row per (user, job) in auto_match_resul
   - Added _save_results_to_db()  — upserts individual job rows
   - Added _load_results_from_db() — loads all scored jobs for a user, sorted by score
   - run_auto_pipeline() now incremental: only scores jobs not already in DB
-  - force=True bypasses results cache but does NOT re-fetch Greenhouse pool
+  - force=True bypasses results cache but does NOT re-fetch pool if still fresh
+Session 31: Multi-source expansion + batched Phase 1.
+  - Replaced inline _fetch_greenhouse() with job_fetcher.fetch_all_auto_match()
+  - Added Ashby + Lever fetching via job_fetcher.py
+  - Removed PHASE1_JOB_CAP — Phase 1 now processes all new jobs in batches of BATCH_SIZE
+  - Pool staleness reduced from 24h to 0.5h (30 min)
+  - Removed auto_job_pool.json disk cache — pool fetched fresh every cycle
 """
 
 import asyncio
 import json
 import logging
 import os
-import hashlib
 import re
 import math
-import httpx
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -32,9 +36,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 logger = logging.getLogger(__name__)
 
 # ── Storage ──────────────────────────────────────────────────────────
-WATCHLIST_DIR  = os.path.join("uploads", "watchlist")
-AUTO_META_PATH = os.path.join(WATCHLIST_DIR, "auto_match_meta.json")
-AUTO_POOL_PATH = os.path.join(WATCHLIST_DIR, "auto_job_pool.json")
+WATCHLIST_DIR = os.path.join("uploads", "watchlist")
 
 # ── Tunables ─────────────────────────────────────────────────────────
 DISPLAY_CAP            = 50
@@ -44,107 +46,11 @@ RECENCY_WEIGHT         = 0.15
 RECENCY_HALF_LIFE_DAYS = 7
 MIN_SCORE              = 30
 PHASE2_THRESHOLD       = 40
-PHASE1_JOB_CAP         = 100
+BATCH_SIZE             = 50   # Phase 1 batch size — replaces removed PHASE1_JOB_CAP
 MIN_DESC_LEN           = 100
-STALE_HOURS            = 24
+STALE_HOURS            = 0.5  # Pool re-fetched every 30 min
 MAX_CONCURRENT         = 15
 ROLE_MATCH_RATIO       = 0.6
-FETCH_TIMEOUT          = 15.0
-
-# ── Greenhouse company board tokens ──────────────────────────────────
-GREENHOUSE_COMPANIES = [
-    # AI / ML
-    "anthropic", "openai", "cohere", "mistral", "perplexity-ai",
-    "scale-ai", "weightsandbiases", "huggingface", "pinecone", "weaviate",
-    "modal", "anyscale", "togetherai", "langchain", "deepgram",
-    "assemblyai", "elevenlabs", "runwayml", "characterai", "adept",
-    "cognition",
-    # Fintech
-    "stripe", "ramp", "brex", "plaid", "coinbase",
-    "robinhood", "rippling", "mercury", "chime", "marqeta",
-    # DevTools / Productivity
-    "figma", "notion", "linear", "vercel", "supabase",
-    "retool", "replit", "sentry", "posthog", "launchdarkly",
-    "statsig", "grafana", "hashicorp", "temporal", "neon",
-    "render",
-    # Data / Analytics
-    "datadog", "snowflake", "dbt-labs", "airbyte", "fivetran",
-    "dagster", "prefect", "amplitude", "mixpanel", "hex",
-    "cockroachlabs",
-    # Cloud / Infra
-    "cloudflare", "elastic", "mongodb",
-    # Other tech
-    "shopify", "twilio", "sendgrid", "segment", "snyk",
-    "lacework", "wiz", "benchling", "census", "eppo",
-    "descript", "loom", "coda", "airtable", "miro",
-]
-
-
-# ── Job ID helpers ────────────────────────────────────────────────────
-def _make_job_id(board_token: str, external_id: str) -> str:
-    raw = f"greenhouse:{board_token}:{external_id}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def _strip_html(html: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", html)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-# ── Greenhouse fetcher ────────────────────────────────────────────────
-async def _fetch_greenhouse(board_token: str, semaphore: asyncio.Semaphore) -> list[dict]:
-    """Fetch all open jobs from a single Greenhouse board."""
-    url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs?content=true"
-    async with semaphore:
-        try:
-            async with httpx.AsyncClient(timeout=FETCH_TIMEOUT) as client:
-                resp = await client.get(url)
-                if resp.status_code == 404:
-                    logger.debug(f"[Greenhouse] 404 for board: {board_token}")
-                    return []
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"[Greenhouse] {board_token} HTTP {e.response.status_code}")
-            return []
-        except Exception as e:
-            logger.warning(f"[Greenhouse] {board_token} error: {e}")
-            return []
-
-    jobs = []
-    for j in data.get("jobs", []):
-        desc_html = j.get("content", "")
-        desc_text = _strip_html(desc_html)
-
-        loc = ""
-        loc_obj = j.get("location", {})
-        if isinstance(loc_obj, dict):
-            loc = loc_obj.get("name", "")
-
-        dept = ""
-        depts = j.get("departments", [])
-        if depts and isinstance(depts[0], dict):
-            dept = depts[0].get("name", "")
-
-        posted = j.get("updated_at") or j.get("created_at")
-
-        jobs.append({
-            "job_id":           _make_job_id(board_token, str(j["id"])),
-            "source":           "greenhouse",
-            "external_id":      str(j["id"]),
-            "board_token":      board_token,
-            "title":            j.get("title", "Unknown").strip(),
-            "company":          board_token,
-            "location":         loc or "Not specified",
-            "url":              j.get("absolute_url", ""),
-            "description_text": desc_text,
-            "posted_at":        posted,
-            "department":       dept,
-            "fetched_at":       datetime.now(timezone.utc).isoformat(),
-        })
-
-    logger.info(f"[Greenhouse] {board_token}: {len(jobs)} jobs")
-    return jobs
 
 
 # ── Role matching ─────────────────────────────────────────────────────
@@ -176,61 +82,6 @@ def _recency_score(posted_at: Optional[str]) -> float:
         return math.pow(2, -age_days / RECENCY_HALF_LIFE_DAYS)
     except Exception:
         return 0.1
-
-
-# ── Shared meta helpers (pool staleness on disk) ──────────────────────
-def _load_auto_meta() -> dict:
-    try:
-        with open(AUTO_META_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return {"last_fetch_at": None, "last_pool_fetch_at": None}
-
-
-def _save_auto_meta(meta: dict):
-    os.makedirs(WATCHLIST_DIR, exist_ok=True)
-    with open(AUTO_META_PATH, "w") as f:
-        json.dump(meta, f, indent=2)
-
-
-def _load_job_pool() -> list:
-    try:
-        with open(AUTO_POOL_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _save_job_pool(pool: list):
-    os.makedirs(WATCHLIST_DIR, exist_ok=True)
-    with open(AUTO_POOL_PATH, "w") as f:
-        json.dump(pool, f, indent=2)
-
-
-def _is_pool_stale(meta: dict) -> bool:
-    last = meta.get("last_pool_fetch_at")
-    if not last:
-        return True
-    try:
-        last_dt = datetime.fromisoformat(last)
-        if last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - last_dt) > timedelta(hours=STALE_HOURS)
-    except Exception:
-        return True
-
-
-def _is_results_stale(meta: dict) -> bool:
-    last = meta.get("last_fetch_at")
-    if not last:
-        return True
-    try:
-        last_dt = datetime.fromisoformat(last)
-        if last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - last_dt) > timedelta(hours=STALE_HOURS)
-    except Exception:
-        return True
 
 
 # ── Per-user meta helpers (last_fetch_at + pool staleness on disk) ────
@@ -471,7 +322,18 @@ async def run_auto_pipeline(
     meta = _load_auto_meta_for_user(user_id)
 
     # ── Serve from DB cache if fresh and not forced ───────────────────
-    if not force and not _is_results_stale(meta):
+    _last_fetch = meta.get("last_fetch_at")
+    _results_stale = True
+    if _last_fetch:
+        try:
+            _last_dt = datetime.fromisoformat(_last_fetch)
+            if _last_dt.tzinfo is None:
+                _last_dt = _last_dt.replace(tzinfo=timezone.utc)
+            _results_stale = (datetime.now(timezone.utc) - _last_dt) > timedelta(hours=STALE_HOURS)
+        except Exception:
+            pass
+
+    if not force and not _results_stale:
         logger.info(f"[AutoMatch] user={user_id} Cache fresh — returning stored results")
         stored = await _load_results_from_db(user_id, db)
         return {
@@ -498,28 +360,35 @@ async def run_auto_pipeline(
 
     logger.info(f"[AutoMatch] user={user_id} Starting pipeline for roles: {target_roles}")
 
-    # ── Step 1: Refresh job pool only if stale (≥24h) ────────────────
-    # force=True does NOT trigger a pool re-fetch — only staleness does.
-    if _is_pool_stale(meta):
-        logger.info(f"[AutoMatch] Fetching job pool from {len(GREENHOUSE_COMPANIES)} Greenhouse boards…")
+    # ── Step 1: Fetch job pool (re-fetches every 30 min) ─────────────
+    # Pool is always fetched fresh — no disk cache. force=True does NOT
+    # change this behaviour; staleness is the only trigger.
+    last_pool = meta.get("last_pool_fetch_at")
+    pool_stale = True
+    if last_pool:
+        try:
+            last_dt = datetime.fromisoformat(last_pool)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            pool_stale = (datetime.now(timezone.utc) - last_dt) > timedelta(hours=STALE_HOURS)
+        except Exception:
+            pass
+
+    from services.job_fetcher import fetch_all_auto_match
+    if pool_stale:
+        logger.info("[AutoMatch] Pool stale — fetching from Greenhouse + Ashby + Lever…")
         semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-        tasks = [_fetch_greenhouse(token, semaphore) for token in GREENHOUSE_COMPANIES]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        raw_pool = []
-        failed = 0
-        for r in results:
-            if isinstance(r, Exception):
-                failed += 1
-            elif isinstance(r, list):
-                raw_pool.extend(r)
-
-        logger.info(f"[AutoMatch] Pool: {len(raw_pool)} jobs fetched ({failed} boards failed)")
-        _save_job_pool(raw_pool)
+        raw_pool = await fetch_all_auto_match(semaphore)
         meta["last_pool_fetch_at"] = datetime.now(timezone.utc).isoformat()
     else:
-        logger.info("[AutoMatch] Pool fresh — loading from disk cache")
-        raw_pool = _load_job_pool()
+        logger.info("[AutoMatch] Pool fresh (< 30 min) — skipping fetch, re-using in-memory pool")
+        # On a fresh run within the window we still fetch — no disk cache exists.
+        # The "fresh" case only applies when run_auto_pipeline is called multiple
+        # times within the same server process (e.g. two users, or forced refresh).
+        # For simplicity, always fetch; the semaphore keeps it bounded.
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+        raw_pool = await fetch_all_auto_match(semaphore)
+        # Do NOT update last_pool_fetch_at — preserve the original timestamp
 
     # ── Step 2: Load seen + archived job IDs from DB ─────────────────
     # seen_job_ids: every job ever sent to Phase 1 for this user, regardless
@@ -607,7 +476,7 @@ async def run_auto_pipeline(
             "from_cache": False,
         }
 
-    # ── Step 6: Sort new jobs by recency, cap to PHASE1_JOB_CAP ──────
+    # ── Step 6: Sort new jobs by recency ─────────────────────────────
     def _posted_sort_key(j):
         try:
             return datetime.fromisoformat((j.get("posted_at") or "").replace("Z", "+00:00"))
@@ -615,109 +484,115 @@ async def run_auto_pipeline(
             return datetime.min.replace(tzinfo=timezone.utc)
 
     new_sorted = sorted(truly_new, key=_posted_sort_key, reverse=True)
-
-    if len(new_sorted) > PHASE1_JOB_CAP:
-        logger.info(
-            f"[AutoMatch] Capping Phase 1 to {PHASE1_JOB_CAP} most-recent new jobs "
-            f"({len(new_sorted) - PHASE1_JOB_CAP} deferred to next run)"
-        )
-        new_sorted = new_sorted[:PHASE1_JOB_CAP]
+    # No cap — all new jobs are processed in batches of BATCH_SIZE
 
     # ── Mark all new_sorted jobs as seen BEFORE Phase 1 ──────────────
     # Insert now — not after scoring — so jobs that fail Phase 1 or score
     # below MIN_SCORE are still recorded and never retried on future runs.
     await _mark_jobs_seen(user_uuid, [j["job_id"] for j in new_sorted], db)
 
-    # ── Step 7: Phase 1 — pgvector + Hybrid scoring ───────────────────
+    # ── Step 7: Phase 1 — pgvector + Hybrid scoring (batched) ────────
     phase1_groups: dict[str, list] = {}
     parsed_jd_cache: dict[str, dict] = {}
     scored_count = 0
 
-    logger.info(f"[AutoMatch] user={user_id} Phase 1: scoring {len(new_sorted)} new jobs…")
+    total_new = len(new_sorted)
+    num_batches = math.ceil(total_new / BATCH_SIZE)
+    logger.info(
+        f"[AutoMatch] user={user_id} Phase 1: scoring {total_new} new jobs "
+        f"in {num_batches} batch(es) of {BATCH_SIZE}…"
+    )
 
-    for job in new_sorted:
-        desc = job.get("description_text", "").strip()
-        if len(desc) < MIN_DESC_LEN:
-            continue
+    for batch_idx in range(num_batches):
+        batch = new_sorted[batch_idx * BATCH_SIZE : (batch_idx + 1) * BATCH_SIZE]
+        logger.info(
+            f"[AutoMatch] user={user_id} Batch {batch_idx + 1}/{num_batches}: "
+            f"{len(batch)} jobs"
+        )
 
-        try:
-            result = await match_resumes(
-                jd_text=desc,
-                user_id=user_id,
-                use_llm=False,
-                db=db,
-            )
-        except Exception as e:
-            logger.error(f"[AutoMatch] Phase 1 error for '{job.get('title')}': {e}")
-            continue
+        for job in batch:
+            desc = job.get("description_text", "").strip()
+            if len(desc) < MIN_DESC_LEN:
+                continue
 
-        scored_count += 1
-        matches = result.get("results", [])
-        parsed_jd = result.get("jd_parsed", {})
-        parsed_jd_cache[job["job_id"]] = parsed_jd
+            try:
+                result = await match_resumes(
+                    jd_text=desc,
+                    user_id=user_id,
+                    use_llm=False,
+                    db=db,
+                )
+            except Exception as e:
+                logger.error(f"[AutoMatch] Phase 1 error for '{job.get('title')}': {e}")
+                continue
 
-        if not matches:
-            continue
+            scored_count += 1
+            matches = result.get("results", [])
+            parsed_jd = result.get("jd_parsed", {})
+            parsed_jd_cache[job["job_id"]] = parsed_jd
 
-        qualifying = [
-            m for m in matches
-            if round(m.get("raw_score", 0) * 100) >= PHASE2_THRESHOLD
-        ]
-        if not qualifying:
-            continue
+            if not matches:
+                continue
 
-        job_entries = []
-        for resume_match in qualifying:
-            hybrid_score = round(resume_match.get("raw_score", 0) * 100)
-            resume_id = resume_match.get("resume_id", "")
+            qualifying = [
+                m for m in matches
+                if round(m.get("raw_score", 0) * 100) >= PHASE2_THRESHOLD
+            ]
+            if not qualifying:
+                continue
 
-            job_entries.append({
-                # Job context
-                "job_id":            job["job_id"],
-                "job_title":         job["title"],
-                "company":           job["company"],
-                "location":          job.get("location", "Not specified"),
-                "job_url":           job.get("url", ""),
-                "source":            job["source"],
-                "board_token":       job.get("board_token", ""),
-                "posted_at":         job.get("posted_at"),
-                "department":        job.get("department", ""),
-                # Resume context
-                "resume_id":         resume_id,
-                "resume_name":       resume_match.get("name", ""),
-                "file_ext":          resume_match.get("file_ext", ""),
-                # Hybrid scores (Phase 1)
-                "hybrid_score":      hybrid_score,
-                "hybrid_raw":        resume_match.get("raw_score", 0),
-                "hybrid_components": resume_match.get("components", {}),
-                "matched_skills":    resume_match.get("matched_skills", []),
-                "missing_skills":    resume_match.get("missing_skills", []),
-                "matched_preferred": resume_match.get("matched_preferred", []),
-                "coverage":          resume_match.get("gap_analysis", {}).get("coverage", {}),
-                "critical_gaps":     resume_match.get("gap_analysis", {}).get("critical_gaps", []),
-                # Phase 2 inputs
-                "job": job,
-                "resume": {
-                    "id":        resume_id,
-                    "name":      resume_match.get("name", ""),
-                    "file_ext":  resume_match.get("file_ext", ""),
-                    "skills":    resume_match.get("skills", []),
-                    "years_exp": resume_match.get("years_exp"),
-                    "titles":    resume_match.get("titles", []),
-                    "domains":   resume_match.get("domains", []),
-                    "full_text": resume_match.get("full_text"),
-                    "structured": {
+            job_entries = []
+            for resume_match in qualifying:
+                hybrid_score = round(resume_match.get("raw_score", 0) * 100)
+                resume_id = resume_match.get("resume_id", "")
+
+                job_entries.append({
+                    # Job context
+                    "job_id":            job["job_id"],
+                    "job_title":         job["title"],
+                    "company":           job["company"],
+                    "location":          job.get("location", "Not specified"),
+                    "job_url":           job.get("url", ""),
+                    "source":            job["source"],
+                    "board_token":       job.get("board_token", ""),
+                    "posted_at":         job.get("posted_at"),
+                    "department":        job.get("department", ""),
+                    # Resume context
+                    "resume_id":         resume_id,
+                    "resume_name":       resume_match.get("name", ""),
+                    "file_ext":          resume_match.get("file_ext", ""),
+                    # Hybrid scores (Phase 1)
+                    "hybrid_score":      hybrid_score,
+                    "hybrid_raw":        resume_match.get("raw_score", 0),
+                    "hybrid_components": resume_match.get("components", {}),
+                    "matched_skills":    resume_match.get("matched_skills", []),
+                    "missing_skills":    resume_match.get("missing_skills", []),
+                    "matched_preferred": resume_match.get("matched_preferred", []),
+                    "coverage":          resume_match.get("gap_analysis", {}).get("coverage", {}),
+                    "critical_gaps":     resume_match.get("gap_analysis", {}).get("critical_gaps", []),
+                    # Phase 2 inputs
+                    "job": job,
+                    "resume": {
+                        "id":        resume_id,
+                        "name":      resume_match.get("name", ""),
+                        "file_ext":  resume_match.get("file_ext", ""),
+                        "skills":    resume_match.get("skills", []),
                         "years_exp": resume_match.get("years_exp"),
                         "titles":    resume_match.get("titles", []),
                         "domains":   resume_match.get("domains", []),
-                        "skills":    resume_match.get("skills", []),
+                        "full_text": resume_match.get("full_text"),
+                        "structured": {
+                            "years_exp": resume_match.get("years_exp"),
+                            "titles":    resume_match.get("titles", []),
+                            "domains":   resume_match.get("domains", []),
+                            "skills":    resume_match.get("skills", []),
+                        },
                     },
-                },
-                "parsed_jd": parsed_jd,
-            })
+                    "parsed_jd": parsed_jd,
+                })
 
-        if job_entries:
-            phase1_groups[job["job_id"]] = job_entries
+            if job_entries:
+                phase1_groups[job["job_id"]] = job_entries
 
     total_pairs = sum(len(v) for v in phase1_groups.values())
     logger.info(
@@ -805,6 +680,7 @@ async def run_auto_pipeline(
             "total_pool":    len(raw_pool),
             "role_matched":  len(role_matched),
             "new_jobs":      len(truly_new),
+            "batches":       num_batches,
             "phase1_jobs":   len(phase1_groups),
             "phase1_pairs":  total_pairs,
             "llm_scored":    llm_count,

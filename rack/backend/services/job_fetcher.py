@@ -9,6 +9,7 @@ Fetches jobs from:
 All results normalized to a common JobListing schema.
 """
 
+import asyncio
 import logging
 import httpx
 import hashlib
@@ -20,6 +21,50 @@ logger = logging.getLogger(__name__)
 # ── Timeout & limits ────────────────────────────────────────────────
 FETCH_TIMEOUT = 15.0  # seconds per API call
 MAX_JOBS_PER_SOURCE = 100  # cap per company/source to avoid huge payloads
+
+# ── Company lists — imported by auto_match.py ───────────────────────
+GREENHOUSE_COMPANIES = [
+    # AI / ML
+    "anthropic", "cohere", "deepgram", "assemblyai", "elevenlabs",
+    "runwayml", "adept", "cognition", "togetherai", "anyscale",
+    "modal", "weightsandbiases", "pinecone", "weaviate", "langchain",
+    # Fintech
+    "stripe", "ramp", "brex", "plaid", "coinbase",
+    "robinhood", "rippling", "mercury", "chime", "marqeta",
+    # DevTools / Productivity
+    "figma", "notion", "vercel", "supabase",
+    "retool", "replit", "sentry", "posthog", "launchdarkly",
+    "statsig", "grafana", "hashicorp", "temporal", "neon", "render",
+    # Data / Analytics
+    "datadog", "snowflake", "dbt-labs", "airbyte", "fivetran",
+    "dagster", "prefect", "amplitude", "mixpanel", "hex",
+    "cockroachlabs",
+    # Cloud / Infra
+    "cloudflare", "elastic", "mongodb",
+    # Other tech
+    "shopify", "twilio", "snyk", "lacework", "wiz",
+    "benchling", "census", "eppo", "descript", "coda", "airtable", "miro",
+]
+
+ASHBY_COMPANIES = [
+    # AI / ML — most live here
+    "openai", "perplexity", "mistral",
+    "linear", "arc",
+    "together", "groq", "cartesia", "hedra",
+    "sierra", "mem", "dust", "fixie",
+    "coframe", "ema", "baseten",
+    "vectara", "trieve", "contextual",
+    # Infra / DevTools
+    "turso", "trigger", "inngest", "depot",
+    "zed", "highlight",
+    # Fintech
+    "mercury", "increase", "column",
+]
+
+LEVER_COMPANIES = [
+    "netflix", "reddit", "lyft", "affirm",
+    "duolingo", "eventbrite", "thumbtack",
+]
 
 
 # ── Normalized job schema ───────────────────────────────────────────
@@ -242,6 +287,106 @@ async def fetch_jobs_for_company(company: str, source: str) -> list[dict]:
     else:
         logger.warning(f"Unknown source: {source}")
         return []
+
+
+# ── Ashby ───────────────────────────────────────────────────────────
+async def fetch_ashby(slug: str) -> list[dict]:
+    """
+    Fetch jobs from Ashby Job Board API.
+    GET https://api.ashbyhq.com/posting-api/job-board/{slug}
+    Returns {"jobPostings": [...]}
+
+    slug examples: openai, perplexity, linear, groq
+    """
+    url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
+    logger.info(f"[Ashby] Fetching jobs from: {slug}")
+
+    try:
+        async with httpx.AsyncClient(timeout=FETCH_TIMEOUT) as client:
+            resp = await client.get(url)
+            if resp.status_code == 404:
+                logger.debug(f"[Ashby] 404 for board: {slug}")
+                return []
+            resp.raise_for_status()
+            data = resp.json()
+
+        jobs_raw = data.get("jobPostings", [])[:MAX_JOBS_PER_SOURCE]
+        jobs = []
+
+        for j in jobs_raw:
+            # Location: Ashby has locationName at top level
+            loc = j.get("locationName", "") or j.get("location", "")
+
+            # Department
+            dept = j.get("departmentName", "")
+
+            # Description: Ashby provides descriptionHtml and descriptionPlain
+            desc_html = j.get("descriptionHtml", "")
+            desc_text = j.get("descriptionPlain", "")
+
+            # Posted date: publishedAt is ISO string
+            posted = j.get("publishedAt") or j.get("updatedAt")
+
+            # Apply URL
+            url_apply = j.get("jobUrl", "") or j.get("applyUrl", "")
+
+            jobs.append(_normalize_job(
+                source="ashby",
+                external_id=j.get("id", j.get("jobId", "")),
+                title=j.get("title", "Unknown"),
+                company=slug,
+                location=loc,
+                url=url_apply,
+                description_html=desc_html,
+                description_text=desc_text,
+                posted_at=posted,
+                department=dept,
+            ))
+
+        logger.info(f"[Ashby] {slug}: {len(jobs)} jobs fetched")
+        return jobs
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[Ashby] {slug} HTTP {e.response.status_code}: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"[Ashby] {slug} error: {e}")
+        return []
+
+
+# ── Unified auto-match fetch ─────────────────────────────────────────
+async def fetch_all_auto_match(semaphore: asyncio.Semaphore) -> list[dict]:
+    """
+    Fetch all jobs across Greenhouse + Ashby + Lever for the auto-match pipeline.
+    Called by auto_match.py — replaces the old inline _fetch_greenhouse() loop.
+
+    Returns flat list of all normalized jobs.
+    """
+    async def _guarded(coro):
+        async with semaphore:
+            return await coro
+
+    tasks = (
+        [_guarded(fetch_greenhouse(token)) for token in GREENHOUSE_COMPANIES]
+        + [_guarded(fetch_ashby(slug))     for slug   in ASHBY_COMPANIES]
+        + [_guarded(fetch_lever(company))  for company in LEVER_COMPANIES]
+    )
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_jobs = []
+    total_companies = len(GREENHOUSE_COMPANIES) + len(ASHBY_COMPANIES) + len(LEVER_COMPANIES)
+    failed = 0
+    for r in results:
+        if isinstance(r, Exception):
+            failed += 1
+        elif isinstance(r, list):
+            all_jobs.extend(r)
+
+    logger.info(
+        f"[AutoMatch] Pool fetch complete: {len(all_jobs)} jobs from "
+        f"{total_companies - failed}/{total_companies} sources ({failed} failed)"
+    )
+    return all_jobs
 
 
 async def fetch_all_watchlist(watchlist_entries: list[dict]) -> list[dict]:
