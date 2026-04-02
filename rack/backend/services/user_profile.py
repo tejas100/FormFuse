@@ -204,7 +204,21 @@ US_STATE_ABBREVS: set[str] = {
     "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy", "dc",
 }
 
-# US city names that appear in job locations without a country label
+US_STATE_NAMES: dict[str, str] = {
+    "alabama": "al", "alaska": "ak", "arizona": "az", "arkansas": "ar",
+    "california": "ca", "colorado": "co", "connecticut": "ct", "delaware": "de",
+    "florida": "fl", "georgia": "ga", "hawaii": "hi", "idaho": "id",
+    "illinois": "il", "indiana": "in", "iowa": "ia", "kansas": "ks",
+    "kentucky": "ky", "louisiana": "la", "maine": "me", "maryland": "md",
+    "massachusetts": "ma", "michigan": "mi", "minnesota": "mn", "mississippi": "ms",
+    "missouri": "mo", "montana": "mt", "nebraska": "ne", "nevada": "nv",
+    "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm", "new york": "ny",
+    "north carolina": "nc", "north dakota": "nd", "ohio": "oh", "oklahoma": "ok",
+    "oregon": "or", "pennsylvania": "pa", "rhode island": "ri", "south carolina": "sc",
+    "south dakota": "sd", "tennessee": "tn", "texas": "tx", "utah": "ut",
+    "vermont": "vt", "virginia": "va", "washington": "wa", "west virginia": "wv",
+    "wisconsin": "wi", "wyoming": "wy", "district of columbia": "dc",
+}
 US_CITY_SIGNALS: set[str] = {
     "san francisco", "new york", "new york city", "nyc", "seattle",
     "austin", "boston", "los angeles", "chicago", "denver", "atlanta",
@@ -335,7 +349,21 @@ def location_matches(job_location: str, preferred_location: str) -> bool:
         if pref_country in job_loc:
             return True
 
-    # ── 3. State/city pref: "San Francisco, CA" or "CA" ────────────
+    # ── 3. Full US state name as pref: "Texas", "California" ────────
+    # User typed "Texas" → treat as "match any job with TX or Texas in location"
+    pref_as_state_abbrev = US_STATE_NAMES.get(pref_loc)
+    if pref_as_state_abbrev:
+        if f", {pref_as_state_abbrev}" in job_loc_stripped:
+            return True
+        if pref_loc in job_loc:  # "texas" in job location string
+            return True
+        # Also treat it as a US job (implied country = US)
+        if any(f", {st}" in job_loc_stripped for st in US_STATE_ABBREVS):
+            return True
+        if any(s in job_loc for s in ("usa", "u.s.", "united states", "u.s.a")):
+            return True
+
+    # ── 4. State/city pref: "San Francisco, CA" or bare "CA" ────────
     # Already handled by direct substring above for full city names.
     # Handle bare state abbrev as pref: "CA" → match jobs with ", CA"
     if len(pref_loc) == 2 and pref_loc in US_STATE_ABBREVS:

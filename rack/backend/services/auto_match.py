@@ -45,27 +45,49 @@ SCORE_WEIGHT           = 0.85
 RECENCY_WEIGHT         = 0.15
 RECENCY_HALF_LIFE_DAYS = 7
 MIN_SCORE              = 30
-PHASE2_THRESHOLD       = 40
-BATCH_SIZE             = 50   # Phase 1 batch size — replaces removed PHASE1_JOB_CAP
+PHASE2_THRESHOLD       = 55   # Raised from 40 — cuts LLM calls ~60%. Hybrid <55% almost always confirms Weak/Partial Fit anyway.
+BATCH_SIZE             = 50
 MIN_DESC_LEN           = 100
-STALE_HOURS            = 0.5  # Pool re-fetched every 30 min
+STALE_HOURS            = 0.5
 MAX_CONCURRENT         = 15
-ROLE_MATCH_RATIO       = 0.6
+ROLE_MATCH_RATIO       = 0.65  # Raised from 0.60 — tighter title match, fewer false positives like DBRE/Trust&Safety
 
 
 # ── Role matching ─────────────────────────────────────────────────────
-def _role_matches_title(title: str, target_roles: list[str]) -> bool:
+def _role_matches_title(title: str, target_roles: list[str], role_aliases: dict | None = None) -> bool:
+    """
+    Returns True if the job title matches any target role or any of its aliases.
+
+    Matching order:
+      1. Word-overlap against each target role (e.g. "AI Engineer" matches "Senior AI Engineer")
+      2. Word-overlap against every alias for that role (e.g. "machine learning engineer" alias
+         matches "Principal Machine Learning Engineer")
+
+    role_aliases: {"AI Engineer": ["machine learning engineer", "mlops engineer", ...], ...}
+    """
     title_words = set(re.split(r"[\s\-/,]+", title.lower()))
     title_words = {w for w in title_words if len(w) > 1}
+    aliases = role_aliases or {}
 
     for role in target_roles:
+        # Primary role word-overlap
         role_words = set(re.split(r"[\s\-/,]+", role.lower()))
         role_words = {w for w in role_words if len(w) > 1}
-        if not role_words:
-            continue
-        overlap = len(title_words & role_words) / len(role_words)
-        if overlap >= ROLE_MATCH_RATIO:
-            return True
+        if role_words:
+            overlap = len(title_words & role_words) / len(role_words)
+            if overlap >= ROLE_MATCH_RATIO:
+                return True
+
+        # Alias word-overlap — uses every alias generated for this role
+        for alias in aliases.get(role, []):
+            alias_words = set(re.split(r"[\s\-/,]+", alias.lower()))
+            alias_words = {w for w in alias_words if len(w) > 1}
+            if not alias_words:
+                continue
+            overlap = len(title_words & alias_words) / len(alias_words)
+            if overlap >= ROLE_MATCH_RATIO:
+                return True
+
     return False
 
 
@@ -418,9 +440,13 @@ async def run_auto_pipeline(
     )
 
     # ── Step 3: Role filter ───────────────────────────────────────────
+    # Pull aliases from profile so _role_matches_title can use them.
+    # role_aliases: {"AI Engineer": ["machine learning engineer", ...], ...}
+    role_aliases: dict = profile.get("role_aliases", {})
+
     role_matched = [
         j for j in raw_pool
-        if _role_matches_title(j["title"], target_roles)
+        if _role_matches_title(j["title"], target_roles, role_aliases)
     ]
     logger.info(
         f"[AutoMatch] user={user_id} {len(role_matched)} jobs matched target roles "
@@ -428,14 +454,23 @@ async def run_auto_pipeline(
     )
 
     # ── Step 4: Location filter ───────────────────────────────────────
+    # Soft-fail: jobs with no/unknown location are passed through rather than
+    # dropped — they'll be scored normally and the LLM description will reveal
+    # whether the role is actually based somewhere incompatible.
     preferred_locations = profile.get("preferred_locations", [])
     if preferred_locations:
         from services.user_profile import matches_any_preferred_location
         before = len(role_matched)
-        role_matched = [
-            j for j in role_matched
-            if matches_any_preferred_location(j.get("location", ""), preferred_locations)
-        ]
+        location_filtered = []
+        for j in role_matched:
+            loc = j.get("location", "").strip()
+            # Empty / unspecified location → soft pass (don't drop blindly)
+            if not loc or loc.lower() in ("not specified", "n/a", "tbd", ""):
+                location_filtered.append(j)
+                continue
+            if matches_any_preferred_location(loc, preferred_locations):
+                location_filtered.append(j)
+        role_matched = location_filtered
         logger.info(
             f"[AutoMatch] user={user_id} {len(role_matched)} jobs after location filter "
             f"({before - len(role_matched)} excluded)"
@@ -491,30 +526,32 @@ async def run_auto_pipeline(
     # below MIN_SCORE are still recorded and never retried on future runs.
     await _mark_jobs_seen(user_uuid, [j["job_id"] for j in new_sorted], db)
 
-    # ── Step 7: Phase 1 — pgvector + Hybrid scoring (batched) ────────
+    # ── Step 7: Phase 1 — pgvector + Hybrid scoring (concurrent) ───────
+    # All jobs scored concurrently via asyncio.gather, throttled by semaphore.
+    # PHASE1_CONCURRENCY controls max simultaneous pgvector + embed calls.
+    # 20 is safe for Supabase pooler; raise to 30 if you upgrade connection limits.
+    PHASE1_CONCURRENCY = 20
+    phase1_sem = asyncio.Semaphore(PHASE1_CONCURRENCY)
+
     phase1_groups: dict[str, list] = {}
     parsed_jd_cache: dict[str, dict] = {}
     scored_count = 0
+    _score_lock = asyncio.Lock()  # protects shared dicts from concurrent writes
 
     total_new = len(new_sorted)
-    num_batches = math.ceil(total_new / BATCH_SIZE)
+    num_batches = math.ceil(total_new / BATCH_SIZE)  # kept for stats only
     logger.info(
         f"[AutoMatch] user={user_id} Phase 1: scoring {total_new} new jobs "
-        f"in {num_batches} batch(es) of {BATCH_SIZE}…"
+        f"concurrently (max {PHASE1_CONCURRENCY} at a time)…"
     )
 
-    for batch_idx in range(num_batches):
-        batch = new_sorted[batch_idx * BATCH_SIZE : (batch_idx + 1) * BATCH_SIZE]
-        logger.info(
-            f"[AutoMatch] user={user_id} Batch {batch_idx + 1}/{num_batches}: "
-            f"{len(batch)} jobs"
-        )
+    async def _score_one_job(job: dict) -> None:
+        nonlocal scored_count
+        desc = job.get("description_text", "").strip()
+        if len(desc) < MIN_DESC_LEN:
+            return
 
-        for job in batch:
-            desc = job.get("description_text", "").strip()
-            if len(desc) < MIN_DESC_LEN:
-                continue
-
+        async with phase1_sem:
             try:
                 result = await match_resumes(
                     jd_text=desc,
@@ -524,75 +561,73 @@ async def run_auto_pipeline(
                 )
             except Exception as e:
                 logger.error(f"[AutoMatch] Phase 1 error for '{job.get('title')}': {e}")
-                continue
+                return
 
-            scored_count += 1
-            matches = result.get("results", [])
-            parsed_jd = result.get("jd_parsed", {})
-            parsed_jd_cache[job["job_id"]] = parsed_jd
+        matches   = result.get("results", [])
+        parsed_jd = result.get("jd_parsed", {})
 
-            if not matches:
-                continue
+        qualifying = [
+            m for m in matches
+            if round(m.get("raw_score", 0) * 100) >= PHASE2_THRESHOLD
+        ]
 
-            qualifying = [
-                m for m in matches
-                if round(m.get("raw_score", 0) * 100) >= PHASE2_THRESHOLD
-            ]
-            if not qualifying:
-                continue
-
-            job_entries = []
-            for resume_match in qualifying:
-                hybrid_score = round(resume_match.get("raw_score", 0) * 100)
-                resume_id = resume_match.get("resume_id", "")
-
-                job_entries.append({
-                    # Job context
-                    "job_id":            job["job_id"],
-                    "job_title":         job["title"],
-                    "company":           job["company"],
-                    "location":          job.get("location", "Not specified"),
-                    "job_url":           job.get("url", ""),
-                    "source":            job["source"],
-                    "board_token":       job.get("board_token", ""),
-                    "posted_at":         job.get("posted_at"),
-                    "department":        job.get("department", ""),
-                    # Resume context
-                    "resume_id":         resume_id,
-                    "resume_name":       resume_match.get("name", ""),
-                    "file_ext":          resume_match.get("file_ext", ""),
-                    # Hybrid scores (Phase 1)
-                    "hybrid_score":      hybrid_score,
-                    "hybrid_raw":        resume_match.get("raw_score", 0),
-                    "hybrid_components": resume_match.get("components", {}),
-                    "matched_skills":    resume_match.get("matched_skills", []),
-                    "missing_skills":    resume_match.get("missing_skills", []),
-                    "matched_preferred": resume_match.get("matched_preferred", []),
-                    "coverage":          resume_match.get("gap_analysis", {}).get("coverage", {}),
-                    "critical_gaps":     resume_match.get("gap_analysis", {}).get("critical_gaps", []),
-                    # Phase 2 inputs
-                    "job": job,
-                    "resume": {
-                        "id":        resume_id,
-                        "name":      resume_match.get("name", ""),
-                        "file_ext":  resume_match.get("file_ext", ""),
-                        "skills":    resume_match.get("skills", []),
+        job_entries = []
+        for resume_match in qualifying:
+            hybrid_score = round(resume_match.get("raw_score", 0) * 100)
+            resume_id    = resume_match.get("resume_id", "")
+            job_entries.append({
+                # Job context
+                "job_id":            job["job_id"],
+                "job_title":         job["title"],
+                "company":           job["company"],
+                "location":          job.get("location", "Not specified"),
+                "job_url":           job.get("url", ""),
+                "source":            job["source"],
+                "board_token":       job.get("board_token", ""),
+                "posted_at":         job.get("posted_at"),
+                "department":        job.get("department", ""),
+                # Resume context
+                "resume_id":         resume_id,
+                "resume_name":       resume_match.get("name", ""),
+                "file_ext":          resume_match.get("file_ext", ""),
+                # Hybrid scores (Phase 1)
+                "hybrid_score":      hybrid_score,
+                "hybrid_raw":        resume_match.get("raw_score", 0),
+                "hybrid_components": resume_match.get("components", {}),
+                "matched_skills":    resume_match.get("matched_skills", []),
+                "missing_skills":    resume_match.get("missing_skills", []),
+                "matched_preferred": resume_match.get("matched_preferred", []),
+                "coverage":          resume_match.get("gap_analysis", {}).get("coverage", {}),
+                "critical_gaps":     resume_match.get("gap_analysis", {}).get("critical_gaps", []),
+                # Phase 2 inputs
+                "job": job,
+                "resume": {
+                    "id":        resume_id,
+                    "name":      resume_match.get("name", ""),
+                    "file_ext":  resume_match.get("file_ext", ""),
+                    "skills":    resume_match.get("skills", []),
+                    "years_exp": resume_match.get("years_exp"),
+                    "titles":    resume_match.get("titles", []),
+                    "domains":   resume_match.get("domains", []),
+                    "full_text": resume_match.get("full_text"),
+                    "structured": {
                         "years_exp": resume_match.get("years_exp"),
                         "titles":    resume_match.get("titles", []),
                         "domains":   resume_match.get("domains", []),
-                        "full_text": resume_match.get("full_text"),
-                        "structured": {
-                            "years_exp": resume_match.get("years_exp"),
-                            "titles":    resume_match.get("titles", []),
-                            "domains":   resume_match.get("domains", []),
-                            "skills":    resume_match.get("skills", []),
-                        },
+                        "skills":    resume_match.get("skills", []),
                     },
-                    "parsed_jd": parsed_jd,
-                })
+                },
+                "parsed_jd": parsed_jd,
+            })
 
+        async with _score_lock:
+            scored_count += 1
+            parsed_jd_cache[job["job_id"]] = parsed_jd
             if job_entries:
                 phase1_groups[job["job_id"]] = job_entries
+
+    # Fire all jobs concurrently — semaphore limits actual parallelism
+    await asyncio.gather(*[_score_one_job(job) for job in new_sorted])
 
     total_pairs = sum(len(v) for v in phase1_groups.values())
     logger.info(
@@ -601,8 +636,20 @@ async def run_auto_pipeline(
     )
 
     # ── Step 8: Phase 2 — LLM deep scoring ───────────────────────────
-    logger.info(f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_groups)} jobs…")
-    llm_scored_groups = await llm_score_jobs_grouped(phase1_groups)
+    # Before sending to LLM, cap each job to its top 3 resumes by hybrid score.
+    # Step 9 picks the single best resume per job anyway — scoring resumes 4 & 5
+    # wastes tokens and latency without changing the outcome.
+    MAX_RESUMES_PER_JOB = 3
+    phase1_groups_trimmed = {
+        job_id: sorted(entries, key=lambda e: e.get("hybrid_score", 0), reverse=True)[:MAX_RESUMES_PER_JOB]
+        for job_id, entries in phase1_groups.items()
+    }
+    trimmed_pairs = sum(len(v) for v in phase1_groups_trimmed.values())
+    logger.info(
+        f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_groups_trimmed)} jobs "
+        f"({trimmed_pairs} pairs after capping to top {MAX_RESUMES_PER_JOB} resumes/job)…"
+    )
+    llm_scored_groups = await llm_score_jobs_grouped(phase1_groups_trimmed)
 
     # ── Step 9: Per job, pick best LLM-scored resume ──────────────────
     by_job: dict[str, dict] = {}

@@ -20,50 +20,232 @@ logger = logging.getLogger(__name__)
 
 # ── Timeout & limits ────────────────────────────────────────────────
 FETCH_TIMEOUT = 15.0  # seconds per API call
-MAX_JOBS_PER_SOURCE = 100  # cap per company/source to avoid huge payloads
+# No MAX_JOBS_PER_SOURCE cap — fetch all jobs a company posts.
+# The role filter in auto_match.py handles reduction downstream.
 
 # ── Company lists — imported by auto_match.py ───────────────────────
 GREENHOUSE_COMPANIES = [
-    # AI / ML
-    "anthropic", "cohere", "deepgram", "assemblyai", "elevenlabs",
-    "runwayml", "adept", "cognition", "togetherai", "anyscale",
-    "modal", "weightsandbiases", "pinecone", "weaviate", "langchain",
-    # Fintech
-    "stripe", "ramp", "brex", "plaid", "coinbase",
-    "robinhood", "rippling", "mercury", "chime", "marqeta",
-    # DevTools / Productivity
-    "figma", "notion", "vercel", "supabase",
-    "retool", "replit", "sentry", "posthog", "launchdarkly",
-    "statsig", "grafana", "hashicorp", "temporal", "neon", "render",
-    # Data / Analytics
-    "datadog", "snowflake", "dbt-labs", "airbyte", "fivetran",
-    "dagster", "prefect", "amplitude", "mixpanel", "hex",
+    # ── AI / ML ──────────────────────────────────────────────────────
+    "anthropic",
+    "cohere",
+    "deepgram",
+    "assemblyai",
+    "elevenlabs",
+    "runwayml",           # Runway
+    "adept",
+    "cognition",
+    "togetherai",
+    "anyscale",
+    "modal",
+    "weightsandbiases",
+    "pinecone",
+    "weaviate",
+    "langchain",
+    "replicate",
+    "scaleai",            # Scale AI
+    "characterai",        # Character.AI
+    "lambdalabs",         # Lambda Labs
+    "roboflow",
+    "octoai",             # OctoAI
+    "pachyderm",
+    "unstructured",       # Unstructured.io
+    "nanonets",
+    "lightning-ai",       # Lightning AI
+    "physicsxai",         # PhysicsX
+    "profluent",
+    "abridgehealth",      # Abridge
+    "allenai",            # Allen Institute for AI (ai2)
+
+    # ── Fintech ───────────────────────────────────────────────────────
+    "stripe",
+    "ramp",
+    "brex",
+    "plaid",
+    "coinbase",
+    "robinhood",
+    "rippling",
+    "mercury",
+    "chime",
+    "marqeta",
+    "deel",
+    "gusto",
+    "checkr",
+    "toast",
+    "affirm",
+    "upstart",
+    "chainalysis",
+    "trmlabs",            # TRM Labs
+    "fireblocks",
+    "alchemy",            # Alchemy (Web3)
+    "current",            # Current (neobank)
+    "persona",            # Persona (identity)
+    "clerk",              # Clerk (auth infra)
+    "zip",                # Zip (procurement)
+
+    # ── DevTools / Productivity ───────────────────────────────────────
+    "figma",
+    "notion",
+    "vercel",
+    "supabase",
+    "retool",
+    "replit",
+    "sentry",
+    "posthog",
+    "launchdarkly",
+    "statsig",
+    "grafana",
+    "hashicorp",
+    "temporal",
+    "neon",
+    "render",
+    "codeium",            # Codeium
+    "merge",              # Merge (unified API)
+    "stainless",          # Stainless (SDK generation)
+    "postman",
+    "circleci",
+    "gitlab",
+    "docker",
+    "zapier",
+    "tailscale",
+    "vanta",
+    "tines",
+    "semgrep",
+    "clerk",
+    "airbyte",
+    "glean",              # Glean (enterprise search)
+    "harvey",             # Harvey (legal AI)
+    "hebbia",             # Hebbia
+    "airtable",
+    "miro",
+    "coda",
+    "descript",
+    "taskrabbit",
+    "dropbox",
+    "instacart",
+    "pinterest",
+    "canva",
+    "qualtrics",
+
+    # ── Data / Analytics ─────────────────────────────────────────────
+    "datadog",
+    "snowflake",
+    "dbt-labs",
+    "airbyte",
+    "fivetran",
+    "dagster",
+    "prefect",
+    "amplitude",
+    "mixpanel",
+    "hex",
     "cockroachlabs",
-    # Cloud / Infra
-    "cloudflare", "elastic", "mongodb",
-    # Other tech
-    "shopify", "twilio", "snyk", "lacework", "wiz",
-    "benchling", "census", "eppo", "descript", "coda", "airtable", "miro",
+    "clickhouse",         # ClickHouse
+    "confluent",
+    "databricks",
+    "motherduck",         # MotherDuck
+    "tecton",
+    "eppo",
+    "census",
+    "benchling",
+
+    # ── Cloud / Infra / Security ──────────────────────────────────────
+    "cloudflare",
+    "elastic",
+    "mongodb",
+    "redis",              # Redis Labs
+    "fastly",
+    "snyk",
+    "wiz",
+    "crowdstrike",
+    "sentinelone",
+    "lacework",
+    "abnormalsecurity",   # Abnormal Security
+    "okta",
+    "1password",
+    "samsara",
+
+    # ── Big Tech adjacent / Consumer Tech ────────────────────────────
+    "shopify",
+    "twilio",
+    "segment",
+    "braze",
+    "intercom",
+    "hubspot",
+    "airbnb",
+    "lyft",
+    "reddit",
+    "ziprecruiter",
+    "headway",            # Headway (mental health)
+    "oscar",              # Oscar Health
+    "ro",                 # Ro (telehealth)
+    "hinge-health",       # Hinge Health
+
+    # ── Defense / Deep Tech ───────────────────────────────────────────
+    "anduril",
+    "applied-intuition",  # Applied Intuition
+    "palantir",
+    "relativityspace",    # Relativity Space
+    "planetlabs",         # Planet Labs
+    "aurora",             # Aurora Innovation
+    "zipline",
+    "samsara",
+    "motive",             # Motive (fleet mgmt)
+    "jumio",
+
+    # ── Other High-Signal Tech ────────────────────────────────────────
+    "liftoff",
+    "maintainx",
+    "metropolis",
+    "traba",              # Traba (labor marketplace)
+    "rogo",               # Rogo
 ]
 
 ASHBY_COMPANIES = [
-    # AI / ML — most live here
-    "openai", "perplexity", "mistral",
-    "linear", "arc",
-    "together", "groq", "cartesia", "hedra",
-    "sierra", "mem", "dust", "fixie",
-    "coframe", "ema", "baseten",
-    "vectara", "trieve", "contextual",
-    # Infra / DevTools
-    "turso", "trigger", "inngest", "depot",
-    "zed", "highlight",
-    # Fintech
-    "mercury", "increase", "column",
+    # ── AI / ML — most frontier AI labs use Ashby ─────────────────────
+    "openai",
+    "perplexity",
+    "mistral",
+    "groq",
+    "cartesia",
+    "hedra",
+    "sierra",
+    "mem",
+    "dust",
+    "fixie",
+    "coframe",
+    "ema",
+    "baseten",
+    "vectara",
+    "trieve",
+    "contextual",
+    "heygen",             # HeyGen
+    "synthesia",          # Synthesia
+
+    # ── DevTools / Infra ─────────────────────────────────────────────
+    "linear",
+    "arc",                # Arc (browser)
+    "turso",
+    "trigger",
+    "inngest",
+    "depot",
+    "zed",
+    "highlight",
+    "runpod",             # RunPod
+
+    # ── Fintech ───────────────────────────────────────────────────────
+    "increase",
+    "column",
 ]
 
 LEVER_COMPANIES = [
-    "netflix", "reddit", "lyft", "affirm",
-    "duolingo", "eventbrite", "thumbtack",
+    "netflix",
+    "reddit",
+    "lyft",
+    "affirm",
+    "duolingo",
+    "eventbrite",
+    "thumbtack",
+    "flexport",
+    "samsara",
 ]
 
 
@@ -128,7 +310,7 @@ async def fetch_greenhouse(board_token: str) -> list[dict]:
             resp.raise_for_status()
             data = resp.json()
 
-        jobs_raw = data.get("jobs", [])[:MAX_JOBS_PER_SOURCE]
+        jobs_raw = data.get("jobs", [])
         jobs = []
 
         for j in jobs_raw:
@@ -186,7 +368,6 @@ async def fetch_lever(company: str) -> list[dict]:
             logger.warning(f"[Lever] {company}: unexpected response format")
             return []
 
-        jobs_raw = jobs_raw[:MAX_JOBS_PER_SOURCE]
         jobs = []
 
         for j in jobs_raw:
@@ -241,7 +422,7 @@ async def fetch_remotive(category: str = "", search: str = "", limit: int = 50) 
     if search:
         params["search"] = search
     if limit:
-        params["limit"] = min(limit, MAX_JOBS_PER_SOURCE)
+        params["limit"] = limit
 
     url = "https://remotive.com/api/remote-jobs"
     logger.info(f"[Remotive] Fetching jobs (category={category}, search={search})")
@@ -252,7 +433,7 @@ async def fetch_remotive(category: str = "", search: str = "", limit: int = 50) 
             resp.raise_for_status()
             data = resp.json()
 
-        jobs_raw = data.get("jobs", [])[:MAX_JOBS_PER_SOURCE]
+        jobs_raw = data.get("jobs", [])
         jobs = []
 
         for j in jobs_raw:
@@ -310,7 +491,7 @@ async def fetch_ashby(slug: str) -> list[dict]:
             resp.raise_for_status()
             data = resp.json()
 
-        jobs_raw = data.get("jobPostings", [])[:MAX_JOBS_PER_SOURCE]
+        jobs_raw = data.get("jobPostings", [])
         jobs = []
 
         for j in jobs_raw:
