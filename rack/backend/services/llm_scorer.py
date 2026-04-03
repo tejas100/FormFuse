@@ -85,11 +85,14 @@ def _build_jd_summary(job: Dict, parsed_jd: Dict) -> str:
     if domains:
         parts.append(f"DOMAINS: {', '.join(domains)}")
 
-    # Pull key sentences from raw JD description (first 600 chars of requirements section)
+    # Pull key sentences from raw JD description — requirements section
     raw_desc = job.get("description_text", "")
     if raw_desc:
-        # Extract the most signal-dense part — first 500 chars after stripping boilerplate
-        condensed = _extract_key_sentences(raw_desc, max_chars=500)
+        # 1500 chars covers the full requirements section of a typical JD (~375 tokens).
+        # 500 was too tight — compliance/domain-specific JDs (fintech, regulated env)
+        # have dense requirements that were being truncated, causing the LLM to miss
+        # critical domain signals (regulatory, audit-readiness, agent orchestration, etc.)
+        condensed = _extract_key_sentences(raw_desc, max_chars=1500)
         if condensed:
             parts.append(f"KEY REQUIREMENTS EXCERPT:\n{condensed}")
 
@@ -155,9 +158,13 @@ def _build_resume_summary(resume: Dict) -> str:
     # ── Path 1: full_text available (post-migration upload) ───────────────────
     full_text = resume.get("full_text")
     if full_text and full_text.strip():
-        # Cap at 3000 chars — ~750 tokens, covers any 1-page resume fully,
-        # most of a 2-pager. Truncate at a newline boundary when possible.
-        cap = 3000
+        # Cap at 6000 chars — ~1500 tokens, covers a dense 2-page resume fully.
+        # Sending the full resume text gives the LLM complete context to make
+        # correct comparisons — truncating at 3000 was cutting off critical
+        # differentiating content (agent workflows, evaluation pipelines, etc.)
+        # on longer AI/ML resumes, causing scoring errors.
+        cap = 6000
+        logger.debug(f"[LLMScorer] full_text cap={cap}, actual_len={len(full_text)}")
         if len(full_text) > cap:
             truncated = full_text[:cap]
             last_newline = truncated.rfind("\n")
@@ -627,9 +634,9 @@ async def _score_job_multi_resume(
     )
 
     # Each resume's JSON response is ~150–200 tokens in practice.
-    # 600 * N was overallocating — OpenAI latency scales with max_tokens,
-    # so over-allocating directly inflates wall-clock time per call.
-    # Cap at 1500 (enough for 5 resumes with headroom).
+    # Resume full_text is now capped at 6000 chars (~1500 tokens each) — the
+    # input prompt is larger, but the output (scored JSON) is the same size.
+    # Response token budget unchanged: 250 * N + 200, capped at 1500.
     max_tokens = min(250 * len(resume_entries) + 200, 1500)
 
     async with semaphore:
