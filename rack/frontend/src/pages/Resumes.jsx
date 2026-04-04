@@ -238,6 +238,50 @@ export default function Resumes() {
     }
   }
 
+  // ── Download ─────────────────────────────────────────────────────────────────
+
+  const handleDownload = async (resume) => {
+    try {
+      if (isAuthed) {
+        const headers = await getAuthHeaders()
+        const res = await fetch(`${API_BASE}/api/resumes/${resume.id}/file`, { headers })
+        if (!res.ok) throw new Error('Could not get file URL')
+        const data = await res.json()
+        // Blob fetch — signed URL never hits the address bar
+        const fileRes = await fetch(data.url)
+        const blob = await fileRes.blob()
+        const objectUrl = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = objectUrl
+        link.download = resume.name || 'resume'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 10000)
+      } else {
+        // Anonymous: reconstruct from stored base64
+        if (!resume.fileBase64) {
+          showToast('File unavailable for download.', 'error')
+          return
+        }
+        if (!blobUrlsRef.current[resume.id]) {
+          blobUrlsRef.current[resume.id] = base64ToBlobUrl(
+            resume.fileBase64,
+            resume.fileType || 'application/pdf'
+          )
+        }
+        const link = document.createElement('a')
+        link.href = blobUrlsRef.current[resume.id]
+        link.download = resume.name || 'resume'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+      }
+    } catch (err) {
+      showToast('Could not download file.', 'error')
+    }
+  }
+
   // ── LaTeX upload ────────────────────────────────────────────────────────────
 
   const handleTexUpload = async (resumeId, file) => {
@@ -572,6 +616,24 @@ export default function Resumes() {
                         />
                       </>
                     )}
+                    {/* Download button */}
+                    <button
+                      onClick={() => handleDownload(r)}
+                      title="Download resume"
+                      style={{
+                        width: '28px', height: '28px', borderRadius: '8px',
+                        background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                        color: 'rgba(255,255,255,0.5)', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'all 0.2s', flexShrink: 0,
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M1 11h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      </svg>
+                    </button>
+
                     <button
                       onClick={() => handleView(r)}
                       title="View resume"
