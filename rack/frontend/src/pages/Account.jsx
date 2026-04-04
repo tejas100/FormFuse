@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { API_BASE, getAuthHeaders } from '../utils/api'
+import { useTheme } from '../App'
 
 const API = `${API_BASE}/api/account`
 
@@ -214,6 +215,7 @@ function AuthenticatedAccount({ user, onSignOut }) {
   const [roleAliases, setRoleAliases] = useState({})
   // which roles are currently fetching aliases
   const [fetchingAliases, setFetchingAliases] = useState(new Set())
+  const { theme, toggleTheme } = useTheme()
 
   const loadProfile = useCallback(async () => {
     try {
@@ -395,15 +397,60 @@ function AuthenticatedAccount({ user, onSignOut }) {
           ))}
         </div>
 
+        {/* ── Appearance ── */}
+        <div style={{
+          fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: '0.1em',
+          color: 'var(--text-dim)', marginBottom: 12, marginTop: 8,
+          paddingLeft: 4, animation: 'fadeUp 0.4s ease 0.07s both',
+        }}>Appearance</div>
+
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '16px 20px', borderRadius: 'var(--radius)',
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          marginBottom: 24, animation: 'fadeUp 0.4s ease 0.09s both',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 20 }}>{theme === 'dark' ? '🌙' : '☀️'}</span>
+            <div>
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.2px' }}>
+                {theme === 'dark' ? 'Dark mode' : 'Light mode'}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 1 }}>
+                {theme === 'dark' ? 'Switch to the cream light theme' : 'Switch to the dark theme'}
+              </div>
+            </div>
+          </div>
+          {/* Toggle pill */}
+          <button
+            onClick={toggleTheme}
+            style={{
+              width: 52, height: 28, borderRadius: 14, border: 'none',
+              background: theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'var(--accent)',
+              position: 'relative', cursor: 'pointer', flexShrink: 0,
+              transition: 'background 0.25s ease',
+              padding: 0,
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3,
+              left: theme === 'dark' ? 3 : 25,
+              width: 22, height: 22, borderRadius: '50%',
+              background: theme === 'dark' ? 'rgba(255,255,255,0.6)' : '#000',
+              transition: 'left 0.25s cubic-bezier(0.34,1.56,0.64,1)',
+              display: 'block',
+            }} />
+          </button>
+        </div>
+
         {/* ── Job Preferences Header ── */}
         <div style={{
           fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700,
           textTransform: 'uppercase', letterSpacing: '0.1em',
           color: 'var(--text-dim)', marginBottom: 12, marginTop: 8,
           paddingLeft: 4, animation: 'fadeUp 0.4s ease 0.1s both',
-        }}>Job Preferences</div>
-
-        {/* ── Collapsible Sections ── */}
+        }}>Job Preferences</div>        {/* ── Collapsible Sections ── */}
         <Section id="roles" icon="🎯" delay={0.12}
           title="Target Roles"
           subtitle={roleCount ? `${roleCount} roles configured` : 'Not set — all jobs will be matched'}

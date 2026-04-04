@@ -394,7 +394,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ width: 110, fontSize: 10, color: "var(--text-dim)", opacity: 0.6 }}>Keyword/Semantic baseline</span>
                       <div style={{ flex: 1, height: 3, background: "var(--surface2)", borderRadius: 4, overflow: "hidden" }}>
-                        <div style={{ width: `${Math.min(match.hybrid_score, 100)}%`, height: "100%", background: "rgba(255,255,255,0.15)", borderRadius: 4 }} />
+                        <div style={{ width: `${Math.min(match.hybrid_score, 100)}%`, height: "100%", background: "var(--pill-bg)", borderRadius: 4 }} />
                       </div>
                       <span style={{ width: 26, fontSize: 10, color: "var(--text-dim)", textAlign: "right", fontFamily: "var(--font-display)", fontWeight: 600, opacity: 0.6 }}>{match.hybrid_score}</span>
                     </div>
@@ -607,8 +607,8 @@ function AutoMatchLoadingAnimation() {
 
   const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
   const acc  = "var(--accent)";
-  const grn  = "#34d399";
-  const dim  = "rgba(255,255,255,0.28)";
+  const grn  = "var(--accent3)";
+  const dim  = "var(--terminal-dim)";
 
   // ASCII progress bar: [████████░░░░]
   const BAR_LEN  = 24;
@@ -619,7 +619,7 @@ function AutoMatchLoadingAnimation() {
   return (
     <div style={{ padding: "28px 0 20px", animation: "fadeUp 0.3s ease both" }}>
       <div style={{
-        background: "#0a0a0a",
+        background: "var(--terminal-bg)",
         border: "1px solid rgba(232,255,107,0.14)",
         borderRadius: 12,
         overflow: "hidden",
@@ -631,8 +631,8 @@ function AutoMatchLoadingAnimation() {
         <div style={{
           display: "flex", alignItems: "center", gap: 6,
           padding: "9px 14px",
-          background: "rgba(255,255,255,0.025)",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          background: "var(--terminal-header-bg)",
+          borderBottom: "1px solid var(--terminal-divider)",
         }}>
           <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ff5f56" }} />
           <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ffbd2e" }} />
@@ -656,7 +656,7 @@ function AutoMatchLoadingAnimation() {
                 display: "flex", alignItems: "flex-start", gap: 12,
                 padding: "7px 0",
                 borderBottom: i < PIPELINE_STEPS.length - 1
-                  ? "1px solid rgba(255,255,255,0.04)" : "none",
+                  ? "1px solid var(--terminal-divider)" : "none",
                 opacity: pending ? 0.35 : 1,
                 transition: "opacity 0.4s ease",
               }}>
@@ -695,8 +695,8 @@ function AutoMatchLoadingAnimation() {
         {/* Progress bar footer */}
         <div style={{
           padding: "10px 20px 12px",
-          borderTop: "1px solid rgba(255,255,255,0.05)",
-          background: "rgba(0,0,0,0.3)",
+          borderTop: "1px solid var(--terminal-divider)",
+          background: "var(--terminal-header-bg)",
         }}>
           <div style={{ ...mono, fontSize: 11, color: acc, whiteSpace: "pre", letterSpacing: "-0.01em" }}>
             [{bar}] {String(overallPct).padStart(3, " ")}%
@@ -780,7 +780,7 @@ function ArchiveModal({ onClose }) {
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 9999,
-      background: "rgba(0,0,0,0.78)", backdropFilter: "blur(6px)",
+      background: "var(--modal-overlay)", backdropFilter: "blur(6px)",
       display: "flex", alignItems: "flex-start", justifyContent: "center",
       padding: "110px 16px 40px", overflowY: "auto",
     }} onClick={e => e.target === e.currentTarget && onClose()}>
@@ -788,13 +788,13 @@ function ArchiveModal({ onClose }) {
         width: "100%", maxWidth: 700,
         background: "var(--bg)", border: "1px solid var(--border)",
         borderRadius: 18, overflow: "hidden", animation: "fadeUp 0.25s ease both",
-        boxShadow: "0 32px 80px rgba(0,0,0,0.6)",
+        boxShadow: "var(--modal-shadow)",
       }}>
         {/* Header */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "18px 22px", borderBottom: "1px solid var(--border)",
-          background: "rgba(255,255,255,0.02)",
+          background: "var(--archive-header-bg)",
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ ...mono, fontSize: 20, color: "var(--accent)", letterSpacing: -1 }}>╔═╗</span>
@@ -845,7 +845,7 @@ function ArchiveModal({ onClose }) {
 
         {/* Bulk bar */}
         {archive.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 22px", borderBottom: "1px solid rgba(255,255,255,0.04)", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 22px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
             <button onClick={selected.size === archive.length ? deselectAll : selectAll}
               style={{ ...mono, fontSize: 10, background: "none", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 10px", color: "var(--text-dim)", cursor: "pointer" }}>
               {selected.size === archive.length ? "□ none" : "■ all"}
@@ -916,7 +916,7 @@ function ArchiveModal({ onClose }) {
                   <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{isExpanded ? "▲" : "▼"}</span>
                 </div>
                 {isExpanded && (
-                  <div style={{ padding: "10px 14px 14px", borderTop: "1px solid rgba(255,255,255,0.05)", background: "rgba(0,0,0,0.2)", animation: "fadeUp 0.15s ease both" }}>
+                  <div style={{ padding: "10px 14px 14px", borderTop: "1px solid var(--border)", background: "var(--archive-expanded-bg)", animation: "fadeUp 0.15s ease both" }}>
                     {/* Skills */}
                     <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 10 }}>
                       {(job.matched_skills || []).slice(0, 5).map(s => (
@@ -959,8 +959,8 @@ function ArchiveModal({ onClose }) {
                     {!job.applied && (
                       <div style={{
                         marginBottom: 10, padding: "8px 12px", borderRadius: 10,
-                        background: confirmApplied.has(job.job_id) ? "rgba(52,211,153,0.06)" : "rgba(255,255,255,0.02)",
-                        border: `1px solid ${confirmApplied.has(job.job_id) ? "rgba(52,211,153,0.2)" : "rgba(255,255,255,0.06)"}`,
+                        background: confirmApplied.has(job.job_id) ? "rgba(52,211,153,0.06)" : "var(--archive-expanded-bg)",
+                        border: `1px solid ${confirmApplied.has(job.job_id) ? "rgba(52,211,153,0.2)" : "var(--border)"}`,
                         display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
                         transition: "all 0.2s",
                       }}>
@@ -1165,7 +1165,7 @@ function FreshJobsTab() {
       {/* Loading */}
       {loading && (
         <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--text-dim)", animation: "fadeUp 0.3s ease both" }}>
-          <div style={{ width: 36, height: 36, border: "3px solid rgba(232,255,107,0.15)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 14px" }} />
+          <div style={{ width: 36, height: 36, border: "3px solid var(--spinner-track)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 14px" }} />
           <div style={{ fontSize: 13, color: "var(--accent)", fontFamily: "var(--font-display)", fontWeight: 700, marginBottom: 4 }}>Loading fresh jobs…</div>
           <div style={{ fontSize: 11 }}>Filtering matched jobs posted in the last {window}h</div>
         </div>
@@ -1740,7 +1740,7 @@ function CustomSearchTab({ profile }) {
       {refreshing && (
         <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--text-dim)", animation: "fadeUp 0.3s ease both" }}>
           <div style={{
-            width: 40, height: 40, border: "3px solid rgba(232,255,107,0.15)",
+            width: 40, height: 40, border: "3px solid var(--spinner-track)",
             borderTopColor: "var(--accent)", borderRadius: "50%",
             animation: "spin 0.8s linear infinite", margin: "0 auto 16px",
           }} />

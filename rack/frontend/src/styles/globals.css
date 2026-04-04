@@ -10,6 +10,7 @@
   --text-dim: rgba(255,255,255,0.4);
   --text-mid: rgba(255,255,255,0.65);
   --accent: #e8ff6b;
+  --accent-contrast: #000000;
   --accent2: #a78bfa;
   --accent3: #34d399;
   --danger: #f87171;
@@ -17,6 +18,57 @@
   --tab-radius: 40px;
   --font-display: 'Syne', sans-serif;
   --font-body: 'DM Sans', sans-serif;
+
+  /* Theme-specific extras */
+  --blob-1: #1a1a2e;
+  --blob-2: #0d1f0d;
+  --blob-3: #1a0a2e;
+  --tabbar-bg: rgba(255,255,255,0.06);
+  --tabbar-border: rgba(255,255,255,0.14);
+  --tabbar-shadow: 0 8px 40px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.1), 0 0 0 1px rgba(232,255,107,0.04);
+  --tabbar-settled-shadow: 0 4px 24px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08), 0 0 20px rgba(232,255,107,0.06);
+  --tab-inactive: rgba(255,255,255,0.4);
+  --tab-inactive-hover: rgba(255,255,255,0.7);
+  --tab-active-bg: rgba(255,255,255,0.1);
+  --tab-active-color: #f0f0f0;
+  --tab-active-shadow: 0 2px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12);
+  --mobile-bar-bg: rgba(14,14,14,0.92);
+  --mobile-bar-border: rgba(255,255,255,0.1);
+  --mobile-bar-shadow: 0 -8px 32px rgba(0,0,0,0.5), 0 -1px 0 rgba(232,255,107,0.06);
+  --mobile-tab-inactive: rgba(255,255,255,0.35);
+  --mobile-header-bg-start: rgba(8,8,8,0.96);
+  --mobile-header-bg-mid: rgba(8,8,8,0.85);
+  --mobile-header-bg-end: rgba(8,8,8,0.65);
+  --scrollbar-thumb: rgba(255,255,255,0.1);
+
+  /* ── Semantic component tokens ──────────────────────────────────────────── */
+  /* Used for card borders, icon buttons, skill pills, modals */
+  --card-border: rgba(255,255,255,0.1);
+  --card-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  --icon-btn-bg: rgba(255,255,255,0.06);
+  --icon-btn-border: rgba(255,255,255,0.1);
+  --icon-btn-color: rgba(255,255,255,0.5);
+  --pill-bg: rgba(255,255,255,0.06);
+  --pill-border: rgba(255,255,255,0.08);
+  --pill-color: rgba(255,255,255,0.4);
+  --meta-color: rgba(255,255,255,0.35);
+  --subtle-text: rgba(255,255,255,0.45);
+  --skeleton-bg: rgba(255,255,255,0.05);
+  --modal-overlay: rgba(0,0,0,0.7);
+  --modal-bg: #161616;
+  --modal-border: rgba(255,255,255,0.12);
+  --modal-shadow: 0 24px 80px rgba(0,0,0,0.6);
+  --terminal-bg: #0a0a0a;
+  --terminal-header-bg: rgba(255,255,255,0.025);
+  --terminal-divider: rgba(255,255,255,0.04);
+  --terminal-dim: rgba(255,255,255,0.28);
+  --archive-expanded-bg: rgba(0,0,0,0.2);
+  --archive-header-bg: rgba(255,255,255,0.02);
+  --upload-border: rgba(232,255,107,0.25);
+  --upload-color: rgba(255,255,255,0.35);
+  --upload-disabled-border: rgba(255,255,255,0.1);
+  --upload-disabled-color: rgba(255,255,255,0.2);
+  --spinner-track: rgba(232,255,107,0.15);
 
   /*
     Page layout helpers — consumed by every page's outer wrapper.
@@ -75,6 +127,80 @@ html, body, #root {
   100% { transform: translate(0,0); }
 }
 
+/* ── Light theme ─────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg: #FAF9F5;
+  --surface: #FFFFFF;
+  --surface2: #F3F1EB;
+  --border: rgba(0,0,0,0.07);
+  --border-bright: rgba(0,0,0,0.14);
+  --text: #1A1A1A;
+  --text-dim: rgba(0,0,0,0.4);
+  --text-mid: rgba(0,0,0,0.65);
+  --accent: #c8e000;
+  --accent-contrast: #000000;
+  --accent2: #7c3aed;
+  --accent3: #059669;
+  --danger: #dc2626;
+
+  /* Blobs — subtle warm tones */
+  --blob-1: #e8f4e8;
+  --blob-2: #f0eaff;
+  --blob-3: #fff8e1;
+
+  /* TabBar — light glass */
+  --tabbar-bg: rgba(255,255,255,0.75);
+  --tabbar-border: rgba(0,0,0,0.1);
+  --tabbar-shadow: 0 8px 40px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.9), 0 0 0 1px rgba(0,0,0,0.04);
+  --tabbar-settled-shadow: 0 4px 24px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.8);
+  --tab-inactive: rgba(0,0,0,0.4);
+  --tab-inactive-hover: rgba(0,0,0,0.75);
+  --tab-active-bg: rgba(0,0,0,0.06);
+  --tab-active-color: #1A1A1A;
+  --tab-active-shadow: 0 2px 12px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.7);
+
+  /* Mobile tab bar */
+  --mobile-bar-bg: rgba(250,249,245,0.95);
+  --mobile-bar-border: rgba(0,0,0,0.1);
+  --mobile-bar-shadow: 0 -4px 24px rgba(0,0,0,0.06), 0 -1px 0 rgba(0,0,0,0.08);
+  --mobile-tab-inactive: rgba(0,0,0,0.35);
+
+  /* Mobile header */
+  --mobile-header-bg-start: rgba(250,249,245,0.97);
+  --mobile-header-bg-mid: rgba(250,249,245,0.85);
+  --mobile-header-bg-end: rgba(250,249,245,0.65);
+
+  --scrollbar-thumb: rgba(0,0,0,0.12);
+
+  /* Semantic component tokens — light overrides */
+  --card-border: rgba(0,0,0,0.09);
+  --card-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  --icon-btn-bg: rgba(0,0,0,0.04);
+  --icon-btn-border: rgba(0,0,0,0.1);
+  --icon-btn-color: rgba(0,0,0,0.45);
+  --pill-bg: rgba(0,0,0,0.04);
+  --pill-border: rgba(0,0,0,0.07);
+  --pill-color: rgba(0,0,0,0.45);
+  --meta-color: rgba(0,0,0,0.4);
+  --subtle-text: rgba(0,0,0,0.45);
+  --skeleton-bg: rgba(0,0,0,0.05);
+  --modal-overlay: rgba(0,0,0,0.4);
+  --modal-bg: #FFFFFF;
+  --modal-border: rgba(0,0,0,0.1);
+  --modal-shadow: 0 24px 80px rgba(0,0,0,0.15);
+  --terminal-bg: #F3F1EB;
+  --terminal-header-bg: rgba(0,0,0,0.03);
+  --terminal-divider: rgba(0,0,0,0.05);
+  --terminal-dim: rgba(0,0,0,0.4);
+  --archive-expanded-bg: rgba(0,0,0,0.02);
+  --archive-header-bg: rgba(0,0,0,0.02);
+  --upload-border: rgba(140,158,0,0.35);
+  --upload-color: rgba(0,0,0,0.35);
+  --upload-disabled-border: rgba(0,0,0,0.1);
+  --upload-disabled-color: rgba(0,0,0,0.2);
+  --spinner-track: rgba(0,0,0,0.08);
+}
+
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }

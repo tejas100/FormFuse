@@ -1,4 +1,27 @@
-import { useState } from 'react'
+import { useState, useEffect, createContext, useContext } from 'react'
+
+// ── Theme context ──────────────────────────────────────────────────────────────
+export const ThemeContext = createContext({ theme: 'dark', toggleTheme: () => {} })
+export function useTheme() { return useContext(ThemeContext) }
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('rack_theme') || 'dark'
+  })
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('rack_theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark')
+
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  )
+}
 import { AuthProvider, useAuth } from './context/AuthContext'
 import TabBar from './components/TabBar'
 import Home from './pages/Home'
@@ -16,6 +39,7 @@ function AppInner() {
   const [active, setActive] = useState('Home')
   const [pageKey, setPageKey] = useState(0)
   const { user, authLoading, signInWithGoogle } = useAuth()
+  const { theme } = useTheme()
 
   const switchTab = (tab) => {
     setActive(tab)
@@ -61,9 +85,9 @@ function AppInner() {
           pointer-events: none;
           animation: noiseDrift 12s ease-in-out infinite;
         }
-        .blob-1 { width:500px;height:500px;background:#1a1a2e;top:-100px;left:-100px; }
-        .blob-2 { width:400px;height:400px;background:#0d1f0d;bottom:-80px;right:-80px;animation-delay:-6s; }
-        .blob-3 { width:300px;height:300px;background:#1a0a2e;top:40%;left:30%;animation-delay:-3s; }
+        .blob-1 { width:500px;height:500px;background:var(--blob-1);top:-100px;left:-100px; }
+        .blob-2 { width:400px;height:400px;background:var(--blob-2);bottom:-80px;right:-80px;animation-delay:-6s; }
+        .blob-3 { width:300px;height:300px;background:var(--blob-3);top:40%;left:30%;animation-delay:-3s; }
 
         /* ── Grain ── */
         .grain {
@@ -111,10 +135,10 @@ function AppInner() {
           justify-content: center;
           background: linear-gradient(
             to bottom,
-            rgba(8,8,8,0.96) 0%,
-            rgba(8,8,8,0.85) 60%,
-            rgba(8,8,8,0.65) 80%,
-            rgba(8,8,8,0.0) 130%
+            var(--mobile-header-bg-start) 0%,
+            var(--mobile-header-bg-mid) 60%,
+            var(--mobile-header-bg-end) 80%,
+            rgba(0,0,0,0.0) 130%
           );
         }
         .mobile-header::after {
@@ -125,8 +149,8 @@ function AppInner() {
           height: 28px;
           background: linear-gradient(
             to bottom,
-            rgba(8,8,8,0.25) 0%,
-            rgba(8,8,8,0.0) 100%
+            var(--mobile-header-bg-end) 0%,
+            rgba(0,0,0,0.0) 100%
           );
           pointer-events: none;
         }
@@ -311,8 +335,10 @@ function GoogleIcon() {
 // ── Root export — wraps everything in AuthProvider ────────────────────────────
 export default function App() {
   return (
-    <AuthProvider>
-      <AppInner />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <AppInner />
+      </AuthProvider>
+    </ThemeProvider>
   )
 }

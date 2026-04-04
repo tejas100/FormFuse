@@ -69,7 +69,7 @@ const mobileCardStyles = `
   }
   .rack-chat-scroll::-webkit-scrollbar { width: 4px; }
   .rack-chat-scroll::-webkit-scrollbar-track { background: transparent; }
-  .rack-chat-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+  .rack-chat-scroll::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
 
   /* Greeting state */
   .rack-greeting {
@@ -226,16 +226,16 @@ const mobileCardStyles = `
     gap: 10px;
     max-width: 820px;
     margin: 0 auto;
-    background: rgba(30,30,30,0.95);
-    border: 1px solid rgba(255,255,255,0.12);
+    background: var(--surface);
+    border: 1px solid var(--border-bright);
     border-radius: 20px;
     padding: 14px 14px 14px 20px;
     transition: border-color 0.2s ease;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.04) inset;
+    box-shadow: var(--card-shadow);
   }
   .rack-chat-input-inner:focus-within {
     border-color: rgba(232,255,107,0.35);
-    box-shadow: 0 4px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(232,255,107,0.08), 0 1px 0 rgba(255,255,255,0.04) inset;
+    box-shadow: var(--card-shadow);
   }
   .rack-chat-textarea {
     flex: 1;
@@ -255,7 +255,7 @@ const mobileCardStyles = `
     scrollbar-width: none;
   }
   .rack-chat-textarea::-webkit-scrollbar { display: none; }
-  .rack-chat-textarea::placeholder { color: rgba(255,255,255,0.25); }
+  .rack-chat-textarea::placeholder { color: var(--text-dim); }
 
   /* Attach + send button row inside input */
   .rack-chat-input-actions {
@@ -268,11 +268,11 @@ const mobileCardStyles = `
     width: 32px; height: 32px;
     display: flex; align-items: center; justify-content: center;
     background: transparent;
-    border: 1px dashed rgba(255,255,255,0.15);
+    border: 1px dashed var(--border-bright);
     border-radius: 8px;
     cursor: pointer;
     font-size: 14px;
-    color: rgba(255,255,255,0.35);
+    color: var(--text-dim);
     transition: all 0.18s ease;
     flex-shrink: 0;
   }
@@ -299,8 +299,8 @@ const mobileCardStyles = `
     flex-shrink: 0;
   }
   .rack-chat-send-btn:disabled {
-    background: rgba(255,255,255,0.1);
-    color: rgba(255,255,255,0.25);
+    background: var(--pill-bg);
+    color: var(--text-dim);
     cursor: not-allowed;
   }
   .rack-chat-send-btn:not(:disabled):hover {
@@ -325,7 +325,7 @@ const mobileCardStyles = `
     max-width: 820px;
     margin: 8px auto 0;
     font-size: 11px;
-    color: rgba(255,255,255,0.22);
+    color: var(--text-dim);
     padding: 0 4px;
   }
 
@@ -423,7 +423,7 @@ const mobileCardStyles = `
     cursor: pointer;
   }
   .preview-dismiss-btn:hover {
-    background: rgba(255,255,255,0.14) !important;
+    background: var(--icon-btn-bg) !important;
   }`
 
 function scoreColor(score) {
@@ -445,7 +445,7 @@ function componentBar(label, value, color) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
       <span style={{ color: 'var(--text-dim)', minWidth: '80px', fontWeight: 500 }}>{label}</span>
-      <div style={{ flex: 1, height: '4px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', overflow: 'hidden' }}>
+      <div style={{ flex: 1, height: '4px', background: 'var(--pill-bg)', borderRadius: '4px', overflow: 'hidden' }}>
         <div style={{ height: '100%', borderRadius: '4px', background: color, width: `${Math.round(value)}%`, transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)' }} />
       </div>
       <span style={{ color: 'var(--text-dim)', minWidth: '28px', textAlign: 'right', fontFamily: 'var(--font-display)', fontWeight: 600 }}>{Math.round(value)}</span>
@@ -508,9 +508,9 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
 
   const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
   const acc  = "var(--accent)";
-  const grn  = "#34d399";
-  const red  = "#f87171";
-  const dim  = "rgba(255,255,255,0.28)";
+  const grn  = "var(--accent3)";
+  const red  = "var(--danger)";
+  const dim  = "var(--terminal-dim)";
 
   // Progress bar: upload slots + pipeline steps
   const totalSlots  = uploadQueue.length + JD_STEPS.length;
@@ -526,7 +526,7 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
   return (
     <div style={{ width: "100%", maxWidth: "520px", margin: "0 auto", padding: "28px 0 8px", animation: "fadeUp 0.35s ease both" }}>
       <div style={{
-        background: "#0a0a0a",
+        background: "var(--terminal-bg)",
         border: "1px solid rgba(232,255,107,0.14)",
         borderRadius: 12,
         overflow: "hidden",
@@ -536,8 +536,8 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
         <div style={{
           display: "flex", alignItems: "center", gap: 6,
           padding: "9px 14px",
-          background: "rgba(255,255,255,0.025)",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          background: "var(--terminal-header-bg)",
+          borderBottom: "1px solid var(--terminal-divider)",
         }}>
           <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ff5f56" }} />
           <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ffbd2e" }} />
@@ -557,10 +557,10 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
             <>
               {/* Upload section header */}
               <div style={{
-                ...mono, fontSize: 10, color: "rgba(255,255,255,0.22)",
+                ...mono, fontSize: 10, color: "var(--terminal-dim)",
                 letterSpacing: "0.12em", textTransform: "uppercase",
                 marginBottom: 8, paddingBottom: 6,
-                borderBottom: "1px solid rgba(255,255,255,0.04)",
+                borderBottom: "1px solid var(--terminal-divider)",
               }}>
                 ingesting resumes
               </div>
@@ -579,7 +579,7 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
                   <div key={i} style={{
                     display: "flex", alignItems: "center", gap: 10,
                     padding: "6px 0",
-                    borderBottom: "1px solid rgba(255,255,255,0.03)",
+                    borderBottom: "1px solid var(--terminal-divider)",
                     opacity: isQueued ? 0.38 : 1,
                     transition: "opacity 0.3s ease",
                   }}>
@@ -599,7 +599,7 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
 
                     {/* Mini progress bar */}
                     <div style={{
-                      width: 60, height: 3, background: "rgba(255,255,255,0.06)",
+                      width: 60, height: 3, background: "var(--terminal-divider)",
                       borderRadius: 3, overflow: "hidden", flexShrink: 0,
                     }}>
                       <div style={{
@@ -632,11 +632,11 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
                 opacity: uploadsAllDone ? 1 : 0.25,
                 transition: "opacity 0.5s ease 0.3s",
               }}>
-                <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.06)" }} />
-                <span style={{ ...mono, fontSize: 9, color: "rgba(255,255,255,0.2)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                <div style={{ flex: 1, height: 1, background: "var(--terminal-divider)" }} />
+                <span style={{ ...mono, fontSize: 9, color: "var(--terminal-dim)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
                   matching pipeline
                 </span>
-                <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.06)" }} />
+                <div style={{ flex: 1, height: 1, background: "var(--terminal-divider)" }} />
               </div>
             </>
           )}
@@ -652,7 +652,7 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
                 display: "flex", alignItems: "flex-start", gap: 12,
                 padding: "7px 0",
                 borderBottom: i < JD_STEPS.length - 1
-                  ? "1px solid rgba(255,255,255,0.04)" : "none",
+                  ? "1px solid var(--terminal-divider)" : "none",
                 opacity: pending ? 0.35 : 1,
                 transition: "opacity 0.4s ease",
               }}>
@@ -692,8 +692,8 @@ function JDPipelineAnimation({ uploadQueue = [] }) {
         {/* Progress bar footer */}
         <div style={{
           padding: "10px 20px 12px",
-          borderTop: "1px solid rgba(255,255,255,0.05)",
-          background: "rgba(0,0,0,0.3)",
+          borderTop: "1px solid var(--terminal-divider)",
+          background: "var(--terminal-header-bg)",
         }}>
           <div style={{ ...mono, fontSize: 11, color: acc, whiteSpace: "pre", letterSpacing: "-0.01em" }}>
             [{bar}] {String(overallPct).padStart(3, " ")}%
@@ -766,10 +766,10 @@ function ValuePreviewCard({ results, onSignIn }) {
           style={{
             display: 'flex', alignItems: 'center', gap: '8px',
             padding: '10px 18px',
-            background: 'linear-gradient(135deg, rgba(14,14,14,0.97), rgba(10,10,10,0.99))',
+            background: 'var(--surface)',
             border: '1px solid rgba(232,255,107,0.35)',
             borderRadius: '40px', cursor: 'pointer',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.55)',
+            boxShadow: 'var(--card-shadow)',
             backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
           }}
         >
@@ -777,7 +777,7 @@ function ValuePreviewCard({ results, onSignIn }) {
           <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 700, color: 'var(--accent)' }}>
             {totalJobs.toLocaleString()} jobs matched
           </span>
-          <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)' }}>tap to view →</span>
+          <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>tap to view →</span>
         </button>
       </div>,
       document.body
@@ -788,10 +788,10 @@ function ValuePreviewCard({ results, onSignIn }) {
   return createPortal(
     <div className="preview-floating-panel">
       <div style={{
-        background: 'linear-gradient(160deg, rgba(16,16,16,0.98) 0%, rgba(11,11,11,0.99) 100%)',
+        background: 'var(--surface)',
         border: '1px solid rgba(232,255,107,0.22)',
         borderRadius: '20px', overflow: 'hidden',
-        boxShadow: '0 32px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.04)',
+        boxShadow: 'var(--modal-shadow)',
         backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
       }}>
 
@@ -833,10 +833,10 @@ function ValuePreviewCard({ results, onSignIn }) {
                 title="Minimise"
                 style={{
                   width: '26px', height: '26px',
-                  background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
+                  background: 'var(--icon-btn-bg)', border: '1px solid var(--icon-btn-border)',
                   borderRadius: '8px', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: '14px', color: 'rgba(255,255,255,0.45)',
+                  fontSize: '14px', color: 'var(--icon-btn-color)',
                   transition: 'background 0.15s ease',
                 }}
               >−</button>
@@ -846,10 +846,10 @@ function ValuePreviewCard({ results, onSignIn }) {
                 title="Dismiss"
                 style={{
                   width: '26px', height: '26px',
-                  background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)',
+                  background: 'var(--icon-btn-bg)', border: '1px solid var(--icon-btn-border)',
                   borderRadius: '8px', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: '12px', color: 'rgba(255,255,255,0.45)',
+                  fontSize: '12px', color: 'var(--icon-btn-color)',
                   transition: 'background 0.15s ease',
                 }}
               >✕</button>
@@ -866,7 +866,7 @@ function ValuePreviewCard({ results, onSignIn }) {
                 style={{
                   display: 'flex', alignItems: 'center', gap: '10px',
                   padding: '11px 14px', borderRadius: '12px',
-                  background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+                  background: 'var(--surface2)', border: '1px solid var(--border)',
                   cursor: 'pointer', transition: 'background 0.18s ease, border-color 0.18s ease',
                 }}
               >
@@ -916,7 +916,7 @@ function ValuePreviewCard({ results, onSignIn }) {
             <span style={{ fontSize: '16px' }}>→</span>
           </button>
 
-          <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', textAlign: 'center', marginTop: '10px', letterSpacing: '0.02em' }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-dim)', textAlign: 'center', marginTop: '10px', letterSpacing: '0.02em' }}>
             Daily auto-matching · application tracking · full AI analysis
           </div>
         </div>
@@ -1407,13 +1407,13 @@ export default function Home() {
             style={{
               position: 'sticky', top: '0px', alignSelf: 'flex-end',
               fontSize: '11px', padding: '5px 12px', borderRadius: '20px',
-              background: 'rgba(255,255,255,0.07)', color: 'var(--text-dim)',
-              border: '1px solid rgba(255,255,255,0.1)', fontWeight: 500, cursor: 'pointer',
+              background: 'var(--icon-btn-bg)', color: 'var(--text-dim)',
+              border: '1px solid var(--icon-btn-border)', fontWeight: 500, cursor: 'pointer',
               fontFamily: 'var(--font-body)', marginBottom: '12px',
               transition: 'all 0.15s ease', zIndex: 10,
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; e.currentTarget.style.color = 'var(--text)' }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; e.currentTarget.style.color = 'var(--text-dim)' }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--pill-bg)'; e.currentTarget.style.color = 'var(--text)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--icon-btn-bg)'; e.currentTarget.style.color = 'var(--text-dim)' }}
           >
             ✕ new chat
           </button>
@@ -1555,7 +1555,7 @@ export default function Home() {
                           gap: '0 12px',
                           padding: '6px 14px',
                           marginBottom: '4px',
-                          borderBottom: '1px solid rgba(255,255,255,0.06)',
+                          borderBottom: '1px solid var(--border)',
                         }}>
                           <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>#</span>
                           <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Role · Company</span>
@@ -1600,7 +1600,7 @@ export default function Home() {
                                     {/* Rank number */}
                                     <div style={{
                                       fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 800,
-                                      color: globalIdx === 0 ? 'var(--accent)' : 'rgba(255,255,255,0.18)',
+                                      color: globalIdx === 0 ? 'var(--accent)' : 'var(--text-dim)',
                                       lineHeight: '20px', paddingTop: '1px',
                                     }}>
                                       #{globalIdx + 1}
@@ -1687,8 +1687,8 @@ export default function Home() {
                               disabled={fPage <= 1}
                               style={{
                                 padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: 600,
-                                background: fPage <= 1 ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.08)',
-                                border: '1px solid rgba(255,255,255,0.1)',
+                                background: fPage <= 1 ? 'var(--surface2)' : 'var(--icon-btn-bg)',
+                                border: '1px solid var(--border)',
                                 color: fPage <= 1 ? 'var(--text-dim)' : 'var(--text)',
                                 cursor: fPage <= 1 ? 'not-allowed' : 'pointer',
                                 fontFamily: 'var(--font-body)', transition: 'all 0.15s ease',
@@ -1703,8 +1703,8 @@ export default function Home() {
                                   style={{
                                     width: '28px', height: '28px', borderRadius: '50%',
                                     background: p === fPage ? 'var(--accent)' : 'transparent',
-                                    border: p === fPage ? 'none' : '1px solid rgba(255,255,255,0.12)',
-                                    color: p === fPage ? '#080808' : 'var(--text-dim)',
+                                    border: p === fPage ? 'none' : '1px solid var(--border)',
+                                    color: p === fPage ? 'var(--accent-contrast)' : 'var(--text-dim)',
                                     fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 700,
                                     cursor: 'pointer', transition: 'all 0.15s ease',
                                   }}
@@ -1717,8 +1717,8 @@ export default function Home() {
                               disabled={fPage >= totalPages}
                               style={{
                                 padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: 600,
-                                background: fPage >= totalPages ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.08)',
-                                border: '1px solid rgba(255,255,255,0.1)',
+                                background: fPage >= totalPages ? 'var(--surface2)' : 'var(--icon-btn-bg)',
+                                border: '1px solid var(--border)',
                                 color: fPage >= totalPages ? 'var(--text-dim)' : 'var(--text)',
                                 cursor: fPage >= totalPages ? 'not-allowed' : 'pointer',
                                 fontFamily: 'var(--font-body)', transition: 'all 0.15s ease',
@@ -1773,7 +1773,7 @@ export default function Home() {
                           {msg.replyText && msg.replyText.length > 60 && (
                             <div style={{
                               marginTop: '14px', paddingTop: '12px',
-                              borderTop: '1px solid rgba(255,255,255,0.06)',
+                              borderTop: '1px solid var(--border)',
                               display: 'flex', alignItems: 'center', gap: '8px',
                             }}>
                               <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
@@ -1837,9 +1837,9 @@ export default function Home() {
                             )}
                             <span style={{
                               fontSize: '10px', padding: '2px 8px', borderRadius: '10px', marginLeft: 'auto',
-                              background: msg.jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.12)' : 'rgba(255,255,255,0.06)',
+                              background: msg.jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.12)' : 'var(--pill-bg)',
                               color: msg.jdParsed.extraction_method === 'hybrid' ? 'var(--accent3)' : 'var(--text-dim)',
-                              border: `1px solid ${msg.jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.08)'}`,
+                              border: `1px solid ${msg.jdParsed.extraction_method === 'hybrid' ? 'rgba(52,211,153,0.2)' : 'var(--pill-border)'}`,
                               fontWeight: 600,
                             }}>
                               {msg.jdParsed.extraction_method === 'hybrid' ? 'Rule + LLM' : 'Rule-based'}
@@ -1889,7 +1889,7 @@ export default function Home() {
                             borderRadius: '14px', padding: '18px 22px', marginBottom: '10px',
                             cursor: 'pointer', transition: 'all 0.2s ease',
                             animation: `bubbleIn 0.4s ease ${i * 0.07}s both`,
-                            boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                            boxShadow: 'var(--card-shadow)',
                           }}
                           onClick={() => setExpandedIds(prev => {
                             const next = new Set(prev)
@@ -1899,13 +1899,13 @@ export default function Home() {
                           >
                             {/* Collapsed row */}
                             <div className="rack-card-row" style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
-                              <div className="rack-card-rank" style={{ fontFamily:'var(--font-display)', fontSize:'24px', fontWeight:800, color: i===0 ? 'var(--accent)' : 'rgba(255,255,255,0.15)', minWidth:'36px' }}>
+                              <div className="rack-card-rank" style={{ fontFamily:'var(--font-display)', fontSize:'24px', fontWeight:800, color: i===0 ? 'var(--accent)' : 'var(--text-dim)', minWidth:'36px' }}>
                                 #{i+1}
                               </div>
                               <div style={{ flex:1, minWidth:0 }}>
                                 <div className="rack-card-badges" style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'6px', flexWrap:'wrap' }}>
                                   <span className="rack-card-name" style={{ fontFamily:'var(--font-display)', fontSize:'16px', fontWeight:600, color:'var(--text)' }}>{r.name}</span>
-                                  <span style={{ fontSize:'10px', padding:'2px 6px', borderRadius:'6px', background:'rgba(255,255,255,0.06)', color:'var(--text-dim)', fontWeight:500 }}>
+                                  <span style={{ fontSize:'10px', padding:'2px 6px', borderRadius:'6px', background:'var(--pill-bg)', color:'var(--text-dim)', fontWeight:500 }}>
                                     {r.file_ext?.replace('.','').toUpperCase()}
                                   </span>
                                   {isLLM && (
@@ -1918,7 +1918,7 @@ export default function Home() {
                                   )}
                                 </div>
                                 {/* Score bar */}
-                                <div style={{ height:'4px', background:'rgba(255,255,255,0.08)', borderRadius:'4px', overflow:'hidden' }}>
+                                <div style={{ height:'4px', background:'var(--pill-bg)', borderRadius:'4px', overflow:'hidden' }}>
                                   <div style={{ height:'100%', borderRadius:'4px', background:scoreColor(displayScore), width:`${displayScore}%`, transition:'width 1s cubic-bezier(0.22,1,0.36,1)' }} />
                                 </div>
                                 {/* Skill pills */}
@@ -1938,19 +1938,19 @@ export default function Home() {
                                   onClick={(e) => handleDownload(e, r.resume_id, r.name)}
                                   title="Download resume"
                                   style={{
-                                    background: 'rgba(255,255,255,0.06)',
-                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    background: 'var(--icon-btn-bg)',
+                                    border: '1px solid var(--icon-btn-border)',
                                     borderRadius: '8px',
                                     padding: '4px 8px',
                                     cursor: 'pointer',
                                     fontSize: '11px',
-                                    color: 'var(--text-dim)',
+                                    color: 'var(--icon-btn-color)',
                                     display: 'flex', alignItems: 'center', gap: '4px',
                                     transition: 'all 0.15s ease',
                                     fontFamily: 'var(--font-body)',
                                   }}
                                   onMouseEnter={e => { e.currentTarget.style.background='rgba(232,255,107,0.08)'; e.currentTarget.style.borderColor='rgba(232,255,107,0.25)'; e.currentTarget.style.color='var(--accent)' }}
-                                  onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.06)'; e.currentTarget.style.borderColor='rgba(255,255,255,0.1)'; e.currentTarget.style.color='var(--text-dim)' }}
+                                  onMouseLeave={e => { e.currentTarget.style.background='var(--icon-btn-bg)'; e.currentTarget.style.borderColor='var(--icon-btn-border)'; e.currentTarget.style.color='var(--icon-btn-color)' }}
                                 >
                                   ↓
                                 </button>
@@ -2000,8 +2000,8 @@ export default function Home() {
                                         {componentBar('Trajectory',  r.llm_components.trajectory_fit ?? 0, 'linear-gradient(90deg,#a78bfa,#c084fc)')}
                                         <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'11px', marginTop:'2px', opacity:0.45 }}>
                                           <span style={{ color:'var(--text-dim)', minWidth:'80px', fontWeight:500 }}>Keyword/Sem</span>
-                                          <div style={{ flex:1, height:'3px', background:'rgba(255,255,255,0.06)', borderRadius:'4px', overflow:'hidden' }}>
-                                            <div style={{ height:'100%', borderRadius:'4px', background:'rgba(255,255,255,0.2)', width:`${r.hybrid_score ?? 0}%` }} />
+                                          <div style={{ flex:1, height:'3px', background:'var(--pill-bg)', borderRadius:'4px', overflow:'hidden' }}>
+                                            <div style={{ height:'100%', borderRadius:'4px', background:'var(--border-bright)', width:`${r.hybrid_score ?? 0}%` }} />
                                           </div>
                                           <span style={{ color:'var(--text-dim)', minWidth:'28px', textAlign:'right', fontFamily:'var(--font-display)', fontWeight:600 }}>{r.hybrid_score ?? 0}</span>
                                         </div>
@@ -2092,7 +2092,17 @@ export default function Home() {
             rows={1}
             autoFocus
             onChange={e => { setJd(e.target.value); setResumeWarning(false) }}
-            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleMatch() }}
+            onKeyDown={e => {
+              
+              if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+                  e.preventDefault()
+                  handleMatch()
+                } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault()
+                  handleMatch()
+                }
+              
+              }}
           />
 
           <div className="rack-chat-input-actions">
@@ -2114,7 +2124,7 @@ export default function Home() {
               title="Match (⌘+Enter)"
             >
               {loading
-                ? <div style={{ width:14, height:14, border:'2px solid rgba(0,0,0,0.3)', borderTopColor:'#080808', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />
+                ? <div style={{ width:14, height:14, border:'2px solid rgba(0,0,0,0.25)', borderTopColor:'var(--accent-contrast)', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />
                 : '↑'
               }
             </button>

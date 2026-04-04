@@ -368,27 +368,27 @@ export default function Resumes() {
       {/* Delete confirm modal */}
       {deleteConfirm && (
         <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          position: 'fixed', inset: 0, background: 'var(--modal-overlay)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
           zIndex: 500, backdropFilter: 'blur(8px)'
         }} onClick={() => setDeleteConfirm(null)}>
           <div style={{
-            background: '#161616', border: '1px solid rgba(255,255,255,0.12)',
+            background: 'var(--modal-bg)', border: '1px solid var(--modal-border)',
             borderRadius: '20px', padding: '32px', maxWidth: '360px', width: '100%',
-            boxShadow: '0 24px 80px rgba(0,0,0,0.6)', animation: 'fadeUp 0.25s ease both'
+            boxShadow: 'var(--modal-shadow)', animation: 'fadeUp 0.25s ease both'
           }} onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: '28px', marginBottom: '12px' }}>🗑️</div>
             <div style={{ fontFamily: 'var(--font-display)', fontSize: '18px', fontWeight: 700, marginBottom: '8px' }}>
               Delete resume?
             </div>
-            <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.5)', marginBottom: '24px' }}>
+            <div style={{ fontSize: '14px', color: 'var(--text-mid)', marginBottom: '24px' }}>
               "{resumes.find(r => r.id === deleteConfirm)?.name}" will be permanently removed.
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <button onClick={() => setDeleteConfirm(null)} style={{
-                flex: 1, padding: '12px', background: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px',
-                color: 'rgba(255,255,255,0.6)', fontSize: '14px', cursor: 'pointer',
+                flex: 1, padding: '12px', background: 'var(--icon-btn-bg)',
+                border: '1px solid var(--card-border)', borderRadius: '12px',
+                color: 'var(--text-mid)', fontSize: '14px', cursor: 'pointer',
                 fontFamily: 'var(--font-body)'
               }}>Cancel</button>
               <button onClick={() => handleDelete(deleteConfirm)} style={{
@@ -405,25 +405,25 @@ export default function Resumes() {
       {/* Uploading overlay */}
       {uploading && (
         <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+          position: 'fixed', inset: 0, background: 'var(--modal-overlay)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           zIndex: 600, backdropFilter: 'blur(4px)'
         }}>
           <div style={{
-            background: '#161616', border: '1px solid rgba(232,255,107,0.2)',
+            background: 'var(--modal-bg)', border: '1px solid rgba(232,255,107,0.2)',
             borderRadius: '20px', padding: '40px', textAlign: 'center',
-            boxShadow: '0 24px 80px rgba(0,0,0,0.6)', animation: 'fadeUp 0.25s ease both'
+            boxShadow: 'var(--modal-shadow)', animation: 'fadeUp 0.25s ease both'
           }}>
             <div style={{
-              width: '40px', height: '40px', border: '3px solid rgba(232,255,107,0.2)',
-              borderTopColor: '#e8ff6b', borderRadius: '50%',
+              width: '40px', height: '40px', border: '3px solid var(--spinner-track)',
+              borderTopColor: 'var(--accent)', borderRadius: '50%',
               animation: 'spin 0.8s linear infinite',
               margin: '0 auto 16px'
             }} />
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 700, color: '#e8ff6b' }}>
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 700, color: 'var(--accent)' }}>
               Processing resume…
             </div>
-            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', marginTop: '6px' }}>
+            <div style={{ fontSize: '13px', color: 'var(--text-dim)', marginTop: '6px' }}>
               Extracting text, parsing sections, chunking
             </div>
           </div>
@@ -435,7 +435,7 @@ export default function Resumes() {
         <div style={{ fontFamily: 'var(--font-display)', fontSize: '32px', fontWeight: 800, letterSpacing: '-1px', marginBottom: '4px' }}>
           Your Resumes
         </div>
-        <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.4)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ fontSize: '14px', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: '10px' }}>
           {loading
             ? 'Loading…'
             : `${resumes.length} version${resumes.length !== 1 ? 's' : ''} · ${activeCount} active`
@@ -465,7 +465,7 @@ export default function Resumes() {
           <span style={{ fontSize: '13px', color: 'rgba(251,191,36,0.8)', flex: 1 }}>
             You've reached the {ANON_CAP}-resume limit for anonymous use.
           </span>
-          <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>
+          <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
             Sign in to upload more & save permanently.
           </span>
         </div>
@@ -501,11 +501,11 @@ export default function Resumes() {
             position: 'relative', zIndex: 1,
           }}>TeX</span>
           <span style={{
-            fontSize: '12px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.65,
+            fontSize: '12px', color: 'var(--subtle-text)', lineHeight: 1.65,
             flex: '1 1 180px', position: 'relative', zIndex: 1,
           }}>
-            Attach a <code style={{ fontSize: '11px', background: 'rgba(255,255,255,0.07)', padding: '1px 5px', borderRadius: 4, color: 'rgba(232,255,107,0.7)' }}>.tex</code> file to each resume to activate{' '}
-            <span style={{ color: 'rgba(232,255,107,0.9)', fontWeight: 600 }}>autrack</span>.{' '}
+            Attach a <code style={{ fontSize: '11px', background: 'var(--pill-bg)', padding: '1px 5px', borderRadius: 4, color: 'var(--accent)' }}>.tex</code> file to each resume to activate{' '}
+            <span style={{ color: 'var(--accent)', fontWeight: 600 }}>autrack</span>.{' '}
             RACK tailors your resume to every role, automatically.
           </span>
           {resumes.every(r => r.has_tex) && (
@@ -529,24 +529,24 @@ export default function Resumes() {
           ? Array.from({ length: 2 }).map((_, i) => (
               <div key={i} style={{
                 background: 'var(--surface)',
-                border: '1px solid rgba(255,255,255,0.07)',
+                border: '1px solid var(--card-border)',
                 borderRadius: '16px', padding: '22px',
                 minHeight: '160px',
                 animation: `fadeUp 0.4s ease ${i * 0.06}s both`,
               }}>
-                <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', marginBottom: '12px' }} />
-                <div style={{ width: '70%', height: '14px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', marginBottom: '8px' }} />
-                <div style={{ width: '40%', height: '11px', borderRadius: '4px', background: 'rgba(255,255,255,0.04)' }} />
+                <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'var(--skeleton-bg)', marginBottom: '12px' }} />
+                <div style={{ width: '70%', height: '14px', borderRadius: '4px', background: 'var(--skeleton-bg)', marginBottom: '8px' }} />
+                <div style={{ width: '40%', height: '11px', borderRadius: '4px', background: 'var(--skeleton-bg)' }} />
               </div>
             ))
           : resumes.map((r, i) => (
               <div key={r.id} style={{
                 background: 'var(--surface)',
-                border: '1px solid rgba(255,255,255,0.1)',
+                border: '1px solid var(--card-border)',
                 borderRadius: '16px', padding: '22px',
                 transition: 'all 0.2s ease',
                 animation: `fadeUp 0.4s ease ${i * 0.06}s both`,
-                boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+                boxShadow: 'var(--card-shadow)',
                 position: 'relative', overflow: 'hidden',
               }}>
                 {/* Top row: icon + badge + actions */}
@@ -556,8 +556,8 @@ export default function Resumes() {
                     <span style={{
                       fontSize: '10px', fontWeight: 600, padding: '3px 8px',
                       borderRadius: '10px', textTransform: 'uppercase', letterSpacing: '0.08em',
-                      background: r.status === 'active' ? 'rgba(52,211,153,0.15)' : 'rgba(255,255,255,0.06)',
-                      color: r.status === 'active' ? '#34d399' : 'rgba(255,255,255,0.4)'
+                      background: r.status === 'active' ? 'rgba(52,211,153,0.15)' : 'var(--pill-bg)',
+                      color: r.status === 'active' ? '#34d399' : 'var(--text-dim)'
                     }}>{r.status}</span>
 
                     {/* autrack / LaTeX attach button — auth only */}
@@ -622,8 +622,8 @@ export default function Resumes() {
                       title="Download resume"
                       style={{
                         width: '28px', height: '28px', borderRadius: '8px',
-                        background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                        color: 'rgba(255,255,255,0.5)', cursor: 'pointer',
+                        background: 'var(--icon-btn-bg)', border: '1px solid var(--icon-btn-border)',
+                        color: 'var(--icon-btn-color)', cursor: 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         transition: 'all 0.2s', flexShrink: 0,
                       }}
@@ -639,8 +639,8 @@ export default function Resumes() {
                       title="View resume"
                       style={{
                         width: '28px', height: '28px', borderRadius: '8px',
-                        background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                        color: 'rgba(255,255,255,0.5)', cursor: 'pointer',
+                        background: 'var(--icon-btn-bg)', border: '1px solid var(--icon-btn-border)',
+                        color: 'var(--icon-btn-color)', cursor: 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         fontSize: '13px', transition: 'all 0.2s'
                       }}
@@ -664,15 +664,15 @@ export default function Resumes() {
                 <div style={{ fontFamily: 'var(--font-display)', fontSize: '15px', fontWeight: 700, color: 'var(--text)', marginBottom: '4px' }}>
                   {r.name}
                 </div>
-                <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', marginBottom: '12px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--meta-color)', marginBottom: '12px' }}>
                   {formatTime(r.uploaded_at)}
                   {r.file_ext && (
-                    <span style={{ marginLeft: '6px', color: 'rgba(232,255,107,0.6)' }}>
+                    <span style={{ marginLeft: '6px', color: 'var(--accent)', opacity: 0.7 }}>
                       · {r.file_ext.replace('.', '').toUpperCase()}
                     </span>
                   )}
                   {r.chunk_count > 0 && (
-                    <span style={{ marginLeft: '6px', color: 'rgba(255,255,255,0.25)' }}>
+                    <span style={{ marginLeft: '6px', color: 'var(--text-dim)' }}>
                       · {r.chunk_count} chunks
                     </span>
                   )}
@@ -683,8 +683,8 @@ export default function Resumes() {
                     {r.skills.slice(0, 6).map(s => (
                       <span key={s} style={{
                         fontSize: '11px', fontWeight: 500, padding: '3px 10px',
-                        borderRadius: '20px', background: 'rgba(255,255,255,0.06)',
-                        color: 'rgba(255,255,255,0.4)', border: '1px solid rgba(255,255,255,0.08)'
+                        borderRadius: '20px', background: 'var(--pill-bg)',
+                        color: 'var(--pill-color)', border: '1px solid var(--pill-border)'
                       }}>{s}</span>
                     ))}
                   </div>
@@ -711,13 +711,13 @@ export default function Resumes() {
             title={atCap ? `Sign in to upload more than ${ANON_CAP} resumes` : 'Upload a resume'}
             style={{
               background: 'transparent',
-              border: `1px dashed ${atCap ? 'rgba(255,255,255,0.1)' : 'rgba(232,255,107,0.25)'}`,
+              border: `1px dashed ${atCap ? 'var(--upload-disabled-border)' : 'var(--upload-border)'}`,
               borderRadius: '16px', padding: '22px',
               cursor: uploading || atCap ? 'not-allowed' : 'pointer',
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center',
               gap: '10px', minHeight: '160px',
-              color: atCap ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.35)',
+              color: atCap ? 'var(--upload-disabled-color)' : 'var(--upload-color)',
               fontFamily: 'var(--font-body)', fontSize: '13px',
               transition: 'all 0.25s ease',
               opacity: uploading ? 0.4 : 1,
@@ -726,12 +726,12 @@ export default function Resumes() {
               if (uploading || atCap) return
               e.currentTarget.style.borderColor = 'rgba(232,255,107,0.5)'
               e.currentTarget.style.background = 'rgba(232,255,107,0.03)'
-              e.currentTarget.style.color = 'rgba(232,255,107,0.7)'
+              e.currentTarget.style.color = 'var(--accent)'
             }}
             onMouseLeave={e => {
-              e.currentTarget.style.borderColor = atCap ? 'rgba(255,255,255,0.1)' : 'rgba(232,255,107,0.25)'
+              e.currentTarget.style.borderColor = atCap ? 'var(--upload-disabled-border)' : 'var(--upload-border)'
               e.currentTarget.style.background = 'transparent'
-              e.currentTarget.style.color = atCap ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.35)'
+              e.currentTarget.style.color = atCap ? 'var(--upload-disabled-color)' : 'var(--upload-color)'
             }}
           >
             <span style={{ fontSize: '28px', opacity: atCap ? 0.2 : 0.5 }}>+</span>

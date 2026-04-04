@@ -29,21 +29,17 @@ export default function TabBar({ active, onSwitch }) {
           display: flex;
           align-items: center;
           gap: 4px;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.14);
+          background: var(--tabbar-bg);
+          border: 1px solid var(--tabbar-border);
           border-radius: 40px;
           padding: 6px;
           backdrop-filter: blur(28px);
           -webkit-backdrop-filter: blur(28px);
-          box-shadow: 0 8px 40px rgba(0,0,0,0.6),
-                      inset 0 1px 0 rgba(255,255,255,0.1),
-                      0 0 0 1px rgba(232,255,107,0.04);
+          box-shadow: var(--tabbar-shadow);
           transition: box-shadow 0.9s ease;
         }
         .tabbar-wrap.settled .tabbar {
-          box-shadow: 0 4px 24px rgba(0,0,0,0.5),
-                      inset 0 1px 0 rgba(255,255,255,0.08),
-                      0 0 20px rgba(232,255,107,0.06);
+          box-shadow: var(--tabbar-settled-shadow);
         }
 
         .tab-btn {
@@ -54,7 +50,7 @@ export default function TabBar({ active, onSwitch }) {
           border-radius: 30px;
           border: none;
           background: transparent;
-          color: rgba(255,255,255,0.4);
+          color: var(--tab-inactive);
           font-family: var(--font-body);
           font-size: 14px;
           font-weight: 500;
@@ -63,12 +59,11 @@ export default function TabBar({ active, onSwitch }) {
           white-space: nowrap;
           letter-spacing: 0.01em;
         }
-        .tab-btn:hover { color: rgba(255,255,255,0.7); }
+        .tab-btn:hover { color: var(--tab-inactive-hover); }
         .tab-btn.active {
-          background: rgba(255,255,255,0.1);
-          color: #f0f0f0;
-          box-shadow: 0 2px 12px rgba(0,0,0,0.3),
-                      inset 0 1px 0 rgba(255,255,255,0.12);
+          background: var(--tab-active-bg);
+          color: var(--tab-active-color);
+          box-shadow: var(--tab-active-shadow);
         }
 
         /* ── Mobile: bottom tab bar ── */
@@ -92,14 +87,13 @@ export default function TabBar({ active, onSwitch }) {
           left: 0;
           right: 0;
           z-index: 200;
-          background: rgba(14,14,14,0.92);
-          border-top: 1px solid rgba(255,255,255,0.1);
+          background: var(--mobile-bar-bg);
+          border-top: 1px solid var(--mobile-bar-border);
           backdrop-filter: blur(24px);
           -webkit-backdrop-filter: blur(24px);
           padding: 0;
           padding-bottom: env(safe-area-inset-bottom, 0px);
-          box-shadow: 0 -8px 32px rgba(0,0,0,0.5),
-                      0 -1px 0 rgba(232,255,107,0.06);
+          box-shadow: var(--mobile-bar-shadow);
         }
 
         .tab-btn-mobile {
@@ -112,7 +106,7 @@ export default function TabBar({ active, onSwitch }) {
           padding: 10px 4px 10px;
           border: none;
           background: transparent;
-          color: rgba(255,255,255,0.35);
+          color: var(--mobile-tab-inactive);
           font-family: var(--font-body);
           font-size: 10px;
           font-weight: 500;
