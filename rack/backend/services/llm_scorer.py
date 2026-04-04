@@ -10,7 +10,6 @@ Design decisions:
   - One LLM call per job with ALL qualifying resumes bundled — [Auto Matches path]
   - Condensed context: signal-dense JD summary + resume summary (~1200 tokens per call)
   - Structured JSON response: score + 3 components + reasoning + recommendation
-  - Hybrid score passed as context anchor to reduce LLM score hallucination
   - Concurrent calls with semaphore (max 8 at a time) for speed
   - Graceful fallback: if LLM call fails, hybrid score is kept as-is
 
@@ -248,6 +247,7 @@ RULES:
 4. Key strengths and gaps must be SPECIFIC (name actual skills/experiences, not generic phrases)
 5. Recommendation must match the score range
 
+
 Return ONLY valid JSON (no markdown, no backticks):
 {
   "llm_score": 72,
@@ -289,10 +289,7 @@ async def _score_single_pair(
         jd_summary = _build_jd_summary(job, parsed_jd)
         resume_summary = _build_resume_summary(resume)
 
-        user_message = f"""INITIAL HYBRID SCORE (keyword/semantic match): {hybrid_score}%
-Use this as a rough anchor — your holistic assessment may differ.
-
-JOB DESCRIPTION:
+        user_message = f"""JOB DESCRIPTION:
 {jd_summary}
 
 ---
@@ -547,56 +544,65 @@ _GROUPED_SCORER_SYSTEM_PROMPT = """You are an expert technical recruiter scoring
 You will receive one job description and a numbered list of candidate resumes.
 Score EACH resume independently against the job — do not rank them relative to each other.
 A strong resume should score high even if all other resumes are weak, and vice versa.
+Multiple resumes may receive similar scores if justified.
+
+Your task is to estimate each resume's ABSOLUTE fit for this specific role based only on evidence in the resume and the job description.
 
 SCORING RUBRIC:
-- 85-100: Exceptional fit — candidate has almost everything, including domain-specific depth
-- 70-84:  Strong fit — most requirements met, minor gaps only
-- 55-69:  Good fit — core skills present, some meaningful gaps
-- 40-54:  Partial fit — foundational match but significant gaps
-- 0-39:   Weak fit — missing too many critical requirements
+- 90-100: Outstanding fit — candidate meets nearly all critical requirements with strong, direct evidence and minimal meaningful gaps
+- 80-89:  Strong fit — candidate meets most critical requirements with only minor gaps
+- 65-79:  Solid fit — candidate matches many core requirements, but has some important gaps or weaker evidence in key areas
+- 50-64:  Partial fit — candidate has relevant overlap, but notable core requirements are missing or weakly supported
+- 0-49:   Weak fit — candidate is missing too many critical requirements or lacks sufficient evidence for this role
 
 COMPONENT SCORES (each 0-100):
-- skills_fit: How well do the candidate's technical skills match the JD requirements?
-- experience_fit: Is the seniority, domain, and years of experience appropriate?
-- trajectory_fit: Does the candidate's career trajectory point toward this role?
+- skills_fit: How well do the candidate's demonstrated technical and domain skills match the role's requirements?
+- experience_fit: How well do the candidate's level, scope, years, and type of work match the role?
+- evidence_fit: How strongly does the resume provide concrete evidence that the candidate has done work relevant to this job?
 
 RULES:
-1. Score each resume independently — treat each as if it were the only one
-2. Be honest and specific — vague high scores help nobody
-3. A candidate with adjacent skills but missing core domain knowledge should score 45-60, not 75
-4. Key strengths and gaps must be SPECIFIC (name actual skills/experiences)
-5. Recommendation must match the score range
-6. TRAJECTORY TIEBREAKER: When the job title contains "AI", "ML", "Machine Learning",
-   "Data Science", or "LLM", a resume with demonstrated AI/ML depth (agent workflows,
-   LLM evaluation, RAG pipelines, model training, prompt engineering, vLLM, fine-tuning)
-   MUST score higher than a resume that only matches via incidental vocabulary overlap
-   (e.g. a Java/backend engineer whose fintech work mentions "audit logs" or "compliance"
-   coincidentally). Domain vocabulary overlap is NOT the same as domain expertise.
-7. COMPLIANCE + AI ROLES: If the role has "AI" in the title AND operates in a regulated
-   domain (compliance, fintech, legal, healthcare), the PRIMARY scoring criterion is
-   AI/LLM technical depth. Compliance/domain knowledge is learnable and secondary.
-   Score a strong AI engineer who can learn compliance HIGHER than a compliance/backend
-   engineer who has never built AI systems — even if the JD mentions compliance vocabulary.
+1. Score each resume independently — treat each as if it were the only candidate.
+2. Prioritize REQUIRED qualifications over PREFERRED qualifications.
+3. Reward demonstrated evidence, not keyword overlap alone.
+4. Adjacent or transferable skills alone, without clear evidence of relevant work, should not elevate a score into the Strong Fit range.
+5. Do not assume missing ability just because the candidate's title is different; use the actual work described in the resume.
+6. Do not give credit for skills, domain knowledge, seniority, or responsibilities that are not supported by evidence in the resume.
+7. Missing one preferred tool is a minor gap; missing a core required skill, responsibility, domain, or level of experience is a major gap.
+8. Key strengths and gaps must be SPECIFIC and tied directly to the job's actual requirements.
+9. Be conservative with very high scores — a score above 85 should indicate a genuinely strong submit with minimal hiring risk.
+10. Use the full score range when appropriate. Do not compress all candidates into the middle.
 
+RETURN FORMAT:
 Return ONLY a valid JSON array — one object per resume, in the same order as input.
-No markdown, no backticks, no preamble. Example for 2 resumes:
-[
-  {
-    "resume_index": 0,
-    "llm_score": 82,
-    "components": { "skills_fit": 85, "experience_fit": 80, "trajectory_fit": 78 },
-    "reasoning": "Specific 2-3 sentence explanation of fit.",
-    "recommendation": "Good Match",
-    "key_strengths": ["Strength 1 with evidence", "Strength 2"],
-    "key_gaps": ["Gap 1 — why it matters", "Gap 2 if any"]
-  },
-  {
-    "resume_index": 1,
-    "llm_score": 61,
-    ...
-  }
-]"""
+No markdown, no backticks, no preamble, no commentary outside the JSON.
 
+Each object must follow this structure:
+{
+  "resume_index": 0,
+  "llm_score": 82,
+  "components": {
+    "skills_fit": 85,
+    "experience_fit": 80,
+    "evidence_fit": 79
+  },
+  "reasoning": "Write 2-4 concise sentences explaining the score. Mention the strongest direct matches and the most important gaps, using evidence from the resume and job description.",
+  "recommendation": "Strong Match",
+  "key_strengths": [
+    "Specific strength with evidence",
+    "Specific strength with evidence"
+  ],
+  "key_gaps": [
+    "Specific gap and why it matters",
+    "Specific gap and why it matters"
+  ]
+}
+
+RECOMMENDATION MAPPING:
+- 85-100: "Strong Match"
+- 70-84:  "Good Match"
+- 50-69:  "Partial Match"
+- 0-49:   "Weak Match"
+"""
 
 async def _score_job_multi_resume(
     job_id: str,
@@ -631,7 +637,7 @@ async def _score_job_multi_resume(
         resume_summary = _build_resume_summary(entry["resume"])
         hybrid = entry.get("hybrid_score", 0)
         resume_blocks.append(
-            f"CANDIDATE {i} (initial hybrid score: {hybrid}%):\n{resume_summary}"
+            f"CANDIDATE {i}:\n{resume_summary}"
         )
 
     resumes_text = "\n\n---\n\n".join(resume_blocks)
