@@ -563,8 +563,20 @@ COMPONENT SCORES (each 0-100):
 RULES:
 1. Score each resume independently — treat each as if it were the only one
 2. Be honest and specific — vague high scores help nobody
-3. Key strengths and gaps must be SPECIFIC (name actual skills/experiences)
-4. Recommendation must match the score range
+3. A candidate with adjacent skills but missing core domain knowledge should score 45-60, not 75
+4. Key strengths and gaps must be SPECIFIC (name actual skills/experiences)
+5. Recommendation must match the score range
+6. TRAJECTORY TIEBREAKER: When the job title contains "AI", "ML", "Machine Learning",
+   "Data Science", or "LLM", a resume with demonstrated AI/ML depth (agent workflows,
+   LLM evaluation, RAG pipelines, model training, prompt engineering, vLLM, fine-tuning)
+   MUST score higher than a resume that only matches via incidental vocabulary overlap
+   (e.g. a Java/backend engineer whose fintech work mentions "audit logs" or "compliance"
+   coincidentally). Domain vocabulary overlap is NOT the same as domain expertise.
+7. COMPLIANCE + AI ROLES: If the role has "AI" in the title AND operates in a regulated
+   domain (compliance, fintech, legal, healthcare), the PRIMARY scoring criterion is
+   AI/LLM technical depth. Compliance/domain knowledge is learnable and secondary.
+   Score a strong AI engineer who can learn compliance HIGHER than a compliance/backend
+   engineer who has never built AI systems — even if the JD mentions compliance vocabulary.
 
 Return ONLY a valid JSON array — one object per resume, in the same order as input.
 No markdown, no backticks, no preamble. Example for 2 resumes:
@@ -734,9 +746,9 @@ async def _score_job_multi_resume(
             return enriched
 
         except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"[LLMScorer][grouped] Parse/call failed for job {job_id}: {e}")
+            logger.warning(f"[LLMScorer][grouped] Parse/call failed for job {job_id}: {e!r}")
         except Exception as e:
-            logger.warning(f"[LLMScorer][grouped] Unexpected error for job {job_id}: {e}")
+            logger.warning(f"[LLMScorer][grouped] Unexpected error for job {job_id}: {type(e).__name__}: {e!r}")
 
     # Fallback — return all entries with hybrid scores
     fallback = []

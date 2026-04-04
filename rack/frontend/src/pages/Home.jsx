@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
+import RackCreature from '../components/RackCreature'
 
 const mobileCardStyles = `
   /* ── Keyframes ── */
@@ -973,6 +974,34 @@ export default function Home() {
   const fileInputRef = useRef(null)
   const chatScrollRef = useRef(null)
   const textareaRef   = useRef(null)
+
+  // ── Creature mood — derived from app state ──────────────────────
+  const [creatureMood, setCreatureMood] = useState('idle')
+
+  // Mood transitions
+  useEffect(() => {
+    if (loading || filterLoading) {
+      setCreatureMood('thinking')
+      return
+    }
+    if (lastResults && lastResults.length > 0) {
+      setCreatureMood('happy')
+      const t = setTimeout(() => setCreatureMood('idle'), 4000)
+      return () => clearTimeout(t)
+    }
+    if (jd.length > 0) {
+      setCreatureMood('typing')
+      return
+    }
+    setCreatureMood('idle')
+  }, [loading, filterLoading, jd, lastResults])
+
+  // Go to sleep after 30s of idle
+  useEffect(() => {
+    if (creatureMood !== 'idle') return
+    const t = setTimeout(() => setCreatureMood('sleeping'), 30000)
+    return () => clearTimeout(t)
+  }, [creatureMood])
 
   // ── Resume count ────────────────────────────────────────────────
   useEffect(() => {
@@ -2050,7 +2079,11 @@ export default function Home() {
         )}
 
         {/* Main input row — clicking anywhere in the box focuses the textarea */}
-        <div className="rack-chat-input-inner" onClick={() => textareaRef.current?.focus()} style={{ cursor: 'text' }}>
+        {/* position:relative so the creature can absolute-position on top of it */}
+        <div className="rack-chat-input-inner" onClick={() => textareaRef.current?.focus()} style={{ cursor: 'text', position: 'relative' }}>
+
+          {/* Creature walks along the top edge of this box */}
+          <RackCreature mood={creatureMood} />
           <textarea
             ref={textareaRef}
             className="rack-chat-textarea"
