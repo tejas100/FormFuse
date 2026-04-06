@@ -12,10 +12,11 @@ Session 21: Normalized auto_match_results schema — one row per (user, job).
 """
 
 from typing import Optional
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 from pydantic import BaseModel
 
 from db.database import get_db
@@ -221,6 +222,50 @@ async def auto_archive(
         raise HTTPException(status_code=400, detail="job_ids list cannot be empty")
     user_id = str(current_user.id)
     return await archive_jobs_for_user(user_id=user_id, job_ids=req.job_ids, db=db)
+
+
+@router.patch("/auto/{job_id}/applied")
+async def mark_job_applied(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Mark a specific auto-match job as applied for the authenticated user.
+    Sets applied=True and records applied_at timestamp.
+    Idempotent — safe to call multiple times.
+    """
+    from models.orm import AutoMatchResult
+    import uuid as _uuid
+
+    user_uuid = _uuid.UUID(str(current_user.id))
+
+    # Verify the row exists for this user
+    stmt = select(AutoMatchResult).where(
+        AutoMatchResult.user_id == user_uuid,
+        AutoMatchResult.job_id == job_id,
+    )
+    result = await db.execute(stmt)
+    row = result.scalar_one_or_none()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found in your matches")
+
+    # Idempotent: only update if not already applied
+    if not row.applied:
+        upd = (
+            update(AutoMatchResult)
+            .where(
+                AutoMatchResult.user_id == user_uuid,
+                AutoMatchResult.job_id == job_id,
+            )
+            .values(applied=True, applied_at=datetime.now(timezone.utc))
+        )
+        await db.execute(upd)
+        await db.commit()
+
+    return {"job_id": job_id, "applied": True, "applied_at": row.applied_at or datetime.now(timezone.utc)}
+
 
 
 # ── Stats + Presets (shared, no auth needed) ──────────────────────────

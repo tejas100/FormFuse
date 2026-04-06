@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { getAuthHeaders } from "../utils/api";
 
 const API = "http://localhost:8000/api/tracking";
@@ -161,7 +162,7 @@ function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount }
 /* ══════════════════════════════════════════════════════════════════
    MATCH CARD — shared between both tabs
    ══════════════════════════════════════════════════════════════════ */
-function MatchCard({ match, index, expanded, onToggle, isAuto }) {
+function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onApply }) {
   const displayScore = match.llm_score ?? match.score ?? 0;
   const sc = scoreColor(displayScore);
   const pct = Math.min(displayScore, 100);
@@ -491,16 +492,19 @@ function MatchCard({ match, index, expanded, onToggle, isAuto }) {
               {match.job_url && (
                 <a
                   href={match.job_url} target="_blank" rel="noopener noreferrer"
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); if (onApply) onApply(); }}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 6,
-                    padding: "10px 24px", borderRadius: 30, background: "var(--accent)",
-                    color: "#000", fontFamily: "var(--font-display)", fontWeight: 700,
+                    padding: "10px 24px", borderRadius: 30,
+                    background: isApplied ? "rgba(52,211,153,0.15)" : "var(--accent)",
+                    color: isApplied ? "#34d399" : "#000",
+                    border: isApplied ? "1px solid rgba(52,211,153,0.35)" : "none",
+                    fontFamily: "var(--font-display)", fontWeight: 700,
                     fontSize: 13, textDecoration: "none", letterSpacing: "-0.01em",
                     transition: "all 0.2s",
                   }}
                 >
-                  Apply →
+                  {isApplied ? "✓ Applied" : "Apply →"}
                 </a>
               )}
               {match.resume_id && (
@@ -1288,10 +1292,51 @@ function AutoMatchesTab({ profile }) {
   const [page, setPage]                 = useState(1);
   const [showArchive, setShowArchive]   = useState(false);
   const [archiveCount, setArchiveCount] = useState(() => loadArchive().length);
+  const [appliedJobs, setAppliedJobs]   = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("rack_applied_jobs") || "[]")); }
+    catch { return new Set(); }
+  });
+  const [applyPrompt, setApplyPrompt]   = useState(null); // { job_id, job_title }
+  const pendingApplyRef = useRef(null);
   const hasRun = useRef(false);
 
   const hasProfile = profile && (profile.target_roles || []).length > 0;
   const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
+
+  const markApplied = async (job_id) => {
+    // Optimistic update — immediate UI response
+    setAppliedJobs(prev => {
+      const next = new Set(prev);
+      next.add(job_id);
+      localStorage.setItem("rack_applied_jobs", JSON.stringify([...next]));
+      return next;
+    });
+    setApplyPrompt(null);
+    pendingApplyRef.current = null;
+
+    // Persist to DB
+    try {
+      const headers = await getAuthHeaders();
+      await fetch(`${API}/auto/${job_id}/applied`, {
+        method: "PATCH",
+        headers,
+      });
+    } catch (e) {
+      console.warn("Failed to persist applied status to DB:", e);
+      // localStorage already updated — user won't notice
+    }
+  };
+
+  const handleApplyClick = (job_id, job_title) => {
+    pendingApplyRef.current = { job_id, job_title };
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && pendingApplyRef.current) {
+        setApplyPrompt({ ...pendingApplyRef.current });
+        document.removeEventListener("visibilitychange", onVisible);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+  };
 
   const loadMeta = useCallback(async () => {
     try {
@@ -1387,6 +1432,67 @@ function AutoMatchesTab({ profile }) {
   return (
     <div>
       {showArchive && <ArchiveModal onClose={() => { setShowArchive(false); setArchiveCount(loadArchive().length); }} />}
+
+      {/* Apply confirmation modal — portal to body so it's always viewport-centered */}
+      {applyPrompt && createPortal(
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) { setApplyPrompt(null); pendingApplyRef.current = null; } }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 9999,
+            background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "20px",
+          }}
+        >
+          <div style={{
+            background: "var(--surface)", border: "1px solid var(--border-bright)",
+            borderRadius: 20, padding: "28px 28px 24px", maxWidth: 380, width: "100%",
+            boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
+            animation: "fadeUp 0.22s cubic-bezier(0.22,1,0.36,1) both",
+          }}>
+            <div style={{ fontSize: 20, marginBottom: 10, textAlign: "center" }}>📋</div>
+            <div style={{ fontSize: 16, fontFamily: "var(--font-display)", fontWeight: 800, marginBottom: 6, letterSpacing: "-0.3px", textAlign: "center" }}>
+              Did you apply to this role?
+            </div>
+            <div style={{
+              fontSize: 12, color: "var(--text-dim)", marginBottom: 22, lineHeight: 1.5,
+              textAlign: "center", padding: "0 8px",
+            }}>
+              {applyPrompt.job_title}
+            </div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+              <button
+                onClick={() => markApplied(applyPrompt.job_id)}
+                style={{
+                  flex: 1, padding: "11px 0", borderRadius: 30, border: "none",
+                  background: "var(--accent)", color: "#000",
+                  fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13,
+                  cursor: "pointer", transition: "opacity 0.15s",
+                }}
+              >✓ Yes, I applied</button>
+              <button
+                onClick={() => { setApplyPrompt(null); pendingApplyRef.current = null; }}
+                style={{
+                  flex: 1, padding: "11px 0", borderRadius: 30,
+                  border: "1px solid var(--border)", background: "transparent",
+                  color: "var(--text-dim)",
+                  fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >Not yet</button>
+            </div>
+            <button
+              onClick={() => { setApplyPrompt(null); pendingApplyRef.current = null; }}
+              style={{
+                width: "100%", padding: "8px 0", borderRadius: 30, border: "none",
+                background: "transparent", color: "var(--text-dim)",
+                fontFamily: "var(--font-body)", fontSize: 11,
+                cursor: "pointer", opacity: 0.6,
+              }}
+            >Dismiss</button>
+          </div>
+        </div>
+      , document.body)}
 
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
@@ -1556,7 +1662,9 @@ function AutoMatchesTab({ profile }) {
         <MatchCard key={m.job_id} match={m} index={(page - 1) * PAGE_SIZE + i}
           expanded={expandedId === m.job_id}
           onToggle={() => setExpandedId(expandedId === m.job_id ? null : m.job_id)}
-          isAuto={true} />
+          isAuto={true}
+          isApplied={appliedJobs.has(m.job_id)}
+          onApply={() => handleApplyClick(m.job_id, m.job_title)} />
       ))}
 
       {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
