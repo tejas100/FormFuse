@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 WATCHLIST_DIR = os.path.join("uploads", "watchlist")
 
 # ── Tunables ─────────────────────────────────────────────────────────
-DISPLAY_CAP            = 50
-STORE_CAP              = 90
+DISPLAY_CAP            = 300
+STORE_CAP              = 300
 SCORE_WEIGHT           = 0.85
 RECENCY_WEIGHT         = 0.15
 RECENCY_HALF_LIFE_DAYS = 7

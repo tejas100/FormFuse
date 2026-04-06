@@ -1019,6 +1019,67 @@ function ArchiveModal({ onClose }) {
 /* ══════════════════════════════════════════════════════════════════
    FRESH JOBS TAB — recently posted scored jobs, sorted by posted_at
    ══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+   SMART PAGINATOR — ellipsis style, max ~9 buttons visible
+   ══════════════════════════════════════════════════════════════════ */
+function Paginator({ page, totalPages, onPage }) {
+  if (totalPages <= 1) return null;
+  const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
+
+  // Build the page numbers to show: always first, last, and ±2 around current
+  const pages = [];
+  const delta = 2;
+  const left  = Math.max(2, page - delta);
+  const right = Math.min(totalPages - 1, page + delta);
+
+  pages.push(1);
+  if (left > 2) pages.push("...");
+  for (let i = left; i <= right; i++) pages.push(i);
+  if (right < totalPages - 1) pages.push("...");
+  if (totalPages > 1) pages.push(totalPages);
+
+  const btnBase = {
+    height: 32, minWidth: 32, borderRadius: 8, fontSize: 12,
+    border: "1px solid var(--border)", background: "transparent",
+    cursor: "pointer", transition: "all 0.15s", ...mono,
+    display: "flex", alignItems: "center", justifyContent: "center", padding: "0 8px",
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 20, flexWrap: "wrap" }}>
+      <button
+        onClick={() => onPage(Math.max(1, page - 1))}
+        disabled={page === 1}
+        style={{ ...btnBase, color: page === 1 ? "var(--text-dim)" : "var(--text)", opacity: page === 1 ? 0.35 : 1 }}
+      >← prev</button>
+
+      {pages.map((p, i) =>
+        p === "..." ? (
+          <span key={`ellipsis-${i}`} style={{ ...mono, fontSize: 12, color: "var(--text-dim)", padding: "0 2px" }}>…</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPage(p)}
+            style={{
+              ...btnBase,
+              border: `1px solid ${p === page ? "var(--accent)" : "var(--border)"}`,
+              background: p === page ? "rgba(232,255,107,0.1)" : "transparent",
+              color: p === page ? "var(--accent)" : "var(--text-dim)",
+              fontWeight: p === page ? 700 : 400,
+            }}
+          >{p}</button>
+        )
+      )}
+
+      <button
+        onClick={() => onPage(Math.min(totalPages, page + 1))}
+        disabled={page === totalPages}
+        style={{ ...btnBase, color: page === totalPages ? "var(--text-dim)" : "var(--text)", opacity: page === totalPages ? 0.35 : 1 }}
+      >next →</button>
+    </div>
+  );
+}
+
 const FRESH_WINDOWS = [
   { label: "1h",  hours: 1   },
   { label: "3h",  hours: 3   },
@@ -1198,18 +1259,7 @@ function FreshJobsTab() {
       ))}
 
       {/* Pagination */}
-      {!loading && totalPages > 1 && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 20, ...mono }}>
-          <button onClick={() => { setPage(p => Math.max(1, p - 1)); setExpandedId(null); }} disabled={page === 1}
-            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === 1 ? "var(--text-dim)" : "var(--text)", cursor: page === 1 ? "default" : "pointer", fontSize: 12, opacity: page === 1 ? 0.4 : 1 }}>← prev</button>
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-            <button key={p} onClick={() => { setPage(p); setExpandedId(null); }}
-              style={{ width: 32, height: 32, borderRadius: 8, fontSize: 12, border: `1px solid ${p === page ? "var(--accent)" : "var(--border)"}`, background: p === page ? "rgba(232,255,107,0.1)" : "transparent", color: p === page ? "var(--accent)" : "var(--text-dim)", cursor: "pointer", fontWeight: p === page ? 700 : 400 }}>{p}</button>
-          ))}
-          <button onClick={() => { setPage(p => Math.min(totalPages, p + 1)); setExpandedId(null); }} disabled={page === totalPages}
-            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === totalPages ? "var(--text-dim)" : "var(--text)", cursor: page === totalPages ? "default" : "pointer", fontSize: 12, opacity: page === totalPages ? 0.4 : 1 }}>next →</button>
-        </div>
-      )}
+      {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
       {!loading && sorted.length > 0 && (
         <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text-dim)", ...mono }}>
           showing {(page - 1) * PAGE_SIZE_F + 1}–{Math.min(page * PAGE_SIZE_F, sorted.length)} of {sorted.length} jobs
@@ -1342,17 +1392,10 @@ function AutoMatchesTab({ profile }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
-            {matches.length > 0 ? `${matches.length} top matches · RACK scored by resume fit + recency` : "Automatically finds and AI-scores your best-fit jobs from top tech companies"}
-            {meta?.last_fetch_at && !loading && <span> · updated {timeAgo(meta.last_fetch_at)}</span>}
+            {matches.length > 0
+              ? <>RACK matched <span style={{ color: "var(--text)", fontWeight: 600 }}>{matches.length}</span> top job roles for your existing resumes{meta?.last_fetch_at && !loading && <span> · updated {timeAgo(meta.last_fetch_at)}</span>}</>
+              : "Automatically finds and AI-scores your best-fit jobs from top tech companies"}
           </div>
-          {profile?.target_roles?.length > 0 && (
-            <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
-              {profile.target_roles.slice(0, 4).map(r => (
-                <span key={r} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: "rgba(232,255,107,0.08)", color: "var(--accent)", border: "1px solid rgba(232,255,107,0.15)", fontWeight: 500 }}>{r}</span>
-              ))}
-              {profile.target_roles.length > 4 && <span style={{ fontSize: 10, color: "var(--text-dim)", padding: "2px 0" }}>+{profile.target_roles.length - 4} more</span>}
-            </div>
-          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={() => setShowArchive(true)} title="View archive"
@@ -1516,19 +1559,8 @@ function AutoMatchesTab({ profile }) {
           isAuto={true} />
       ))}
 
-      {!loading && totalPages > 1 && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 20, fontFamily: "'JetBrains Mono',monospace" }}>
-          <button onClick={() => { setPage(p => Math.max(1, p - 1)); setExpandedId(null); }} disabled={page === 1}
-            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === 1 ? "var(--text-dim)" : "var(--text)", cursor: page === 1 ? "default" : "pointer", fontSize: 12, opacity: page === 1 ? 0.4 : 1 }}>← prev</button>
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-            <button key={p} onClick={() => { setPage(p); setExpandedId(null); }}
-              style={{ width: 32, height: 32, borderRadius: 8, fontSize: 12, border: `1px solid ${p === page ? "var(--accent)" : "var(--border)"}`, background: p === page ? "rgba(232,255,107,0.1)" : "transparent", color: p === page ? "var(--accent)" : "var(--text-dim)", cursor: "pointer", fontWeight: p === page ? 700 : 400 }}>{p}</button>
-          ))}
-          <button onClick={() => { setPage(p => Math.min(totalPages, p + 1)); setExpandedId(null); }} disabled={page === totalPages}
-            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === totalPages ? "var(--text-dim)" : "var(--text)", cursor: page === totalPages ? "default" : "pointer", fontSize: 12, opacity: page === totalPages ? 0.4 : 1 }}>next →</button>
-        </div>
-      )}
-      {!loading && filtered.length > 0 && (
+      {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
+      {!loading && sorted.length > 0 && (
         <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace" }}>
           showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} of {sorted.length} matches
           {filterBy !== "all" && <span style={{ color: "#34d399", marginLeft: 6 }}>· filtered</span>}
