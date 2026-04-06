@@ -1233,6 +1233,8 @@ function AutoMatchesTab({ profile }) {
   const [error, setError]               = useState(null);
   const [expandedId, setExpandedId]     = useState(null);
   const [titleFilter, setTitleFilter]   = useState("");
+  const [sortBy, setSortBy]             = useState("score_desc");
+  const [filterBy, setFilterBy]         = useState("all");
   const [page, setPage]                 = useState(1);
   const [showArchive, setShowArchive]   = useState(false);
   const [archiveCount, setArchiveCount] = useState(() => loadArchive().length);
@@ -1280,15 +1282,35 @@ function AutoMatchesTab({ profile }) {
     setLoading(false);
   };
 
-  const filtered = matches.filter(m =>
-    !titleFilter.trim() || m.job_title?.toLowerCase().includes(titleFilter.toLowerCase())
-  );
+  const filtered = matches.filter(m => {
+    const titleMatch = !titleFilter.trim() || m.job_title?.toLowerCase().includes(titleFilter.toLowerCase());
+    const score = m.llm_score ?? m.score ?? 0;
+    const scoreMatch =
+      filterBy === "all"          ? true :
+      filterBy === "85"           ? score >= 85 :
+      filterBy === "75"           ? score >= 75 :
+      filterBy === "65"           ? score >= 65 :
+      filterBy === "strong"       ? m.llm_recommendation === "Strong Match" :
+      filterBy === "exceptional"  ? m.llm_recommendation === "Exceptional Fit" :
+      true;
+    return titleMatch && scoreMatch;
+  });
 
-  // Reset page when filter changes
-  useEffect(() => { setPage(1); }, [titleFilter]);
+  const sorted = [...filtered].sort((a, b) => {
+    const sa = a.llm_score ?? a.score ?? 0;
+    const sb = b.llm_score ?? b.score ?? 0;
+    if (sortBy === "score_desc") return sb - sa;
+    if (sortBy === "score_asc")  return sa - sb;
+    if (sortBy === "recent")     return new Date(b.posted_at || 0) - new Date(a.posted_at || 0);
+    if (sortBy === "oldest")     return new Date(a.posted_at || 0) - new Date(b.posted_at || 0);
+    return sb - sa;
+  });
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // Reset page when filter/sort changes
+  useEffect(() => { setPage(1); }, [titleFilter, sortBy, filterBy]);
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const paginated  = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const inputStyle = {
     padding: "8px 14px", borderRadius: 30,
@@ -1320,7 +1342,7 @@ function AutoMatchesTab({ profile }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
-            {matches.length > 0 ? `${matches.length} top matches · AI-scored by resume fit + recency` : "Automatically finds and AI-scores your best-fit jobs from top tech companies"}
+            {matches.length > 0 ? `${matches.length} top matches · RACK scored by resume fit + recency` : "Automatically finds and AI-scores your best-fit jobs from top tech companies"}
             {meta?.last_fetch_at && !loading && <span> · updated {timeAgo(meta.last_fetch_at)}</span>}
           </div>
           {profile?.target_roles?.length > 0 && (
@@ -1369,12 +1391,109 @@ function AutoMatchesTab({ profile }) {
 
       {matches.length > 0 && (
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-          <input type="text" value={titleFilter} onChange={e => setTitleFilter(e.target.value)} placeholder="Search by title…" style={{ ...inputStyle, flex: "1 1 180px" }} />
-          <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace" }}>{filtered.length} jobs · p.{page}/{totalPages}</span>
+          {/* Search */}
+          <input
+            type="text"
+            value={titleFilter}
+            onChange={e => setTitleFilter(e.target.value)}
+            placeholder="Search by title…"
+            style={{ ...inputStyle, flex: "1 1 180px" }}
+          />
+
+          {/* Sort By dropdown */}
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value)}
+              style={{
+                ...inputStyle,
+                paddingRight: 32,
+                appearance: "none",
+                WebkitAppearance: "none",
+                cursor: "pointer",
+                background: sortBy !== "score_desc"
+                  ? "rgba(232,255,107,0.06)"
+                  : "var(--surface)",
+                color: sortBy !== "score_desc"
+                  ? "var(--accent)"
+                  : "var(--text-dim)",
+                border: sortBy !== "score_desc"
+                  ? "1px solid rgba(232,255,107,0.28)"
+                  : "1px solid var(--border)",
+                transition: "all 0.18s",
+                minWidth: 148,
+              }}
+            >
+              <option value="score_desc">↓ Score: High → Low</option>
+              <option value="score_asc">↑ Score: Low → High</option>
+              <option value="recent">⏱ Recency: Newest first</option>
+              <option value="oldest">⏱ Recency: Oldest first</option>
+            </select>
+            <span style={{
+              position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)",
+              pointerEvents: "none", fontSize: 10,
+              color: sortBy !== "score_desc" ? "var(--accent)" : "var(--text-dim)",
+            }}>▾</span>
+          </div>
+
+          {/* Filter By dropdown */}
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <select
+              value={filterBy}
+              onChange={e => setFilterBy(e.target.value)}
+              style={{
+                ...inputStyle,
+                paddingRight: 32,
+                appearance: "none",
+                WebkitAppearance: "none",
+                cursor: "pointer",
+                background: filterBy !== "all"
+                  ? "rgba(52,211,153,0.06)"
+                  : "var(--surface)",
+                color: filterBy !== "all"
+                  ? "#34d399"
+                  : "var(--text-dim)",
+                border: filterBy !== "all"
+                  ? "1px solid rgba(52,211,153,0.28)"
+                  : "1px solid var(--border)",
+                transition: "all 0.18s",
+                minWidth: 152,
+              }}
+            >
+              <option value="all">⊙ All matches</option>
+              <option value="85">★ 85%+ · Strong only</option>
+              <option value="75">◆ 75%+ · Good & above</option>
+              <option value="65">● 65%+ · Partial & above</option>
+              <option value="strong">✦ Strong Match label</option>
+              <option value="exceptional">⚡ Exceptional Fit label</option>
+            </select>
+            <span style={{
+              position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)",
+              pointerEvents: "none", fontSize: 10,
+              color: filterBy !== "all" ? "#34d399" : "var(--text-dim)",
+            }}>▾</span>
+          </div>
+
+          <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace", flexShrink: 0 }}>
+            {sorted.length} jobs · p.{page}/{totalPages}
+          </span>
         </div>
       )}
 
       {loading && <AutoMatchLoadingAnimation />}
+
+      {!loading && matches.length > 0 && sorted.length === 0 && (
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "36px 24px", textAlign: "center", animation: "fadeUp 0.25s ease both" }}>
+          <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 18, marginBottom: 10, color: "var(--accent)", opacity: 0.4 }}>[ no results ]</div>
+          <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 14 }}>No matches for the current filters.</div>
+          <button
+            onClick={() => { setFilterBy("all"); setTitleFilter(""); }}
+            style={{ padding: "8px 20px", borderRadius: 30, border: "1px solid rgba(232,255,107,0.3)", background: "transparent", color: "var(--accent)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
 
       {!loading && matches.length === 0 && (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
@@ -1411,7 +1530,8 @@ function AutoMatchesTab({ profile }) {
       )}
       {!loading && filtered.length > 0 && (
         <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace" }}>
-          showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length} matches
+          showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} of {sorted.length} matches
+          {filterBy !== "all" && <span style={{ color: "#34d399", marginLeft: 6 }}>· filtered</span>}
         </div>
       )}
     </div>
