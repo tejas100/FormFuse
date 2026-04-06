@@ -17,8 +17,10 @@ Session 22: SeenJobId table added — tracks every job_id ever fetched for a use
 
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -26,6 +28,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Text,
+    TIMESTAMP,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -179,6 +182,9 @@ class AutoMatchResult(Base):
     matched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+    applied:    Mapped[bool]              = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    applied_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "job_id", name="uq_auto_match_user_job"),
