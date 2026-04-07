@@ -530,15 +530,31 @@ async def fetch_job_description(url: str) -> str:
 
 # ── GPT call + Python render ──────────────────────────────────────────────────
 
-async def _generate_tailored_html(resume_full_text: str, jd_text: str) -> str:
+async def _generate_tailored_html(
+    resume_full_text: str,
+    jd_text: str,
+    modification_hint: str | None = None,
+) -> str:
     """
     Two-step pipeline:
       Step 1 — GPT returns structured JSON (ordering only, verbatim bullets)
       Step 2 — Python renders HTML with hardcoded CSS (no GPT layout decisions)
+
+    If modification_hint is provided (follow-up refinement), it is appended
+    as an additional instruction after the standard rules.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY not configured")
+
+    hint_block = ""
+    if modification_hint:
+        hint_block = (
+            f"\n\nADDITIONAL INSTRUCTION FROM USER (apply on top of the rules above):\n"
+            f"{modification_hint.strip()}\n"
+            f"Apply this instruction while still following all STRICT RULES above — "
+            f"never invent bullets, never drop bullets, never paraphrase."
+        )
 
     user_message = (
         f"SOURCE RESUME:\n{resume_full_text[:6000]}\n\n"
@@ -546,6 +562,7 @@ async def _generate_tailored_html(resume_full_text: str, jd_text: str) -> str:
         f"JOB DESCRIPTION:\n{jd_text[:4000]}\n\n"
         f"Return the JSON object. Copy every bullet VERBATIM — only reorder within each job/project. "
         f"Ignore any trailing lines that are just bullet characters with no text."
+        f"{hint_block}"
     )
 
     async with httpx.AsyncClient() as client:
@@ -796,14 +813,24 @@ async def run_tailor_pipeline_streaming(
     jd_input: str,
     user_id: uuid.UUID,
     db: AsyncSession,
+    resume_override_text: str | None = None,
+    modification_hint: str | None = None,
+    prev_match_score: int | None = None,
 ):
     """
     Same pipeline as run_tailor_pipeline but yields SSE-ready dicts at each step.
 
+    Optional params for follow-up chaining:
+      resume_override_text — if set, skip re-matching and use this text as the resume.
+                             Used when a follow-up refinement should operate on the
+                             previously tailored output, not the original DB resume.
+      modification_hint    — injected into the GPT prompt as an additional instruction.
+                             e.g. "make it more dense", "emphasize ML projects".
+
     Yields dicts:
       {"type": "step", "step": "<id>", "status": "start"|"done"|"error", "label": "<human label>"}
-      {"type": "result", ...full result fields...}   <- on success
-      {"type": "error",  "detail": "..."}            <- on failure
+      {"type": "result", ...full result fields..., "tailored_full_text": str}  <- on success
+      {"type": "error",  "detail": "..."}                                      <- on failure
     """
 
     def _step(step: str, status: str, label: str) -> dict:
@@ -822,107 +849,145 @@ async def run_tailor_pipeline_streaming(
         else:
             jd_text = jd_input.strip()
 
-        if len(jd_text) < 50:
+        # Skip length check for follow-up chains -- jd_input is just the title (~30 chars),
+        # not a full JD. The resume_override_text already carries the tailored content.
+        if len(jd_text) < 50 and not resume_override_text:
             yield _step("fetch_jd", "error", "Fetching job description")
             yield {"type": "error", "detail": "Job description too short to process."}
             return
 
         yield _step("fetch_jd", "done", "Fetching job description" if is_url else "Reading job description")
 
-        # ── Step 2: Run match pipeline to rank resumes ───────────────────────
-        yield _step("match_resumes", "start", "Finding your best-fit resume")
+        # ── Steps 2 & 3: Match + Score (skipped when resume_override_text is set) ──
+        # When a follow-up chains off a previous tailor result, we already know
+        # which resume to use and skip the expensive pgvector + LLM scoring pass.
 
-        from services.matcher import match_resumes
-        from services.llm_scorer import llm_score_batch, rerank_by_llm_score
-        from services.jd_parser import parse_jd
+        if resume_override_text:
+            # Follow-up chain — use the previously tailored text directly
+            logger.info(f"[tailor] Using resume_override_text ({len(resume_override_text)} chars) — skipping match/score")
+            full_text       = resume_override_text
+            top_resume_id   = "chained"
+            top_resume_name = "tailored resume"
+            match_score     = prev_match_score if prev_match_score is not None else 0
+            top             = {}
+            # jd_input on a follow-up is the jd_title string passed from the frontend
+            jd_title        = jd_input.strip() if jd_input.strip() else "this role"
 
-        match_result = await match_resumes(
-            jd_text=jd_text,
-            user_id=str(user_id),
-            use_llm=False,
-            db=db,
-        )
+            # Still emit step events so TailorStepsCard renders cleanly
+            yield _step("match_resumes", "start", "Using previous tailored resume")
+            yield _step("match_resumes", "done",  "Using previous tailored resume")
+            yield _step("score_resumes", "start", "Applying refinement")
+            yield _step("score_resumes", "done",  "Applying refinement")
 
-        if not match_result.get("results"):
-            yield _step("match_resumes", "error", "Finding your best-fit resume")
-            yield {"type": "error", "detail": "No resumes found. Upload at least one resume first."}
-            return
+        else:
+            # Fresh tailor — full match + score pipeline
+            yield _step("match_resumes", "start", "Finding your best-fit resume")
 
-        parsed_jd = match_result.get("jd_parsed", {})
-        jd_title  = parsed_jd.get("title", "this role")
+            from services.matcher import match_resumes
+            from services.llm_scorer import llm_score_batch, rerank_by_llm_score
+            from services.jd_parser import parse_jd
 
-        yield _step("match_resumes", "done", "Finding your best-fit resume")
+            match_result = await match_resumes(
+                jd_text=jd_text,
+                user_id=str(user_id),
+                use_llm=False,
+                db=db,
+            )
 
-        # ── Step 3: LLM-score all resumes, take #1 ──────────────────────────
-        yield _step("score_resumes", "start", "Scoring resumes with AI")
+            if not match_result.get("results"):
+                yield _step("match_resumes", "error", "Finding your best-fit resume")
+                yield {"type": "error", "detail": "No resumes found. Upload at least one resume first."}
+                return
 
-        job_ctx = {
-            "job_title":        jd_title,
-            "company":          "",
-            "description_text": jd_text,
-        }
+            parsed_jd = match_result.get("jd_parsed", {})
+            jd_title  = parsed_jd.get("title", "this role")
 
-        pairs = []
-        for match in match_result["results"]:
-            hybrid_score = match.get("score", 0)
-            if isinstance(hybrid_score, float) and hybrid_score <= 1.0:
-                hybrid_score = round(hybrid_score * 100)
-            else:
-                hybrid_score = int(hybrid_score)
+            yield _step("match_resumes", "done", "Finding your best-fit resume")
 
-            resume_dict = {
-                "id":        match["resume_id"],
-                "name":      match.get("name", ""),
-                "full_text": match.get("full_text"),
-                "structured": {
-                    "years_exp": match.get("years_exp"),
-                    "titles":    match.get("titles", []),
-                    "domains":   match.get("domains", []),
-                    "skills":    match.get("skills", []),
-                },
+            # ── Step 3: LLM-score all resumes, take #1 ──────────────────────
+            yield _step("score_resumes", "start", "Scoring resumes with AI")
+
+            job_ctx = {
+                "job_title":        jd_title,
+                "company":          "",
+                "description_text": jd_text,
             }
 
-            pairs.append({
-                **match,
-                "hybrid_score": hybrid_score,
-                "job":          job_ctx,
-                "resume":       resume_dict,
-                "parsed_jd":    parsed_jd,
-            })
+            pairs = []
+            for match in match_result["results"]:
+                hybrid_score = match.get("score", 0)
+                if isinstance(hybrid_score, float) and hybrid_score <= 1.0:
+                    hybrid_score = round(hybrid_score * 100)
+                else:
+                    hybrid_score = int(hybrid_score)
 
-        enriched = await llm_score_batch(pairs)
-        enriched = rerank_by_llm_score(enriched)
-        top       = enriched[0]
+                resume_dict = {
+                    "id":        match["resume_id"],
+                    "name":      match.get("name", ""),
+                    "full_text": match.get("full_text"),
+                    "structured": {
+                        "years_exp": match.get("years_exp"),
+                        "titles":    match.get("titles", []),
+                        "domains":   match.get("domains", []),
+                        "skills":    match.get("skills", []),
+                    },
+                }
 
-        top_resume_id   = top.get("resume_id", "")
-        top_resume_name = top.get("name", "resume")
-        match_score     = top.get("llm_score", top.get("hybrid_score", 0))
+                pairs.append({
+                    **match,
+                    "hybrid_score": hybrid_score,
+                    "job":          job_ctx,
+                    "resume":       resume_dict,
+                    "parsed_jd":    parsed_jd,
+                })
 
-        yield _step("score_resumes", "done", "Scoring resumes with AI")
+            enriched = await llm_score_batch(pairs)
+            enriched = rerank_by_llm_score(enriched)
+            top       = enriched[0]
 
-        # ── Step 4: Get full_text for the top resume ─────────────────────────
-        full_text = top.get("full_text")
-        if not full_text:
-            from models.orm import Resume as ResumeORM
-            result = await db.execute(
-                select(ResumeORM).where(
-                    ResumeORM.id == uuid.UUID(top_resume_id),
-                    ResumeORM.user_id == user_id,
+            top_resume_id   = top.get("resume_id", "")
+            top_resume_name = top.get("name", "resume")
+            match_score     = top.get("llm_score", top.get("hybrid_score", 0))
+
+            yield _step("score_resumes", "done", "Scoring resumes with AI")
+
+            # ── Step 4: Get full_text for the top resume ─────────────────────
+            full_text = top.get("full_text")
+            if not full_text:
+                from models.orm import Resume as ResumeORM
+                result = await db.execute(
+                    select(ResumeORM).where(
+                        ResumeORM.id == uuid.UUID(top_resume_id),
+                        ResumeORM.user_id == user_id,
+                    )
                 )
-            )
-            resume_row = result.scalar_one_or_none()
-            if resume_row:
-                full_text = resume_row.full_text
+                resume_row = result.scalar_one_or_none()
+                if resume_row:
+                    full_text = resume_row.full_text
 
-        if not full_text:
-            yield {"type": "error", "detail": f"Resume '{top_resume_name}' has no full text. Please re-upload it to enable tailoring."}
-            return
+            if not full_text:
+                yield {"type": "error", "detail": f"Resume '{top_resume_name}' has no full text. Please re-upload it to enable tailoring."}
+                return
 
         # ── Step 5: Generate tailored HTML via GPT ───────────────────────────
         yield _step("generate_resume", "start", "Tailoring resume for this role")
 
-        logger.info(f"[tailor] Generating tailored HTML for resume={top_resume_id} × job={jd_title}")
-        tailored_html = await _generate_tailored_html(full_text, jd_text)
+        logger.info(f"[tailor] Generating tailored HTML — modification_hint={bool(modification_hint)}")
+        tailored_html = await _generate_tailored_html(
+            resume_full_text=full_text,
+            jd_text=jd_text,
+            modification_hint=modification_hint,
+        )
+
+        # Extract plain text from the tailored HTML for follow-up chaining.
+        # We strip tags so the next refinement round sends clean text to GPT,
+        # not raw HTML (which would bloat the prompt and confuse the LLM).
+        try:
+            from bs4 import BeautifulSoup
+            tailored_full_text = BeautifulSoup(tailored_html, "html.parser").get_text(separator="\n", strip=True)
+        except ImportError:
+            # bs4 not installed — strip tags with regex as fallback
+            tailored_full_text = re.sub(r"<[^>]+>", " ", tailored_html).strip()
 
         yield _step("generate_resume", "done", "Tailoring resume for this role")
 
@@ -934,7 +999,9 @@ async def run_tailor_pipeline_streaming(
 
         # ── Step 7: Upload to Supabase Storage ───────────────────────────────
         logger.info(f"[tailor] Uploading PDF to Supabase Storage")
-        storage_path, download_url = _upload_pdf_to_storage(user_id, top_resume_id, pdf_bytes)
+        # For chained follow-ups top_resume_id is "chained" — use a placeholder uuid
+        _storage_resume_id = top_resume_id if top_resume_id != "chained" else str(uuid.uuid4())[:8]
+        storage_path, download_url = _upload_pdf_to_storage(user_id, _storage_resume_id, pdf_bytes)
 
         yield _step("generate_pdf", "done", "Generating PDF")
 
@@ -956,6 +1023,7 @@ async def run_tailor_pipeline_streaming(
             "key_gaps":           top.get("llm_key_gaps", []),
             "download_url":       download_url,
             "jd_title":           jd_title,
+            "tailored_full_text": tailored_full_text,   # ← for follow-up chaining
         }
 
     except ValueError as e:

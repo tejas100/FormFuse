@@ -1044,16 +1044,44 @@ export default function Home() {
   }
 
   // ── Input triage — asks backend to classify before touching the match pipeline ──
-  // Returns: { intent: 'JD' | 'CAREER_QUESTION' | 'OFF_TOPIC', reply: string | null }
-  const triageInput = async (text) => {
+  // Returns: { intent: 'JD' | 'CAREER_QUESTION' | 'OFF_TOPIC' | 'FILTER_RESULT', reply: string | null }
+  const triageInput = async (text, contextMessages = []) => {
     try {
       const headers = isAuthed
         ? await getAuthHeaders()
         : { 'X-Session-ID': sessionId }
+
+      // Serialize last N messages as lightweight context for the backend
+      const context = contextMessages.slice(-5).map(m => {
+        if (m.isTailorResult) return {
+          role: 'rack', type: 'tailor',
+          content: m.tailorData
+            ? `Tailored resume "${m.tailorData.resume_name}" for "${m.tailorData.jd_title}" — score ${m.tailorData.match_score}`
+            : 'Tailoring in progress',
+          jd: m.jd,
+        }
+        if (m.isFilterResult) return {
+          role: 'rack', type: 'filter',
+          content: `Showed ${m.filterJobs?.length ?? 0} matched jobs (${m.filterLabel || ''})`,
+          jd: m.jd,
+        }
+        if (m.isAssistantReply) return {
+          role: 'rack', type: 'reply',
+          content: m.replyText || '',
+        }
+        if (m.results) return {
+          role: 'rack', type: 'match',
+          content: `Matched ${m.results.length} resumes against JD: "${m.jd?.slice(0, 120)}"`,
+          topScore: m.results[0]?.llm_score ?? m.results[0]?.score ?? null,
+        }
+        // Loading or error placeholder — skip
+        return null
+      }).filter(Boolean)
+
       const res = await fetch('http://localhost:8000/api/match/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, context }),
       })
       if (!res.ok) throw new Error('Triage failed')
       return await res.json()  // { intent, reply }
@@ -1063,21 +1091,148 @@ export default function Home() {
     }
   }
 
+  // ── Tailor follow-up handler — refinement chaining ────────────────
+  // Called when the user sends a short conversational message after a
+  // resolved tailor result. Re-runs the tailor pipeline with the
+  // previously tailored text as the resume input (no re-matching) and
+  // the user's message as a modification_hint for the GPT prompt.
+  const handleTailorFollowUp = async (hint, prevTailorData, jdInput) => {
+    if (tailorLoading) return
+
+    const capturedHint = hint.trim()
+    const msgId        = Date.now()
+
+    setTailorLoading(true)
+    setJd('')
+
+    // User bubble shows the chain signal so they know RACK understood the context
+    const userBubbleLabel = `🔗 Refining previous resume · ${capturedHint}`
+
+    setMessages(prev => [...prev, {
+      id: msgId,
+      jd: userBubbleLabel,          // shown in the user bubble
+      isTailorResult: true,
+      tailorData: null,
+      tailorSteps: [],
+      loading: true,
+      error: null,
+      isRefinement: true,           // optional flag for future UI differentiation
+    }])
+
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch('http://localhost:8000/api/chat/tailor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({
+          text:                 jdInput,                              // original JD or title — gives context
+          resume_override_text: prevTailorData.tailored_full_text,   // chain anchor
+          modification_hint:    capturedHint,                        // what the user wants changed
+          prev_match_score:     prevTailorData.match_score ?? null,  // carry forward score
+        }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || `Server error (${res.status})`)
+      }
+
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let   buffer  = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop()
+
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data:')) continue
+          let event
+          try { event = JSON.parse(line.slice(5).trim()) } catch { continue }
+
+          if (event.type === 'step') {
+            setMessages(prev => prev.map(m => {
+              if (m.id !== msgId) return m
+              return { ...m, tailorSteps: [...(m.tailorSteps || []), event] }
+            }))
+          } else if (event.type === 'result') {
+            const { type, ...tailorData } = event
+            setMessages(prev => prev.map(m =>
+              m.id === msgId ? { ...m, tailorData, loading: false } : m
+            ))
+          } else if (event.type === 'error') {
+            setMessages(prev => prev.map(m =>
+              m.id === msgId ? { ...m, error: event.detail, loading: false } : m
+            ))
+          }
+        }
+      }
+    } catch (err) {
+      setMessages(prev => prev.map(m =>
+        m.id === msgId
+          ? { ...m, error: err.message || 'Refinement failed. Please try again.', loading: false }
+          : m
+      ))
+    } finally {
+      setTailorLoading(false)
+    }
+  }
+
   // ── Match handler ───────────────────────────────────────────────
   const handleMatch = async () => {
     // Route to tailor pipeline if that mode is active
     if (activeMode === 'tailor') { handleTailor(); return }
+
+    // /rank — explicit rank mode: skip chain detection, go straight to JD match
+    // (falls through to normal JD pipeline below after clearing mode)
+    const rankMode = activeMode === 'rank'
 
     if (!jd.trim() || loading || tailorLoading) return
 
     const capturedJd = jd.trim()
     const msgId = Date.now()
 
+    // ── Tailor follow-up chain detection ─────────────────────────────────────
+    // Skip if user explicitly chose /rank — they want a fresh comparison, not a refinement.
+    // Walk backwards to find the most recent resolved tailor result.
+    // If the user's input is short + conversational (not a URL, not a long JD),
+    // treat it as a refinement request and re-run tailor with the prior result
+    // as the resume input — no re-matching, no re-scoring.
+    if (!rankMode) {
+      const lastTailorMsg = (() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i]
+          if (m.isTailorResult && m.tailorData?.tailored_full_text) return m
+          // Stop searching if we hit a non-tailor user turn
+          // (don't chain across JD matches or filter results)
+          if (!m.isTailorResult && !m.loading) break
+        }
+        return null
+      })()
+
+      const isUrl         = /^https?:\/\//i.test(capturedJd)
+      const isLongJD      = capturedJd.length > 300
+      const isTailorChain = lastTailorMsg && !isUrl && !isLongJD
+
+      if (isTailorChain) {
+        // Use the jd from the last tailor turn as the JD context for the refinement
+        const jdContext = lastTailorMsg.tailorData.jd_title || lastTailorMsg.jd || capturedJd
+        handleTailorFollowUp(capturedJd, lastTailorMsg.tailorData, jdContext)
+        return
+      }
+    }
+
+    if (rankMode) setActiveMode(null)   // clear /rank pill after submission
     setLoading(true)
     setJd('')  // clear textarea immediately so it feels responsive
 
     // ── Step 0: Triage — classify input before touching the match pipeline ──
-    const triage = await triageInput(capturedJd)
+    const triage = await triageInput(capturedJd, messages)
     const intent = triage.intent
 
     // OFF_TOPIC — warm redirect, no backend match call
@@ -1206,7 +1361,39 @@ export default function Home() {
       setFileQueue([])
     }
 
-    // ── Act 2: Run match ─────────────────────────────────────────
+    // ── Act 2: Resolve JD text — fetch URL if needed ────────────────
+    // /rank (and plain URL pastes) send a URL, not raw JD text.
+    // The match API expects raw text, so we fetch first via /api/chat/fetch-jd.
+    let jdText    = capturedJd
+    let fetchedTitle = null
+
+    const isJdUrl = /^https?:\/\//i.test(capturedJd)
+    if (isJdUrl) {
+      try {
+        const fetchRes = await fetch('http://localhost:8000/api/chat/fetch-jd', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: capturedJd }),
+        })
+        if (fetchRes.ok) {
+          const fetchData = await fetchRes.json()
+          jdText = fetchData.jd_text || capturedJd
+        } else {
+          const errData = await fetchRes.json().catch(() => ({}))
+          throw new Error(errData.detail || 'Could not fetch job description from this URL. Try pasting the JD text directly.')
+        }
+      } catch (err) {
+        setMessages(prev => prev.map(m => m.id === msgId
+          ? { ...m, error: err.message, loading: false }
+          : m
+        ))
+        setLoading(false)
+        setUploadQueue([])
+        return
+      }
+    }
+
+    // ── Act 3: Run match ─────────────────────────────────────────
     try {
       const res = await fetch('http://localhost:8000/api/match', {
         method: 'POST',
@@ -1214,7 +1401,7 @@ export default function Home() {
           'Content-Type': 'application/json',
           'X-Session-ID': isAuthed ? (user?.id || 'default') : sessionId,
         },
-        body: JSON.stringify({ job_description: capturedJd, use_llm: true }),
+        body: JSON.stringify({ job_description: jdText, use_llm: true }),
       })
 
       if (!res.ok) {
@@ -1223,8 +1410,18 @@ export default function Home() {
       }
 
       const data = await res.json()
+      // If the input was a URL, update the user bubble to show the job title
+      // from jd_parsed instead of the raw URL — much cleaner in the conversation thread
+      const parsedTitle = data.jd_parsed?.title
       setMessages(prev => prev.map(m => m.id === msgId
-        ? { ...m, results: data.results || [], jdParsed: data.jd_parsed || null, meta: data.meta || null, loading: false }
+        ? {
+            ...m,
+            jd: (isJdUrl && parsedTitle) ? parsedTitle : capturedJd,
+            results: data.results || [],
+            jdParsed: data.jd_parsed || null,
+            meta: data.meta || null,
+            loading: false,
+          }
         : m
       ))
     } catch (err) {
@@ -1249,6 +1446,14 @@ export default function Home() {
       placeholder: 'Paste a job URL or JD to tailor your top resume…',
       icon: '✦',
       authRequired: true,
+    },
+    {
+      id: 'rank',
+      label: '/rank',
+      description: 'Rank all your resumes against a job description',
+      placeholder: 'Paste a job description to rank your resumes…',
+      icon: '◈',
+      authRequired: false,
     },
   ]
 
@@ -2303,7 +2508,11 @@ export default function Home() {
           <textarea
             ref={textareaRef}
             className="rack-chat-textarea"
-            placeholder={activeMode === 'tailor' ? 'Paste a job URL or JD to tailor your top resume…' : 'Paste a job description or type / for tools…'}
+            placeholder={
+              activeMode === 'tailor' ? 'Paste a job URL or JD to tailor your top resume…' :
+              activeMode === 'rank'   ? 'Paste a job description to rank your resumes…' :
+              'Paste a job description or type / for tools…'
+            }
             value={jd}
             rows={1}
             autoFocus
@@ -2332,7 +2541,7 @@ export default function Home() {
               className="rack-chat-send-btn"
               onClick={handleMatch}
               disabled={!jd.trim() || loading || tailorLoading}
-              title={activeMode === 'tailor' ? 'Tailor resume (⌘+Enter)' : 'Match (⌘+Enter)'}
+              title={activeMode === 'tailor' ? 'Tailor resume (⌘+Enter)' : activeMode === 'rank' ? 'Rank resumes (⌘+Enter)' : 'Match (⌘+Enter)'}
             >
               {loading
                 ? <div style={{ width:14, height:14, border:'2px solid rgba(0,0,0,0.25)', borderTopColor:'var(--accent-contrast)', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />
