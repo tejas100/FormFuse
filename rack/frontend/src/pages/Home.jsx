@@ -961,6 +961,11 @@ export default function Home() {
   const [resumeCount, setResumeCount] = useState(null)
   const [resumeWarning, setResumeWarning] = useState(false)
 
+  // ── Slash command / tool mode ────────────────────────────────────
+  const [activeMode, setActiveMode]       = useState(null)   // null | 'tailor'
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false)
+  const [tailorLoading, setTailorLoading] = useState(false)
+
   // Derived: last completed message's results (for ValuePreviewCard)
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
   const lastResults = lastMsg?.results ?? null
@@ -1208,7 +1213,10 @@ export default function Home() {
 
   // ── Match handler ───────────────────────────────────────────────
   const handleMatch = async () => {
-    if (!jd.trim() || loading) return
+    // Route to tailor pipeline if that mode is active
+    if (activeMode === 'tailor') { handleTailor(); return }
+
+    if (!jd.trim() || loading || tailorLoading) return
 
     const capturedJd = jd.trim()
     const msgId = Date.now()
@@ -1378,6 +1386,114 @@ export default function Home() {
     }
   }
 
+
+  // ── Slash command handler ───────────────────────────────────────
+  // Available tools shown in the dropdown when user types '/'
+  const SLASH_TOOLS = [
+    {
+      id: 'tailor',
+      label: '/tailor',
+      description: 'Generate a tailored PDF resume for a job',
+      placeholder: 'Paste a job URL or JD to tailor your top resume…',
+      icon: '✦',
+      authRequired: true,
+    },
+  ]
+
+  const handleSlashInput = (e) => {
+    const val = e.target.value
+    // Open slash menu when '/' is the entire input
+    if (val === '/') {
+      setSlashMenuOpen(true)
+      setJd(val)
+      setResumeWarning(false)
+      return
+    }
+    // Close menu if user keeps typing and it's no longer just '/'
+    if (slashMenuOpen && !val.startsWith('/')) {
+      setSlashMenuOpen(false)
+    }
+    setJd(val)
+    setResumeWarning(false)
+  }
+
+  const selectSlashTool = (tool) => {
+    setActiveMode(tool.id)
+    setSlashMenuOpen(false)
+    setJd('')                    // clear the '/' char
+    setTimeout(() => textareaRef.current?.focus(), 50)
+  }
+
+  const clearActiveMode = () => {
+    setActiveMode(null)
+    setSlashMenuOpen(false)
+    setJd('')
+    textareaRef.current?.focus()
+  }
+
+  // ── Tailor pipeline handler ──────────────────────────────────────
+  const handleTailor = async () => {
+    if (!jd.trim() || tailorLoading) return
+
+    // Auth guard — tailor requires stored resumes with full_text
+    if (!isAuthed) {
+      const msgId = Date.now()
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: jd.trim(),
+        isAssistantReply: true,
+        replyText: "Tailoring requires a signed-in account so I can access your saved resumes. Sign in and I'll generate a custom PDF for you in seconds.",
+        loading: false,
+        error: null,
+      }])
+      setJd('')
+      return
+    }
+
+    const capturedJd = jd.trim()
+    const msgId      = Date.now()
+
+    setTailorLoading(true)
+    setJd('')
+
+    // Append loading placeholder
+    setMessages(prev => [...prev, {
+      id: msgId,
+      jd: capturedJd,
+      isTailorResult: true,
+      tailorData: null,
+      loading: true,
+      error: null,
+    }])
+
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch('http://localhost:8000/api/chat/tailor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ text: capturedJd }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || `Server error (${res.status})`)
+      }
+
+      const data = await res.json()
+      setMessages(prev => prev.map(m => m.id === msgId
+        ? { ...m, tailorData: data, loading: false }
+        : m
+      ))
+    } catch (err) {
+      setMessages(prev => prev.map(m => m.id === msgId
+        ? { ...m, error: err.message || 'Tailoring failed. Please try again.', loading: false }
+        : m
+      ))
+    } finally {
+      setTailorLoading(false)
+      setActiveMode(null)
+    }
+  }
 
   // ── Suggestion chip handler ──────────────────────────────────────
   const handleSuggestion = (text) => {
@@ -1799,8 +1915,148 @@ export default function Home() {
                     </div>
                   )}
 
+                  {/* ── Tailor result card ── */}
+                  {msg.isTailorResult && (
+                    <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
+                      {msg.loading ? (
+                        // Tailor-specific loading indicator
+                        <div style={{
+                          padding: '20px 22px', borderRadius: '14px',
+                          background: 'var(--surface)', border: '1px solid rgba(232,255,107,0.2)',
+                          display: 'flex', flexDirection: 'column', gap: '14px',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                              {[0,1,2].map(i => (
+                                <div key={i} style={{
+                                  width: '5px', height: '5px', borderRadius: '50%',
+                                  background: 'var(--accent)', opacity: 0.7,
+                                  animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+                                }} />
+                              ))}
+                            </div>
+                            <span style={{ fontSize: '13px', color: 'var(--text-dim)', fontWeight: 300 }}>Tailoring your resume…</span>
+                          </div>
+                          <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, lineHeight: 1.6, borderLeft: '2px solid rgba(232,255,107,0.2)', paddingLeft: '12px' }}>
+                            Matching your resumes → selecting best fit → rewriting for this role → generating PDF
+                          </div>
+                        </div>
+                      ) : msg.error ? (
+                        <div style={{
+                          padding: '14px 18px', borderRadius: '12px',
+                          background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
+                          color: 'var(--danger)', fontSize: '14px',
+                        }}>
+                          {msg.error}
+                        </div>
+                      ) : msg.tailorData && (
+                        <div style={{
+                          borderRadius: '16px', overflow: 'hidden',
+                          background: 'var(--surface)', border: '1px solid rgba(232,255,107,0.25)',
+                          boxShadow: 'var(--card-shadow)',
+                        }}>
+                          {/* Accent bar */}
+                          <div style={{ height: '2px', background: 'linear-gradient(90deg, #e8ff6b 0%, #a78bfa 65%, transparent 100%)' }} />
+
+                          <div style={{ padding: '20px 22px' }}>
+                            {/* Header */}
+                            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '16px' }}>
+                              <div>
+                                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: '5px' }}>
+                                  ✦ Tailored Resume Ready
+                                </div>
+                                <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 800, color: 'var(--text)', lineHeight: 1.25 }}>
+                                  {msg.tailorData.jd_title}
+                                </div>
+                              </div>
+                              {/* Score badge */}
+                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                                <div style={{ fontFamily: 'var(--font-display)', fontSize: '32px', fontWeight: 800, letterSpacing: '-1px', color: msg.tailorData.match_score >= 75 ? 'var(--accent)' : msg.tailorData.match_score >= 55 ? '#60a5fa' : '#fb923c', lineHeight: 1 }}>
+                                  {msg.tailorData.match_score}
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 300 }}>match score</div>
+                              </div>
+                            </div>
+
+                            {/* Source resume + recommendation */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(232,255,107,0.04)', border: '1px solid rgba(232,255,107,0.1)' }}>
+                              <span style={{ fontSize: '13px' }}>📄</span>
+                              <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)', flex: 1 }}>{msg.tailorData.resume_name}</span>
+                              <span style={{
+                                fontSize: '10px', fontWeight: 700, padding: '2px 9px', borderRadius: '20px',
+                                background: msg.tailorData.llm_recommendation === 'Strong Match' ? 'rgba(52,211,153,0.12)' : msg.tailorData.llm_recommendation === 'Good Match' ? 'rgba(232,255,107,0.1)' : 'rgba(251,146,60,0.1)',
+                                color: msg.tailorData.llm_recommendation === 'Strong Match' ? 'var(--accent3)' : msg.tailorData.llm_recommendation === 'Good Match' ? 'var(--accent)' : '#fb923c',
+                                border: '1px solid rgba(232,255,107,0.2)',
+                              }}>
+                                {msg.tailorData.llm_recommendation}
+                              </span>
+                            </div>
+
+                            {/* AI reasoning */}
+                            {msg.tailorData.llm_reasoning && (
+                              <div style={{ marginBottom: '14px', padding: '12px 14px', borderRadius: '10px', background: 'rgba(167,139,250,0.05)', borderLeft: '3px solid rgba(167,139,250,0.35)' }}>
+                                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a78bfa', marginBottom: '6px' }}>✦ AI Analysis</div>
+                                <p style={{ fontSize: '13px', color: 'var(--text-mid)', fontStyle: 'italic', lineHeight: 1.6, margin: 0 }}>{msg.tailorData.llm_reasoning}</p>
+                              </div>
+                            )}
+
+                            {/* Strengths + gaps */}
+                            {(msg.tailorData.key_strengths?.length > 0 || msg.tailorData.key_gaps?.length > 0) && (
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '18px' }}>
+                                {msg.tailorData.key_strengths?.length > 0 && (
+                                  <div>
+                                    <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--accent3)', marginBottom: '6px' }}>Strengths</div>
+                                    {msg.tailorData.key_strengths.slice(0,3).map((s,i) => (
+                                      <div key={i} style={{ display: 'flex', gap: '6px', fontSize: '12px', marginBottom: '4px', color: 'var(--text-mid)' }}>
+                                        <span style={{ color: 'var(--accent3)', flexShrink: 0 }}>✓</span>{s}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {msg.tailorData.key_gaps?.length > 0 && (
+                                  <div>
+                                    <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--danger)', marginBottom: '6px' }}>Gaps</div>
+                                    {msg.tailorData.key_gaps.slice(0,2).map((g,i) => (
+                                      <div key={i} style={{ display: 'flex', gap: '6px', fontSize: '12px', marginBottom: '4px', color: 'var(--text-mid)' }}>
+                                        <span style={{ color: 'var(--danger)', flexShrink: 0 }}>✗</span>{g}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Download button */}
+                            <a
+                              href={msg.tailorData.download_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+                                width: '100%', padding: '14px 18px',
+                                background: 'rgba(232,255,107,0.1)', border: '1px solid rgba(232,255,107,0.38)',
+                                borderRadius: '13px', cursor: 'pointer',
+                                fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700,
+                                color: 'var(--accent)', textDecoration: 'none',
+                                transition: 'all 0.2s ease',
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.18)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.55)' }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.1)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.38)' }}
+                            >
+                              <span>↓</span>
+                              <span>Download Tailored Resume</span>
+                            </a>
+                            <div style={{ fontSize: '10px', color: 'var(--text-dim)', textAlign: 'center', marginTop: '8px', letterSpacing: '0.02em' }}>
+                              PDF · valid for 1 hour · tailored specifically for this role
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Results */}
-                  {!msg.isFilterResult && !msg.isAssistantReply && msg.results && msg.results.length === 0 && (
+                  {!msg.isFilterResult && !msg.isAssistantReply && !msg.isTailorResult && msg.results && msg.results.length === 0 && (
                     <div style={{
                       padding: '28px 24px', borderRadius: '14px',
                       background: 'var(--surface)', border: '1px solid var(--border-bright)',
@@ -1816,7 +2072,7 @@ export default function Home() {
                     </div>
                   )}
 
-                  {!msg.isFilterResult && !msg.isAssistantReply && msg.results && msg.results.length > 0 && (
+                  {!msg.isFilterResult && !msg.isAssistantReply && !msg.isTailorResult && msg.results && msg.results.length > 0 && (
                     <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
                       {/* JD Parse Summary */}
                       {msg.jdParsed && (
@@ -2082,27 +2338,82 @@ export default function Home() {
         {/* position:relative so the creature can absolute-position on top of it */}
         <div className="rack-chat-input-inner" onClick={() => textareaRef.current?.focus()} style={{ cursor: 'text', position: 'relative' }}>
 
+          {/* ── Slash command dropdown ── */}
+          {slashMenuOpen && (
+            <div style={{
+              position: 'absolute', bottom: '100%', left: 0, right: 0, marginBottom: '8px',
+              background: 'var(--surface)', border: '1px solid rgba(232,255,107,0.25)',
+              borderRadius: '14px', overflow: 'hidden', zIndex: 50,
+              boxShadow: 'var(--modal-shadow)',
+              animation: 'bubbleIn 0.2s ease both',
+            }}>
+              <div style={{ padding: '8px 14px 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', borderBottom: '1px solid var(--border)' }}>
+                Tools
+              </div>
+              {SLASH_TOOLS.map(tool => (
+                <button
+                  key={tool.id}
+                  onClick={() => selectSlashTool(tool)}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '12px',
+                    padding: '12px 16px', background: 'transparent', border: 'none',
+                    cursor: 'pointer', textAlign: 'left', transition: 'background 0.15s ease',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(232,255,107,0.05)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <span style={{ fontSize: '16px', flexShrink: 0 }}>{tool.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700, color: 'var(--accent)' }}>{tool.label}</span>
+                      {tool.authRequired && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.06em' }}>AUTH</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, marginTop: '2px' }}>{tool.description}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* ── Active mode pill ── */}
+          {activeMode && (() => {
+            const tool = SLASH_TOOLS.find(t => t.id === activeMode)
+            if (!tool) return null
+            return (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0,
+                padding: '4px 10px 4px 8px',
+                background: 'rgba(232,255,107,0.1)', border: '1px solid rgba(232,255,107,0.3)',
+                borderRadius: '20px',
+              }}>
+                <span style={{ fontSize: '11px' }}>{tool.icon}</span>
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 700, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{tool.label}</span>
+                <button
+                  onClick={clearActiveMode}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(232,255,107,0.5)', fontSize: '12px', padding: '0 0 0 2px', lineHeight: 1, display: 'flex', alignItems: 'center' }}
+                >✕</button>
+              </div>
+            )
+          })()}
+
           {/* Creature walks along the top edge of this box */}
           <RackCreature mood={creatureMood} />
           <textarea
             ref={textareaRef}
             className="rack-chat-textarea"
-            placeholder="Paste a job description…"
+            placeholder={activeMode === 'tailor' ? 'Paste a job URL or JD to tailor your top resume…' : 'Paste a job description or type / for tools…'}
             value={jd}
             rows={1}
             autoFocus
-            onChange={e => { setJd(e.target.value); setResumeWarning(false) }}
+            onChange={handleSlashInput}
             onKeyDown={e => {
-              
-              if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-                  e.preventDefault()
-                  handleMatch()
-                } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault()
-                  handleMatch()
-                }
-              
-              }}
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                handleMatch()
+              }
+            }}
           />
 
           <div className="rack-chat-input-actions">
@@ -2120,8 +2431,8 @@ export default function Home() {
             <button
               className="rack-chat-send-btn"
               onClick={handleMatch}
-              disabled={!jd.trim() || loading}
-              title="Match (⌘+Enter)"
+              disabled={!jd.trim() || loading || tailorLoading}
+              title={activeMode === 'tailor' ? 'Tailor resume (⌘+Enter)' : 'Match (⌘+Enter)'}
             >
               {loading
                 ? <div style={{ width:14, height:14, border:'2px solid rgba(0,0,0,0.25)', borderTopColor:'var(--accent-contrast)', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />

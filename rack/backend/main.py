@@ -21,7 +21,7 @@ logging.getLogger().addHandler(file_handler)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import resumes, match, tracking, account, auth
+from routers import resumes, match, tracking, account, auth, chat
 
 app = FastAPI(
     title="Rack — Career Intelligence API",
@@ -44,6 +44,7 @@ app.include_router(match.router)
 app.include_router(tracking.router)
 app.include_router(account.router)
 app.include_router(auth.router)
+app.include_router(chat.router)
 
 
 @app.get("/")
