@@ -34,89 +34,239 @@ LLM_TIMEOUT = 60.0  # longer timeout — HTML generation is a big output
 # Supabase Storage config
 STORAGE_BUCKET = "resumes"
 
-# ── HTML Resume Template ──────────────────────────────────────────────────────
-# Embedded template — GPT writes content into this structure.
-# Design: Space Grotesk headers, DM Sans body, teal/purple accent (same as career-ops).
-# Web-safe font fallbacks so WeasyPrint renders correctly without woff2 files.
+# ── GPT JSON prompt — content/ordering decisions only, zero layout ────────────
+_TAILOR_JSON_PROMPT = """You are an expert resume writer and ATS optimization specialist.
 
-_HTML_TEMPLATE_STRUCTURE = """
-The HTML document must follow this exact structure and styling. 
-Use inline CSS only. No external fonts (use system font stack).
+Given a candidate's resume and a job description, return a JSON object that
+re-orders bullet points within each job/project for maximum relevance to this role.
 
-DOCTYPE and head:
-  <meta charset="UTF-8">
-  body font: font-family: -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 11px; 
-  line-height: 1.5; color: #1a1a2e; background: #ffffff; padding: 0.55in; margin: 0;
+OUTPUT: Return ONLY valid JSON. No explanation, no markdown fences, no preamble.
 
-Header section:
-  - Candidate full name: font-size 24px, font-weight 700, color #1a1a2e, letter-spacing -0.02em
-  - Gradient divider line: height 2px, background linear-gradient(to right, #1a7a6e, #6b35c4), margin 6px 0
-  - Contact row: font-size 10px, color #555, flex wrap, gap 16px, separator "|"
+Schema:
+{
+  "name": "Full Name",
+  "contact": "Title | phone | email | linkedin | github",
+  "experience": [
+    {
+      "company": "exact company name from resume",
+      "role": "exact job title from resume",
+      "period": "exact date range from resume",
+      "bullets": ["full bullet text", ...]
+    }
+  ],
+  "projects": [
+    {
+      "name": "exact project name from resume",
+      "tech": "exact tech stack string from resume",
+      "location": "location string or empty string",
+      "bullets": ["full bullet text", ...]
+    }
+  ],
+  "publications": [
+    { "title": "exact title", "venue": "Published in IEEE / etc", "note": "achievement note" }
+  ],
+  "skills": [
+    { "category": "AI / LLM", "items": "comma-separated skills verbatim" }
+  ]
+}
 
-Section structure (repeat for each section):
-  - Section title: font-size 12px, font-weight 700, text-transform uppercase, 
-    letter-spacing 0.06em, color #1a7a6e, border-bottom 1px solid #e5e5e5, 
-    padding-bottom 3px, margin-bottom 8px, margin-top 14px
-  
-  Sections in order: Professional Summary, Core Competencies, Work Experience, 
-  Projects, Education, Skills
-
-Competency tags (Core Competencies section):
-  - display flex, flex-wrap wrap, gap 6px
-  - Each tag: font-size 10px, color #1a7a6e, background #f0faf9, 
-    padding 3px 10px, border-radius 3px, border 1px solid #c5e8e4
-
-Work experience entries:
-  - Company name: font-size 12px, font-weight 600, color #6b35c4
-  - Period: font-size 10px, color #777, float right
-  - Role title: font-size 11px, font-weight 500, color #444, margin-bottom 3px
-  - Bullet list: padding-left 16px, font-size 10.5px, color #333, line-height 1.5
-  - Bold key metrics and achievements inline
-
-Project entries:
-  - Project name: font-size 11px, font-weight 600, color #6b35c4
-  - Tech badge: font-size 9px, color #1a7a6e, background #f0faf9, 
-    padding 1px 6px, border-radius 2px, margin-left 6px
-  - Description: font-size 10.5px, color #444, margin-top 2px
-  - Tech stack line: font-size 9.5px, color #888, margin-top 2px
-
-Education entries:
-  - Degree + institution inline, font-size 11px
-  - Institution name in color #6b35c4, font-weight 500
-  - Year: font-size 10px, color #777, float right
-
-Skills section:
-  - font-size 10.5px, color #444, line-height 1.8
-  - Category labels: font-weight 600, color #333
-
-Print CSS:
-  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-
-Page target: fit on ONE page. Be aggressive with spacing if needed.
+STRICT RULES:
+1. Copy EVERY bullet VERBATIM — exact wording, exact metrics, exact punctuation.
+   Do NOT paraphrase, shorten, combine, or summarize any bullet under any circumstance.
+2. Reorder bullets WITHIN each job/project so the most JD-relevant come first.
+   That is the ONLY permitted change to bullet content.
+3. Keep ALL company names, job titles, dates, degree names, institution names exactly
+   as they appear in the source resume.
+4. Include ALL jobs, ALL projects, ALL publications, ALL skill categories — nothing omitted.
+5. Skills items: copy verbatim. Only reorder the categories (most JD-relevant first).
+6. Strip any leading bullet character (•, -, *) from bullet text strings.
+   The renderer adds its own bullet markers.
+7. Ignore any trailing lines that are just bullet characters (•) with no text.
+   These are PDF extraction artifacts — do not include them as bullets.
+8. publications array may be [] if source has none.
 """
 
-_TAILOR_SYSTEM_PROMPT = f"""You are an expert resume writer and ATS optimization specialist.
 
-Given a candidate's source resume and a job description, rewrite the resume as a 
-complete, single-page, ATS-optimized HTML document tailored specifically for this role.
+# ── Python HTML renderer — all layout is here, GPT never touches CSS ─────────
 
-RULES — follow these exactly:
-1. Use ONLY facts from the source resume — never invent experience, metrics, or skills
-2. Reorder bullet points to lead with the most relevant content for this specific JD
-3. Reframe existing bullet points using JD keywords naturally (do not keyword-stuff)
-4. Rewrite the Professional Summary to speak directly to this role's needs
-5. Select Core Competency tags from the JD's required/preferred skills that the candidate genuinely has
-6. Lead work experience with the most relevant role for this JD
-7. Trim or compress less-relevant content to keep to ONE page
-8. Bold key metrics, outcomes, and role-critical achievements inline
-9. Keep all dates, company names, and education exactly as in the source resume
+def _render_html(data: dict) -> str:
+    """
+    Build pixel-perfect resume HTML from structured JSON.
+    All spacing, fonts, and layout are controlled here — GPT makes zero layout decisions.
+    """
+    import html as _html
 
-HTML STRUCTURE REQUIREMENTS:
-{_HTML_TEMPLATE_STRUCTURE}
+    def _clean(text: str) -> str:
+        """Strip leading bullet chars, collapse whitespace, HTML-escape."""
+        t = str(text).strip()
+        # Strip leading bullet/dash chars that GPT or PDF extraction left
+        t = re.sub(r'^[\u2022\-\*\·]+\s*', '', t).strip()
+        # Skip lines that are ONLY a bullet char (PDF extraction artifacts)
+        if re.fullmatch(r'[\u2022\s]+', t):
+            return ''
+        return _html.escape(t)
 
-Return ONLY the complete HTML document. No explanation, no markdown, no backticks.
-Start with <!DOCTYPE html> and end with </html>.
-"""
+    def _bold_metrics(text: str) -> str:
+        """Bold numeric metrics after HTML-escaping."""
+        # Patterns: 40%, 70%, 30%, sub-200ms, 50K+, 99%, etc.
+        text = re.sub(r'(\b\d+[KkMm]?\+?\s*users?\b)', r'<strong>\1</strong>', text)
+        text = re.sub(r'(\bsub-\d+\w+\b)', r'<strong>\1</strong>', text)
+        text = re.sub(r'(\b\d+(?:\.\d+)?%)', r'<strong>\1</strong>', text)
+        return text
+
+    name            = _clean(data.get("name", "Candidate"))
+    contact_escaped = _html.escape(data.get("contact", "").strip())
+
+    # ── Experience ────────────────────────────────────────────────────────────
+    exp_html = ""
+    for job in data.get("experience", []):
+        bullets = [_clean(b) for b in job.get("bullets", []) if _clean(b)]
+        bullets_html = "".join(f'<li>{_bold_metrics(b)}</li>' for b in bullets)
+        exp_html += (
+            f'<div style="margin-bottom:4px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;">'
+            f'<span style="font-size:10.5px;font-weight:700;color:#111;">'
+            f'{_html.escape(job.get("company",""))}'
+            f'</span>'
+            f'<span style="font-size:9px;color:#555;">{_html.escape(job.get("period",""))}</span>'
+            f'</div>'
+            f'<div style="font-size:9.5px;color:#555;font-style:italic;margin-bottom:1px;">'
+            f'{_html.escape(job.get("role",""))}</div>'
+            f'<ul style="margin:0;padding-left:12px;">{bullets_html}</ul>'
+            f'</div>'
+        )
+
+    # ── Projects ──────────────────────────────────────────────────────────────
+    proj_html = ""
+    for proj in data.get("projects", []):
+        loc     = proj.get("location", "").strip()
+        loc_span = (
+            f'<span style="font-size:9px;color:#555;margin-left:6px;">{_html.escape(loc)}</span>'
+            if loc else ""
+        )
+        bullets = [_clean(b) for b in proj.get("bullets", []) if _clean(b)]
+        bullets_html = "".join(f'<li>{_bold_metrics(b)}</li>' for b in bullets)
+        proj_html += (
+            f'<div style="margin-bottom:4px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;">'
+            f'<span>'
+            f'<span style="font-size:10px;font-weight:700;color:#111;">'
+            f'{_html.escape(proj.get("name",""))}</span>'
+            f'<span style="font-size:9px;color:#1a7a6e;font-style:italic;margin-left:5px;">'
+            f'{_html.escape(proj.get("tech",""))}</span>'
+            f'</span>'
+            f'{loc_span}'
+            f'</div>'
+            f'<ul style="margin:1px 0 0;padding-left:12px;">{bullets_html}</ul>'
+            f'</div>'
+        )
+
+    # ── Publications ──────────────────────────────────────────────────────────
+    pub_html = ""
+    for pub in data.get("publications", []):
+        note = _clean(pub.get("note", ""))
+        if not note:
+            continue
+        pub_html += (
+            f'<div style="margin-bottom:3px;">'
+            f'<span style="font-size:9.5px;font-weight:600;color:#111;">'
+            f'{_html.escape(pub.get("title",""))}</span>'
+            f'<span style="font-size:9px;color:#1a7a6e;margin-left:6px;">'
+            f'{_html.escape(pub.get("venue",""))}</span>'
+            f'<div style="font-size:9px;color:#333;padding-left:12px;">'
+            f'&bull;&nbsp;{_bold_metrics(note)}</div>'
+            f'</div>'
+        )
+    pub_section = (
+        f'<div class="st">Publications</div>{pub_html}' if pub_html else ""
+    )
+
+    # ── Skills ────────────────────────────────────────────────────────────────
+    skills_html = "".join(
+        f'<div style="font-size:9.5px;color:#333;margin-bottom:1px;">'
+        f'<span style="font-weight:700;color:#111;">{_html.escape(sk.get("category",""))}:</span>'
+        f'&nbsp;{_html.escape(sk.get("items",""))}'
+        f'</div>'
+        for sk in data.get("skills", [])
+    )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{
+  font-family: -apple-system, 'Segoe UI', Arial, sans-serif;
+  font-size: 10px;
+  line-height: 1.32;
+  color: #222;
+  background: #fff;
+  padding: 0.27in 0.34in;
+}}
+.st {{
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #1a7a6e;
+  border-bottom: 0.7px solid #bbb;
+  padding-bottom: 1px;
+  margin-top: 6px;
+  margin-bottom: 3px;
+}}
+ul {{ list-style: disc; }}
+ul li {{
+  font-size: 9.5px;
+  color: #222;
+  margin-bottom: 0.5px;
+  line-height: 1.32;
+  text-align: left;
+  orphans: 3;
+  widows: 3;
+}}
+@media print {{
+  body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  @page {{ margin: 0; }}
+}}
+</style>
+</head>
+<body>
+
+<div style="text-align:center;margin-bottom:3px;">
+  <div style="font-size:19px;font-weight:700;color:#111;letter-spacing:-0.02em;">{name}</div>
+  <div style="font-size:9px;color:#444;margin-top:1px;">{contact_escaped}</div>
+</div>
+<div style="height:1.5px;background:linear-gradient(to right,#1a7a6e,#6b35c4);margin:3px 0;"></div>
+
+<div class="st">Education</div>
+<div style="display:flex;justify-content:space-between;align-items:baseline;">
+  <span style="font-size:10px;font-weight:700;color:#111;">New Jersey Institute of Technology</span>
+  <span style="font-size:9px;color:#555;">Newark, NJ</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px;">
+  <span style="font-size:9.5px;font-style:italic;color:#444;">Master&rsquo;s in Computer Science</span>
+  <span style="font-size:9px;color:#555;">10/2023 &ndash; 05/2025</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:baseline;">
+  <span style="font-size:10px;font-weight:700;color:#111;">Visvesvaraya Technological University</span>
+  <span style="font-size:9px;color:#555;">Mysuru, India</span>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:baseline;">
+  <span style="font-size:9.5px;font-style:italic;color:#444;">Bachelor&rsquo;s in Computer Science</span>
+  <span style="font-size:9px;color:#555;">08/2017 &ndash; 08/2021</span>
+</div>
+
+<div class="st">Experience</div>
+{exp_html}
+<div class="st">Projects</div>
+{proj_html}
+{pub_section}
+<div class="st">Technical Skills</div>
+{skills_html}
+
+</body>
+</html>"""
 
 
 # ── Known job board API patterns ─────────────────────────────────────────────
@@ -335,26 +485,25 @@ async def fetch_job_description(url: str) -> str:
         raise ValueError(f"Failed to load job URL: {e}")
 
 
-# ── GPT HTML Generation ───────────────────────────────────────────────────────
+# ── GPT call + Python render ──────────────────────────────────────────────────
 
 async def _generate_tailored_html(resume_full_text: str, jd_text: str) -> str:
     """
-    Call GPT-4o-mini to generate a complete tailored HTML resume.
-    Returns the HTML string.
+    Two-step pipeline:
+      Step 1 — GPT returns structured JSON (ordering only, verbatim bullets)
+      Step 2 — Python renders HTML with hardcoded CSS (no GPT layout decisions)
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY not configured")
 
-    user_message = f"""SOURCE RESUME:
-{resume_full_text[:6000]}
-
-===
-
-JOB DESCRIPTION:
-{jd_text[:4000]}
-
-Generate the complete tailored HTML resume for this role."""
+    user_message = (
+        f"SOURCE RESUME:\n{resume_full_text[:6000]}\n\n"
+        f"===\n\n"
+        f"JOB DESCRIPTION:\n{jd_text[:4000]}\n\n"
+        f"Return the JSON object. Copy every bullet VERBATIM — only reorder within each job/project. "
+        f"Ignore any trailing lines that are just bullet characters with no text."
+    )
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -364,13 +513,13 @@ Generate the complete tailored HTML resume for this role."""
                 "Content-Type": "application/json",
             },
             json={
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": _TAILOR_SYSTEM_PROMPT},
+                "model":       LLM_MODEL,
+                "messages":    [
+                    {"role": "system", "content": _TAILOR_JSON_PROMPT},
                     {"role": "user",   "content": user_message},
                 ],
-                "temperature": 0.3,
-                "max_tokens": 4000,
+                "temperature": 0.1,
+                "max_tokens":  3000,
             },
             timeout=LLM_TIMEOUT,
         )
@@ -378,16 +527,17 @@ Generate the complete tailored HTML resume for this role."""
     if response.status_code != 200:
         raise ValueError(f"LLM API error {response.status_code}: {response.text[:200]}")
 
-    content = response.json()["choices"][0]["message"]["content"].strip()
+    raw = response.json()["choices"][0]["message"]["content"].strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$",          "", raw)
 
-    # Strip markdown fences if model wrapped the HTML
-    content = re.sub(r"^```(?:html)?\s*", "", content)
-    content = re.sub(r"\s*```$", "", content)
+    try:
+        resume_data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"[tailor] JSON parse failed: {e}\nRaw snippet: {raw[:400]}")
+        raise ValueError("LLM returned invalid JSON. Please try again.")
 
-    if not content.startswith("<!DOCTYPE") and not content.startswith("<html"):
-        raise ValueError("LLM did not return valid HTML")
-
-    return content
+    return _render_html(resume_data)
 
 
 # ── HTML → PDF ────────────────────────────────────────────────────────────────
