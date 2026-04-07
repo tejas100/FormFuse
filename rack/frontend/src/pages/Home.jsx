@@ -453,256 +453,108 @@ function componentBar(label, value, color) {
   )
 }
 
+
+
 /* ══════════════════════════════════════════════════════════════════
-   JD MATCH PIPELINE ANIMATION — minimal ASCII pipeline status
+   TAILOR STEPS CARD — live SSE checkpoint display during tailoring
    ══════════════════════════════════════════════════════════════════ */
-const JD_STEPS = [
-  { id: "parse",  label: "Parsing job description",      detail: "rule extractor + LLM hybrid · jd_parser.py"    },
-  { id: "embed",  label: "Embedding & FAISS search",     detail: "all-MiniLM-L6-v2 · 384-dim · top_k=20"         },
-  { id: "hybrid", label: "Hybrid scoring",               detail: "semantic + skills + experience + kw · 4-component" },
-  { id: "llm",    label: "LLM deep score",               detail: "GPT-4o-mini · skills_fit / exp_fit / trajectory" },
-  { id: "rank",   label: "Ranking results",              detail: "re-rank by llm_score · building response"       },
-];
 
-const JD_SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-const JD_STEP_COLOR = { llm: "#a78bfa" };
+const TAILOR_STEP_DEFS = [
+  { id: 'fetch_jd',       label: 'Fetching job description'     },
+  { id: 'match_resumes',  label: 'Finding your best-fit resume' },
+  { id: 'score_resumes',  label: 'Scoring resumes with AI'      },
+  { id: 'generate_resume',label: 'Tailoring resume for this role'},
+  { id: 'generate_pdf',   label: 'Generating PDF'               },
+]
 
-// uploadQueue: [{ name: string, status: 'queued'|'processing'|'done'|'error' }]
-// When empty (authenticated users / no uploads needed), renders only the match pipeline — unchanged behaviour.
-function JDPipelineAnimation({ uploadQueue = [] }) {
-  const [stepIdx, setStep]    = useState(0);
-  const [spinner, setSpinner] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const [cursor,  setCursor]  = useState(true);
+function TailorStepsCard({ steps }) {
+  // steps: [{ step, status, label }] — accumulated from SSE events
+  const statusOf = (id) => {
+    const match = [...steps].reverse().find(s => s.step === id)
+    return match?.status || 'pending'
+  }
 
-  // Only start pipeline steps once all uploads are done (or if no uploads)
-  const uploadsActive = uploadQueue.length > 0 && uploadQueue.some(f => f.status !== 'done' && f.status !== 'error');
-  const uploadsAllDone = uploadQueue.length === 0 || uploadQueue.every(f => f.status === 'done' || f.status === 'error');
-
-  // Spinner tick
-  useEffect(() => {
-    const t = setInterval(() => setSpinner(f => (f + 1) % JD_SPINNER.length), 75);
-    return () => clearInterval(t);
-  }, []);
-
-  // Cursor blink
-  useEffect(() => {
-    const t = setInterval(() => setCursor(c => !c), 520);
-    return () => clearInterval(t);
-  }, []);
-
-  // Elapsed seconds
-  useEffect(() => {
-    const t = setInterval(() => setElapsed(e => e + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // Pipeline steps — only advance when uploads are done
-  useEffect(() => {
-    if (!uploadsAllDone) return;
-    const STEP_MS = [2500, 3000, 3500, 8000, 1500];
-    if (stepIdx >= JD_STEPS.length - 1) return;
-    const t = setTimeout(() => setStep(s => s + 1), STEP_MS[stepIdx]);
-    return () => clearTimeout(t);
-  }, [stepIdx, uploadsAllDone]);
-
-  const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
-  const acc  = "var(--accent)";
-  const grn  = "var(--accent3)";
-  const red  = "var(--danger)";
-  const dim  = "var(--terminal-dim)";
-
-  // Progress bar: upload slots + pipeline steps
-  const totalSlots  = uploadQueue.length + JD_STEPS.length;
-  const doneUploads = uploadQueue.filter(f => f.status === 'done').length;
-  const BAR_LEN     = 24;
-  const progressNumerator = uploadsAllDone
-    ? uploadQueue.length + stepIdx + 0.5
-    : doneUploads + (uploadQueue.findIndex(f => f.status === 'processing') >= 0 ? 0.5 : 0);
-  const filled     = Math.round((progressNumerator / totalSlots) * BAR_LEN);
-  const bar        = Array.from({ length: BAR_LEN }, (_, i) => i < filled ? "█" : "░").join("");
-  const overallPct = Math.round((progressNumerator / totalSlots) * 100);
+  // Find the currently active step (last one with status=start)
+  const activeIdx = (() => {
+    for (let i = TAILOR_STEP_DEFS.length - 1; i >= 0; i--) {
+      if (statusOf(TAILOR_STEP_DEFS[i].id) === 'start') return i
+    }
+    return -1
+  })()
 
   return (
-    <div style={{ width: "100%", maxWidth: "520px", margin: "0 auto", padding: "28px 0 8px", animation: "fadeUp 0.35s ease both" }}>
-      <div style={{
-        background: "var(--terminal-bg)",
-        border: "1px solid rgba(232,255,107,0.14)",
-        borderRadius: 12,
-        overflow: "hidden",
-      }}>
-
-        {/* Title bar */}
-        <div style={{
-          display: "flex", alignItems: "center", gap: 6,
-          padding: "9px 14px",
-          background: "var(--terminal-header-bg)",
-          borderBottom: "1px solid var(--terminal-divider)",
-        }}>
-          <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ff5f56" }} />
-          <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#ffbd2e" }} />
-          <div style={{ width: 9, height: 9, borderRadius: "50%", background: "#27c93f" }} />
-          <span style={{ ...mono, fontSize: 10, color: dim, marginLeft: 8, letterSpacing: "0.05em" }}>
-            rack-match-pipeline
-          </span>
-          <span style={{ ...mono, fontSize: 10, color: acc, marginLeft: "auto" }}>
-            {JD_SPINNER[spinner]} {elapsed}s
-          </span>
+    <div style={{
+      padding: '18px 20px', borderRadius: '14px',
+      background: 'var(--surface)', border: '1px solid rgba(232,255,107,0.18)',
+      display: 'flex', flexDirection: 'column', gap: '0',
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+          {[0,1,2].map(i => (
+            <div key={i} style={{
+              width: '5px', height: '5px', borderRadius: '50%',
+              background: 'var(--accent)', opacity: 0.7,
+              animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+            }} />
+          ))}
         </div>
+        <span style={{ fontSize: '13px', color: 'var(--text-dim)', fontWeight: 300 }}>Tailoring your resume…</span>
+      </div>
 
-        <div style={{ padding: "16px 20px 14px" }}>
+      {/* Step rows */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        {TAILOR_STEP_DEFS.map((def, i) => {
+          const status = statusOf(def.id)
+          const isDone    = status === 'done'
+          const isActive  = status === 'start'
+          const isError   = status === 'error'
+          const isPending = status === 'pending'
 
-          {/* ── Act 1: Upload phase (only when files were queued) ── */}
-          {uploadQueue.length > 0 && (
-            <>
-              {/* Upload section header */}
-              <div style={{
-                ...mono, fontSize: 10, color: "var(--terminal-dim)",
-                letterSpacing: "0.12em", textTransform: "uppercase",
-                marginBottom: 8, paddingBottom: 6,
-                borderBottom: "1px solid var(--terminal-divider)",
-              }}>
-                ingesting resumes
-              </div>
-
-              {uploadQueue.map((f, i) => {
-                const isDone       = f.status === 'done';
-                const isProcessing = f.status === 'processing';
-                const isError      = f.status === 'error';
-                const isQueued     = f.status === 'queued';
-
-                // Progress bar fill per file
-                const fileFill = isDone ? 100 : isProcessing ? 55 : 0;
-                const fileColor = isDone ? grn : isError ? red : acc;
-
-                return (
-                  <div key={i} style={{
-                    display: "flex", alignItems: "center", gap: 10,
-                    padding: "6px 0",
-                    borderBottom: "1px solid var(--terminal-divider)",
-                    opacity: isQueued ? 0.38 : 1,
-                    transition: "opacity 0.3s ease",
-                  }}>
-                    {/* Status glyph */}
-                    <span style={{ ...mono, fontSize: 12, minWidth: 14, color: fileColor }}>
-                      {isDone ? "✓" : isError ? "✗" : isProcessing ? JD_SPINNER[spinner] : "·"}
-                    </span>
-
-                    {/* Filename — truncated */}
-                    <span style={{
-                      ...mono, fontSize: 11, color: isDone ? grn : isError ? red : isProcessing ? acc : dim,
-                      flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                      transition: "color 0.3s",
-                    }}>
-                      {f.name}
-                    </span>
-
-                    {/* Mini progress bar */}
-                    <div style={{
-                      width: 60, height: 3, background: "var(--terminal-divider)",
-                      borderRadius: 3, overflow: "hidden", flexShrink: 0,
-                    }}>
-                      <div style={{
-                        height: "100%", borderRadius: 3,
-                        background: isDone
-                          ? grn
-                          : isError
-                          ? red
-                          : "linear-gradient(90deg, #e8ff6b, #a3e635)",
-                        width: `${fileFill}%`,
-                        transition: "width 0.6s cubic-bezier(0.22,1,0.36,1)",
-                      }} />
-                    </div>
-
-                    {/* Status label */}
-                    <span style={{
-                      ...mono, fontSize: 9, color: isDone ? "rgba(52,211,153,0.5)" : isError ? "rgba(248,113,113,0.5)" : isProcessing ? "rgba(232,255,107,0.45)" : "transparent",
-                      minWidth: 52, textAlign: "right", transition: "color 0.3s",
-                    }}>
-                      {isDone ? "done" : isError ? "error" : isProcessing ? "parsing…" : "queued"}
-                    </span>
-                  </div>
-                );
-              })}
-
-              {/* Divider between acts */}
-              <div style={{
-                display: "flex", alignItems: "center", gap: 8,
-                margin: "12px 0 10px",
-                opacity: uploadsAllDone ? 1 : 0.25,
-                transition: "opacity 0.5s ease 0.3s",
-              }}>
-                <div style={{ flex: 1, height: 1, background: "var(--terminal-divider)" }} />
-                <span style={{ ...mono, fontSize: 9, color: "var(--terminal-dim)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
-                  matching pipeline
-                </span>
-                <div style={{ flex: 1, height: 1, background: "var(--terminal-divider)" }} />
-              </div>
-            </>
-          )}
-
-          {/* ── Act 2: Match pipeline (always shown) ── */}
-          {JD_STEPS.map((step, i) => {
-            const done    = uploadsAllDone && i < stepIdx;
-            const active  = uploadsAllDone && i === stepIdx;
-            const pending = !uploadsAllDone || i > stepIdx;
-            const color   = JD_STEP_COLOR[step.id] || acc;
-            return (
-              <div key={step.id} style={{
-                display: "flex", alignItems: "flex-start", gap: 12,
-                padding: "7px 0",
-                borderBottom: i < JD_STEPS.length - 1
-                  ? "1px solid var(--terminal-divider)" : "none",
-                opacity: pending ? 0.35 : 1,
-                transition: "opacity 0.4s ease",
-              }}>
-                <span style={{
-                  ...mono, fontSize: 12, lineHeight: "20px", minWidth: 14,
-                  color: done ? grn : active ? color : dim,
-                }}>
-                  {done ? "✓" : active ? JD_SPINNER[spinner] : "·"}
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
+          return (
+            <div key={def.id} style={{
+              display: 'flex', alignItems: 'center', gap: '10px',
+              padding: '6px 0',
+              opacity: isPending ? 0.35 : 1,
+              transition: 'opacity 0.4s ease',
+              borderBottom: i < TAILOR_STEP_DEFS.length - 1 ? '1px solid var(--border)' : 'none',
+            }}>
+              {/* Status icon */}
+              <div style={{ width: '16px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {isDone ? (
+                  <span style={{ fontSize: '12px', color: 'var(--accent3)' }}>✓</span>
+                ) : isError ? (
+                  <span style={{ fontSize: '12px', color: 'var(--danger)' }}>✗</span>
+                ) : isActive ? (
                   <div style={{
-                    ...mono, fontSize: 12, fontWeight: 600,
-                    color: done ? grn : active ? color : dim,
-                    marginBottom: 1,
-                  }}>
-                    {step.label}
-                    {active && <span style={{ opacity: cursor ? 1 : 0, marginLeft: 4 }}>▌</span>}
-                  </div>
-                  <div style={{
-                    ...mono, fontSize: 10,
-                    color: done
-                      ? "rgba(52,211,153,0.45)"
-                      : active
-                        ? (JD_STEP_COLOR[step.id] ? "rgba(167,139,250,0.45)" : "rgba(232,255,107,0.45)")
-                        : "transparent",
-                    transition: "color 0.3s",
-                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                  }}>
-                    {step.detail}
-                  </div>
-                </div>
+                    width: '8px', height: '8px', borderRadius: '50%',
+                    border: '2px solid var(--accent)',
+                    borderTopColor: 'transparent',
+                    animation: 'spin 0.7s linear infinite',
+                    flexShrink: 0,
+                  }} />
+                ) : (
+                  <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'var(--border-bright)' }} />
+                )}
               </div>
-            );
-          })}
-        </div>
 
-        {/* Progress bar footer */}
-        <div style={{
-          padding: "10px 20px 12px",
-          borderTop: "1px solid var(--terminal-divider)",
-          background: "var(--terminal-header-bg)",
-        }}>
-          <div style={{ ...mono, fontSize: 11, color: acc, whiteSpace: "pre", letterSpacing: "-0.01em" }}>
-            [{bar}] {String(overallPct).padStart(3, " ")}%
-          </div>
-        </div>
+              {/* Label */}
+              <span style={{
+                fontSize: '13px',
+                fontWeight: isDone || isActive ? 500 : 300,
+                color: isDone ? 'var(--accent3)' : isActive ? 'var(--text)' : isError ? 'var(--danger)' : 'var(--text-dim)',
+                transition: 'color 0.3s ease',
+              }}>
+                {def.label}
+              </span>
+            </div>
+          )
+        })}
       </div>
     </div>
-  );
+  )
 }
+
 
 /* ══════════════════════════════════════════════════════════════════
    VALUE PREVIEW CARD — post-match teaser for anonymous users
@@ -1431,7 +1283,7 @@ export default function Home() {
     textareaRef.current?.focus()
   }
 
-  // ── Tailor pipeline handler ──────────────────────────────────────
+  // ── Tailor pipeline handler — SSE streaming ─────────────────────
   const handleTailor = async () => {
     if (!jd.trim() || tailorLoading) return
 
@@ -1456,12 +1308,13 @@ export default function Home() {
     setTailorLoading(true)
     setJd('')
 
-    // Append loading placeholder
+    // Append loading placeholder — tailorSteps accumulates SSE step events
     setMessages(prev => [...prev, {
       id: msgId,
       jd: capturedJd,
       isTailorResult: true,
       tailorData: null,
+      tailorSteps: [],
       loading: true,
       error: null,
     }])
@@ -1475,19 +1328,63 @@ export default function Home() {
       })
 
       if (!res.ok) {
+        // Non-streaming error (400/401 before stream opens)
         const errData = await res.json().catch(() => ({}))
         throw new Error(errData.detail || `Server error (${res.status})`)
       }
 
-      const data = await res.json()
-      setMessages(prev => prev.map(m => m.id === msgId
-        ? { ...m, tailorData: data, loading: false }
-        : m
-      ))
+      // Read the SSE stream line by line
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let   buffer  = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        // SSE lines end with \n\n — split on that
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() // keep the incomplete tail
+
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data:')) continue
+
+          let event
+          try {
+            event = JSON.parse(line.slice(5).trim())
+          } catch {
+            continue
+          }
+
+          if (event.type === 'step') {
+            // Append/update this step in tailorSteps
+            setMessages(prev => prev.map(m => {
+              if (m.id !== msgId) return m
+              const existing = m.tailorSteps || []
+              // Append — card reads latest status per step id
+              return { ...m, tailorSteps: [...existing, event] }
+            }))
+          } else if (event.type === 'result') {
+            // Final success — store tailorData, clear loading
+            const { type, ...tailorData } = event
+            setMessages(prev => prev.map(m =>
+              m.id === msgId ? { ...m, tailorData, loading: false } : m
+            ))
+          } else if (event.type === 'error') {
+            setMessages(prev => prev.map(m =>
+              m.id === msgId ? { ...m, error: event.detail, loading: false } : m
+            ))
+          }
+        }
+      }
     } catch (err) {
-      setMessages(prev => prev.map(m => m.id === msgId
-        ? { ...m, error: err.message || 'Tailoring failed. Please try again.', loading: false }
-        : m
+      setMessages(prev => prev.map(m =>
+        m.id === msgId
+          ? { ...m, error: err.message || 'Tailoring failed. Please try again.', loading: false }
+          : m
       ))
     } finally {
       setTailorLoading(false)
@@ -1617,10 +1514,32 @@ export default function Home() {
                     Rack
                   </div>
 
-                  {/* Pipeline animation while this turn is loading — JD turns only */}
-                  {msg.loading && !msg.isAssistantReply && (
-                    <div style={{ marginBottom: '8px' }}>
-                      <JDPipelineAnimation uploadQueue={uploadQueue} />
+                  {/* Loading indicator while this turn is processing — JD turns only */}
+                  {msg.loading && !msg.isAssistantReply && !msg.isTailorResult && (
+                    <div style={{
+                      padding: '20px 22px', borderRadius: '14px',
+                      background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                      display: 'flex', flexDirection: 'column', gap: '14px',
+                      marginBottom: '8px',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                          {[0,1,2].map(i => (
+                            <div key={i} style={{
+                              width: '5px', height: '5px', borderRadius: '50%',
+                              background: 'var(--accent)', opacity: 0.7,
+                              animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+                            }} />
+                          ))}
+                        </div>
+                        <span style={{ fontSize: '13px', color: 'var(--text-dim)', fontWeight: 300 }}>Matching your resume…</span>
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, lineHeight: 1.6, borderLeft: '2px solid rgba(232,255,107,0.2)', paddingLeft: '12px' }}>
+                        {uploadQueue.length > 0
+                          ? 'Uploading resumes → embedding → scoring against JD → ranking'
+                          : 'Embedding JD → scoring resumes → ranking by fit'
+                        }
+                      </div>
                     </div>
                   )}
 
@@ -1919,28 +1838,8 @@ export default function Home() {
                   {msg.isTailorResult && (
                     <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
                       {msg.loading ? (
-                        // Tailor-specific loading indicator
-                        <div style={{
-                          padding: '20px 22px', borderRadius: '14px',
-                          background: 'var(--surface)', border: '1px solid rgba(232,255,107,0.2)',
-                          display: 'flex', flexDirection: 'column', gap: '14px',
-                        }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                              {[0,1,2].map(i => (
-                                <div key={i} style={{
-                                  width: '5px', height: '5px', borderRadius: '50%',
-                                  background: 'var(--accent)', opacity: 0.7,
-                                  animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
-                                }} />
-                              ))}
-                            </div>
-                            <span style={{ fontSize: '13px', color: 'var(--text-dim)', fontWeight: 300 }}>Tailoring your resume…</span>
-                          </div>
-                          <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, lineHeight: 1.6, borderLeft: '2px solid rgba(232,255,107,0.2)', paddingLeft: '12px' }}>
-                            Matching your resumes → selecting best fit → rewriting for this role → generating PDF
-                          </div>
-                        </div>
+                        // Live SSE checkpoint display
+                        <TailorStepsCard steps={msg.tailorSteps || []} />
                       ) : msg.error ? (
                         <div style={{
                           padding: '14px 18px', borderRadius: '12px',
@@ -2341,13 +2240,14 @@ export default function Home() {
           {/* ── Slash command dropdown ── */}
           {slashMenuOpen && (
             <div style={{
-              position: 'absolute', bottom: '100%', left: 0, right: 0, marginBottom: '8px',
-              background: 'var(--surface)', border: '1px solid rgba(232,255,107,0.25)',
-              borderRadius: '14px', overflow: 'hidden', zIndex: 50,
+              position: 'absolute', bottom: '100%', left: 0, marginBottom: '6px',
+              width: 'max-content', minWidth: '220px', maxWidth: '320px',
+              background: 'var(--surface)', border: '1px solid var(--border-bright)',
+              borderRadius: '12px', overflow: 'hidden', zIndex: 50,
               boxShadow: 'var(--modal-shadow)',
-              animation: 'bubbleIn 0.2s ease both',
+              animation: 'bubbleIn 0.15s ease both',
             }}>
-              <div style={{ padding: '8px 14px 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ padding: '6px 12px 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', borderBottom: '1px solid var(--border)' }}>
                 Tools
               </div>
               {SLASH_TOOLS.map(tool => (
@@ -2355,22 +2255,22 @@ export default function Home() {
                   key={tool.id}
                   onClick={() => selectSlashTool(tool)}
                   style={{
-                    width: '100%', display: 'flex', alignItems: 'center', gap: '12px',
-                    padding: '12px 16px', background: 'transparent', border: 'none',
-                    cursor: 'pointer', textAlign: 'left', transition: 'background 0.15s ease',
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
+                    padding: '8px 12px', background: 'transparent', border: 'none',
+                    cursor: 'pointer', textAlign: 'left', transition: 'background 0.12s ease',
                   }}
-                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(232,255,107,0.05)'}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(232,255,107,0.06)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
-                  <span style={{ fontSize: '16px', flexShrink: 0 }}>{tool.icon}</span>
+                  <span style={{ fontSize: '13px', flexShrink: 0, opacity: 0.8 }}>{tool.icon}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700, color: 'var(--accent)' }}>{tool.label}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>{tool.label}</span>
                       {tool.authRequired && (
-                        <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.06em' }}>AUTH</span>
+                        <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.06em', flexShrink: 0 }}>AUTH</span>
                       )}
                     </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, marginTop: '2px' }}>{tool.description}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 300, marginTop: '1px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tool.description}</div>
                   </div>
                 </button>
               ))}
