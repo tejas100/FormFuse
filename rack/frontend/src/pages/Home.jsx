@@ -828,9 +828,9 @@ export default function Home() {
   // uploadQueue: { name, status }[] — drives animation during processing
   const [fileQueue, setFileQueue]     = useState([])  // staged files
   const [uploadQueue, setUploadQueue] = useState([])  // live status for animation
-  const fileInputRef = useRef(null)
-  const chatScrollRef = useRef(null)
-  const textareaRef   = useRef(null)
+  const fileInputRef   = useRef(null)
+  const chatScrollRef  = useRef(null)
+  const textareaRef    = useRef(null)
 
   // ── Creature mood — derived from app state ──────────────────────
   const [creatureMood, setCreatureMood] = useState('idle')
@@ -1043,15 +1043,17 @@ export default function Home() {
     }
   }
 
-  // ── Input triage — asks backend to classify before touching the match pipeline ──
-  // Returns: { intent: 'JD' | 'CAREER_QUESTION' | 'OFF_TOPIC' | 'FILTER_RESULT', reply: string | null }
-  const triageInput = async (text, contextMessages = []) => {
+  // ── Input triage — sends to unified LLM router, gets back { tool, params, ... } ──
+  // The backend LLM is the single source of truth for routing.
+  // mode_hint carries the active slash command as a soft nudge (not a hard bypass).
+  const triageInput = async (text, contextMessages = [], modeHint = null) => {
     try {
       const headers = isAuthed
         ? await getAuthHeaders()
         : { 'X-Session-ID': sessionId }
 
-      // Serialize last N messages as lightweight context for the backend
+      // Serialize last N messages with richer context so the router can detect
+      // cross-tool intents (e.g. rank→tailor handoff needs the stored jdText)
       const context = contextMessages.slice(-5).map(m => {
         if (m.isTailorResult) return {
           role: 'rack', type: 'tailor',
@@ -1059,6 +1061,7 @@ export default function Home() {
             ? `Tailored resume "${m.tailorData.resume_name}" for "${m.tailorData.jd_title}" — score ${m.tailorData.match_score}`
             : 'Tailoring in progress',
           jd: m.jd,
+          jd_text: m.tailorData?.jd_title || m.jd || '',
         }
         if (m.isFilterResult) return {
           role: 'rack', type: 'filter',
@@ -1071,23 +1074,23 @@ export default function Home() {
         }
         if (m.results) return {
           role: 'rack', type: 'match',
-          content: `Matched ${m.results.length} resumes against JD: "${m.jd?.slice(0, 120)}"`,
+          content: `Ranked ${m.results.length} resumes against JD: "${m.jd?.slice(0, 120)}"`,
           topScore: m.results[0]?.llm_score ?? m.results[0]?.score ?? null,
+          jd_text: m.jdText || '',     // ← critical for rank→tailor handoff
         }
-        // Loading or error placeholder — skip
         return null
       }).filter(Boolean)
 
       const res = await fetch('http://localhost:8000/api/match/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ text, context }),
+        body: JSON.stringify({ text, context, mode_hint: modeHint }),
       })
       if (!res.ok) throw new Error('Triage failed')
-      return await res.json()  // { intent, reply }
+      return await res.json()  // { tool, params, intent, reply, jobs, filter_label }
     } catch {
-      // Backend unreachable — assume JD so the match pipeline still runs
-      return { intent: 'JD', reply: null }
+      // Backend unreachable — assume rank so the match pipeline still runs
+      return { tool: 'route_to_rank', intent: 'JD', params: null }
     }
   }
 
@@ -1183,65 +1186,63 @@ export default function Home() {
     }
   }
 
-  // ── Match handler ───────────────────────────────────────────────
+  // ── Match handler — LLM router is the single truth, flat switch executes ───
+  // No heuristics. No regex. No refs. The backend LLM picks the tool; we execute.
   const handleMatch = async () => {
-    // Route to tailor pipeline if that mode is active
-    if (activeMode === 'tailor') { handleTailor(); return }
-
-    // /rank — explicit rank mode: skip chain detection, go straight to JD match
-    // (falls through to normal JD pipeline below after clearing mode)
-    const rankMode = activeMode === 'rank'
-
     if (!jd.trim() || loading || tailorLoading) return
 
-    const capturedJd = jd.trim()
-    const msgId = Date.now()
+    const capturedJd  = jd.trim()
+    const msgId       = Date.now()
+    const modeHint    = activeMode   // pass slash command as soft hint to router
 
-    // ── Tailor follow-up chain detection ─────────────────────────────────────
-    // Skip if user explicitly chose /rank — they want a fresh comparison, not a refinement.
-    // Walk backwards to find the most recent resolved tailor result.
-    // If the user's input is short + conversational (not a URL, not a long JD),
-    // treat it as a refinement request and re-run tailor with the prior result
-    // as the resume input — no re-matching, no re-scoring.
-    if (!rankMode) {
+    setLoading(true)
+    setJd('')
+    if (activeMode) setActiveMode(null)
+
+    // ── Single triage call — backend LLM routes ─────────────────────────────
+    const triage = await triageInput(capturedJd, messages, modeHint)
+    const tool   = triage.tool || 'route_to_rank'   // safe fallback
+
+    // ── route_to_tailor — LLM detected tailor intent ────────────────────────
+    // May include jd_text from a previous rank result (rank→tailor handoff).
+    if (tool === 'route_to_tailor') {
+      setLoading(false)
+      const jdInput = triage.params?.jd_text?.trim() || capturedJd
+      handleTailorWithText(jdInput)
+      return
+    }
+
+    // ── route_to_refine — LLM detected refinement after a tailor result ─────
+    if (tool === 'route_to_refine') {
+      setLoading(false)
+      // Find the last resolved tailor message to get prevTailorData
       const lastTailorMsg = (() => {
         for (let i = messages.length - 1; i >= 0; i--) {
           const m = messages[i]
           if (m.isTailorResult && m.tailorData?.tailored_full_text) return m
-          // Stop searching if we hit a non-tailor user turn
-          // (don't chain across JD matches or filter results)
-          if (!m.isTailorResult && !m.loading) break
+          if (!m.loading) break
         }
         return null
       })()
-
-      const isUrl         = /^https?:\/\//i.test(capturedJd)
-      const isLongJD      = capturedJd.length > 300
-      const isTailorChain = lastTailorMsg && !isUrl && !isLongJD
-
-      if (isTailorChain) {
-        // Use the jd from the last tailor turn as the JD context for the refinement
-        const jdContext = lastTailorMsg.tailorData.jd_title || lastTailorMsg.jd || capturedJd
-        handleTailorFollowUp(capturedJd, lastTailorMsg.tailorData, jdContext)
-        return
+      if (lastTailorMsg) {
+        const hint     = triage.params?.modification_hint || capturedJd
+        const jdCtx    = triage.params?.jd_text || lastTailorMsg.tailorData.jd_title || lastTailorMsg.jd || capturedJd
+        handleTailorFollowUp(hint, lastTailorMsg.tailorData, jdCtx)
+      } else {
+        // No prior tailor result to refine — fall through to rank
+        setLoading(true)
+        // continue to JD match pipeline below (no return)
       }
+      if (lastTailorMsg) return
     }
 
-    if (rankMode) setActiveMode(null)   // clear /rank pill after submission
-    setLoading(true)
-    setJd('')  // clear textarea immediately so it feels responsive
-
-    // ── Step 0: Triage — classify input before touching the match pipeline ──
-    const triage = await triageInput(capturedJd, messages)
-    const intent = triage.intent
-
-    // OFF_TOPIC — warm redirect, no backend match call
-    if (intent === 'OFF_TOPIC') {
+    // ── route_off_topic — warm redirect ────────────────────────────────────
+    if (tool === 'route_off_topic') {
       setMessages(prev => [...prev, {
         id: msgId,
         jd: capturedJd,
         isAssistantReply: true,
-        replyText: "I'm built to help you land your next job — paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
+        replyText: triage.reply || "I'm built to help you land your next job — paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
         loading: false,
         error: null,
       }])
@@ -1249,13 +1250,13 @@ export default function Home() {
       return
     }
 
-    // CAREER_QUESTION — reply already came back from the backend, render it directly
-    if (intent === 'CAREER_QUESTION') {
+    // ── answer_career_question — backend already answered ──────────────────
+    if (tool === 'answer_career_question') {
       setMessages(prev => [...prev, {
         id: msgId,
         jd: capturedJd,
         isAssistantReply: true,
-        replyText: triage.reply,
+        replyText: triage.reply || "Ask me anything about your job search, resume strategy, or interview prep.",
         loading: false,
         error: null,
       }])
@@ -1263,15 +1264,14 @@ export default function Home() {
       return
     }
 
-    // FILTER_RESULT — backend ran get_matched_jobs and returned structured rows.
-    // Render through the same paginated table as the filter chips — no new code needed.
-    if (intent === 'FILTER_RESULT') {
-      const jobs = triage.jobs || []
+    // ── show_matched_jobs — structured job table ────────────────────────────
+    if (tool === 'show_matched_jobs') {
+      const jobs  = triage.jobs || []
       const label = triage.filter_label || 'Matched jobs'
       setMessages(prev => [...prev, {
         id: msgId,
-        jd: capturedJd,        // user bubble always shows what they actually typed
-        filterLabel: label,    // table header uses the structured label
+        jd: capturedJd,
+        filterLabel: label,
         isFilterResult: true,
         filterJobs: jobs,
         results: null,
@@ -1284,7 +1284,7 @@ export default function Home() {
       return
     }
 
-    // JD — run the full matching pipeline below
+    // ── route_to_rank (default) — full match pipeline ──────────────────────
     const hasExistingResumes = resumeCount > 0
     const hasQueuedFiles     = fileQueue.length > 0
 
@@ -1301,7 +1301,7 @@ export default function Home() {
       return
     }
 
-    // Append loading placeholder for this turn
+    // Append loading placeholder
     setMessages(prev => [...prev, {
       id: msgId,
       jd: capturedJd,
@@ -1314,7 +1314,6 @@ export default function Home() {
 
     // ── Act 1: Upload queued files (anonymous only) ─────────────
     if (!isAuthed && hasQueuedFiles) {
-      // Initialise upload queue state for animation
       const initialQueue = fileQueue.map(f => ({ name: f.name, status: 'queued' }))
       setUploadQueue(initialQueue)
 
@@ -1324,30 +1323,21 @@ export default function Home() {
 
       for (let i = 0; i < fileQueue.length; i++) {
         const file = fileQueue[i]
-
-        // Mark as processing
         setUploadQueue(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'processing' } : f))
 
         try {
           const formData = new FormData()
           formData.append('file', file)
-
           const res = await fetch('http://localhost:8000/api/resumes/upload', {
             method: 'POST',
             headers: { 'X-Session-ID': sessionId },
             body: formData,
           })
-
           if (!res.ok) throw new Error('Upload failed')
-
-          const data = await res.json()
+          const data   = await res.json()
           const resume = data.resume
-
-          // Capture base64 for localStorage migration
-          const b64 = await fileToBase64(file)
+          const b64    = await fileToBase64(file)
           lsResumes.push({ ...resume, fileBase64: b64, fileType: file.type })
-
-          // Mark done
           setUploadQueue(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'done' } : f))
         } catch (err) {
           console.error('Upload error for', file.name, err)
@@ -1355,19 +1345,14 @@ export default function Home() {
         }
       }
 
-      // Persist all to localStorage
       localStorage.setItem('rack_resumes', JSON.stringify(lsResumes))
       setResumeCount(lsResumes.length)
       setFileQueue([])
     }
 
     // ── Act 2: Resolve JD text — fetch URL if needed ────────────────
-    // /rank (and plain URL pastes) send a URL, not raw JD text.
-    // The match API expects raw text, so we fetch first via /api/chat/fetch-jd.
-    let jdText    = capturedJd
-    let fetchedTitle = null
-
-    const isJdUrl = /^https?:\/\//i.test(capturedJd)
+    let jdText       = capturedJd
+    const isJdUrl    = /^https?:\/\//i.test(capturedJd)
     if (isJdUrl) {
       try {
         const fetchRes = await fetch('http://localhost:8000/api/chat/fetch-jd', {
@@ -1409,14 +1394,13 @@ export default function Home() {
         throw new Error(errData.detail || `Server error (${res.status})`)
       }
 
-      const data = await res.json()
-      // If the input was a URL, update the user bubble to show the job title
-      // from jd_parsed instead of the raw URL — much cleaner in the conversation thread
+      const data        = await res.json()
       const parsedTitle = data.jd_parsed?.title
       setMessages(prev => prev.map(m => m.id === msgId
         ? {
             ...m,
             jd: (isJdUrl && parsedTitle) ? parsedTitle : capturedJd,
+            jdText,           // stored so triage context can include it for rank→tailor handoff
             results: data.results || [],
             jdParsed: data.jd_parsed || null,
             meta: data.meta || null,
@@ -1594,6 +1578,105 @@ export default function Home() {
     } finally {
       setTailorLoading(false)
       setActiveMode(null)
+    }
+  }
+
+  // ── Tailor with explicit text — used by rank→tailor handoff ────────
+  // Identical to handleTailor but accepts jdInput directly instead of
+  // reading from the `jd` state variable. Avoids stale closure issues
+  // when called from handleMatch after state has already been cleared.
+  const handleTailorWithText = async (jdInput) => {
+    if (!jdInput?.trim() || tailorLoading) return
+
+    if (!isAuthed) {
+      const msgId = Date.now()
+      setMessages(prev => [...prev, {
+        id: msgId,
+        jd: jdInput.slice(0, 120) + (jdInput.length > 120 ? '…' : ''),
+        isAssistantReply: true,
+        replyText: "Tailoring requires a signed-in account so I can access your saved resumes. Sign in and I'll generate a custom PDF for you in seconds.",
+        loading: false,
+        error: null,
+      }])
+      return
+    }
+
+    const capturedJd = jdInput.trim()
+    const msgId      = Date.now()
+
+    setTailorLoading(true)
+    setJd('')
+    setActiveMode(null)
+
+    setMessages(prev => [...prev, {
+      id: msgId,
+      jd: (() => {
+          const firstLine = capturedJd.split('\n')[0].trim()
+          return firstLine.length > 0 && firstLine.length < 80 ? firstLine : capturedJd.slice(0, 80) + '…'
+          })(),
+      isTailorResult: true,
+      tailorData: null,
+      tailorSteps: [],
+      loading: true,
+      error: null,
+    }])
+
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch('http://localhost:8000/api/chat/tailor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ text: capturedJd }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || `Server error (${res.status})`)
+      }
+
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let   buffer  = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop()
+
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data:')) continue
+          let event
+          try { event = JSON.parse(line.slice(5).trim()) } catch { continue }
+
+          if (event.type === 'step') {
+            setMessages(prev => prev.map(m => {
+              if (m.id !== msgId) return m
+              return { ...m, tailorSteps: [...(m.tailorSteps || []), event] }
+            }))
+          } else if (event.type === 'result') {
+            const { type, ...tailorData } = event
+            setMessages(prev => prev.map(m =>
+              m.id === msgId ? { ...m, tailorData, loading: false } : m
+            ))
+          } else if (event.type === 'error') {
+            setMessages(prev => prev.map(m =>
+              m.id === msgId ? { ...m, error: event.detail, loading: false } : m
+            ))
+          }
+        }
+      }
+    } catch (err) {
+      setMessages(prev => prev.map(m =>
+        m.id === msgId
+          ? { ...m, error: err.message || 'Tailoring failed. Please try again.', loading: false }
+          : m
+      ))
+    } finally {
+      setTailorLoading(false)
     }
   }
 

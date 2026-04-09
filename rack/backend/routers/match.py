@@ -182,21 +182,40 @@ _optional_bearer = _HTTPBearer(auto_error=False)
 
 class ChatRequest(BaseModel):
     text: str
+    context: Optional[list] = None      # serialized recent messages for routing context
+    mode_hint: Optional[str] = None     # "tailor" | "rank" | None — slash command hint
 
 class ChatResponse(BaseModel):
-    intent: str                         # "JD" | "CAREER_QUESTION" | "OFF_TOPIC" | "FILTER_RESULT"
-    reply: Optional[str] = None         # populated for CAREER_QUESTION and OFF_TOPIC
-    jobs: Optional[list] = None         # populated for FILTER_RESULT
-    filter_label: Optional[str] = None  # human-readable label for the table header
+    # Routing tool selected by the LLM — the single source of truth for frontend routing
+    # tool: "route_to_rank" | "route_to_tailor" | "route_to_refine" |
+    #        "answer_career_question" | "show_matched_jobs" | "route_off_topic"
+    tool: str
+    intent: str                         # legacy alias for tool — kept for backward compat
+    params: Optional[dict] = None       # tool-specific params (jd_text, modification_hint, etc.)
+    reply: Optional[str] = None         # populated for answer_career_question and route_off_topic
+    jobs: Optional[list] = None         # populated for show_matched_jobs
+    filter_label: Optional[str] = None  # human-readable label for the job table header
 
 
-# ── Classifier prompt ─────────────────────────────────────────────────────────
-_CLASSIFIER_SYSTEM = """You classify user input for a job search assistant app called RACK.
-Reply with ONLY one word — exactly one of: JD, CAREER_QUESTION, or OFF_TOPIC. Nothing else.
+# ── Unified router system prompt ──────────────────────────────────────────────
+_ROUTER_SYSTEM = """You are RACK's input router. RACK is an AI-powered resume matching platform.
+Your ONLY job is to call exactly ONE routing tool based on the user's message and conversation context.
 
-JD = a job description or job posting (has role title, responsibilities, requirements — typically structured job content)
-CAREER_QUESTION = a question or request about careers, resumes, job searching, interviews, skills, salary, or professional development
-OFF_TOPIC = anything not related to jobs, careers, or resumes (greetings, random text, general trivia, gibberish, nonsense)"""
+ROUTING RULES — read these carefully:
+
+route_to_rank: User pasted a job description (has requirements, responsibilities, role title) OR a job board URL. Use this for any structured JD content.
+
+route_to_tailor: User wants a tailored PDF resume for a job. Triggers on: "tailor", "customize", "optimize", "generate a pdf", "make a version for this role", "fit my resume to this", "push my score". IMPORTANT: if the previous message was a rank result and user is asking to tailor for that same role — extract jd_text from the rank context and pass it here.
+
+route_to_refine: User wants to refine/modify a PREVIOUSLY TAILORED resume. Only fires when the immediately prior message was a tailor result. Triggers on follow-up instructions like "make it more concise", "add X to the experience section", "remove Y", "focus more on Z".
+
+answer_career_question: User asked a career-related question (about their resumes, job search strategy, interview prep, skills gaps, salary, matched jobs). NOT a routing decision — you'll use DB tools to answer.
+
+show_matched_jobs: User wants to SEE their matched jobs as a list/table. Triggers on "show me my matches", "what jobs did you find", "top jobs for me", "85%+ matches". Distinct from answer_career_question which gives a text answer.
+
+route_off_topic: Anything not related to jobs, careers, resumes, or professional development. Greetings alone ("hi", "hello") should be route_off_topic unless combined with a career request.
+
+MODE HINT: If a mode_hint is provided ("tailor" or "rank"), treat it as a strong signal toward that routing tool but the message content still matters."""
 
 
 # ── Career assistant system prompt ───────────────────────────────────────────
@@ -213,6 +232,90 @@ Rules:
 - Never start with filler phrases like "Great question!" or "Certainly!"
 - Speak like a sharp, knowledgeable recruiter who is genuinely on the user's side
 - If a tool returns no data, tell the user honestly and suggest what to do next"""
+
+
+# ── Router tool definitions (the 6 routing actions the LLM must pick from) ────
+_ROUTER_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "route_to_rank",
+            "description": "User pasted a job description or job board URL to rank their resumes against.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "route_to_tailor",
+            "description": "User wants a tailored PDF resume for a specific job. Provide the resolved JD text if available from context (e.g. if the previous turn was a rank result, extract its jd_text).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "jd_text": {
+                        "type": "string",
+                        "description": "The job description text to tailor against. If the previous turn was a rank result, extract the stored JD text from context. Otherwise leave empty.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "route_to_refine",
+            "description": "User wants to refine or modify the most recently tailored resume. Only use when the prior turn was a tailor result.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "modification_hint": {
+                        "type": "string",
+                        "description": "The user's refinement instruction (e.g. 'make it more concise', 'add Python to skills section').",
+                    },
+                    "jd_text": {
+                        "type": "string",
+                        "description": "The JD context from the original tailor turn, for continuity.",
+                    },
+                },
+                "required": ["modification_hint"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "answer_career_question",
+            "description": "User asked a career-related question. Will use DB tools to answer with real user data.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_matched_jobs",
+            "description": "User wants to see their matched jobs as a table/list. Use when they ask to 'show', 'list', or 'view' their matches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "min_score": {"type": "integer", "description": "Minimum match score 0-100. Use 85 for top matches, 75 for good matches, 0 for all."},
+                    "limit":     {"type": "integer", "description": "Number of jobs to return. Default 5, max 20."},
+                    "sort_by":   {"type": "string", "enum": ["score", "recent"], "description": "Sort by best score or most recently posted."},
+                    "hours":     {"type": "integer", "description": "Only return jobs matched within the last N hours."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "route_off_topic",
+            "description": "Input is not related to jobs, careers, resumes, or professional development.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+]
 
 
 # ── Tool definitions (OpenAI function calling format) ─────────────────────────
@@ -461,8 +564,9 @@ async def chat(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Triage user input, then answer career questions using real DB data via tools.
-    Auth'd users get data-driven answers. Anonymous users get generic advice.
+    Unified LLM router: classify + route user input in a single tool-calling pass.
+    The LLM picks one of 6 routing tools. The frontend executes whatever comes back.
+    Auth'd users get data-driven answers for career questions. Anonymous users get generic advice.
     """
     text = request.text.strip()
     if not text:
@@ -470,7 +574,8 @@ async def chat(
 
     api_key = _os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        return ChatResponse(intent="JD", reply=None)
+        # Fallback: treat as JD so match pipeline still runs
+        return ChatResponse(tool="route_to_rank", intent="JD")
 
     # Resolve user_id from JWT if present
     user_id: Optional[str] = None
@@ -482,78 +587,166 @@ async def chat(
         except Exception:
             pass
 
+    # ── Build conversation context string for the router ──────────────────────
+    context_parts = []
+    if request.context:
+        for msg in request.context[-5:]:
+            msg_type = msg.get("type", "")
+            if msg_type == "tailor":
+                context_parts.append(f"[Previous turn: TAILOR RESULT] {msg.get('content', '')} | jd: {msg.get('jd', '')} | jd_text available: {bool(msg.get('jd_text'))}")
+            elif msg_type == "match":
+                jd_text_preview = (msg.get('jd_text') or '')[:200]
+                context_parts.append(f"[Previous turn: RANK RESULT] {msg.get('content', '')} | jd_text: {jd_text_preview}")
+            elif msg_type == "filter":
+                context_parts.append(f"[Previous turn: FILTER RESULT] {msg.get('content', '')}")
+            elif msg_type == "reply":
+                context_parts.append(f"[Previous turn: ASSISTANT REPLY] {msg.get('content', '')[:200]}")
+
+    context_block = "\n".join(context_parts) if context_parts else "No prior conversation."
+    mode_hint_str = f"\nMode hint (user's slash command): {request.mode_hint}" if request.mode_hint else ""
+
+    router_user_msg = f"""Conversation context (most recent last):
+{context_block}
+{mode_hint_str}
+
+User's new message:
+{text[:1000]}
+
+Call exactly ONE routing tool now."""
+
     async with _httpx.AsyncClient() as client:
 
-        # Step 1: Classify
+        # ── Step 1: Single routing call — LLM picks one of 6 tools ───────────
         try:
-            clf_res = await client.post(
+            route_res = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "model": "gpt-4o-mini",
                     "messages": [
-                        {"role": "system", "content": _CLASSIFIER_SYSTEM},
-                        {"role": "user",   "content": f"Classify this input:\n\n{text[:1000]}"},
+                        {"role": "system", "content": _ROUTER_SYSTEM},
+                        {"role": "user",   "content": router_user_msg},
                     ],
-                    "max_tokens": 5,
+                    "tools":       _ROUTER_TOOLS,
+                    "tool_choice": "required",   # must pick a tool — no free-text escape
+                    "max_tokens":  200,
                     "temperature": 0.0,
                 },
                 timeout=10.0,
             )
-            raw = clf_res.json()["choices"][0]["message"]["content"].strip().upper()
-            intent = "CAREER_QUESTION" if "CAREER" in raw else "OFF_TOPIC" if ("OFF" in raw or "TOPIC" in raw) else "JD"
-        except Exception:
-            intent = "JD"
+            route_data   = route_res.json()
+            route_msg    = route_data["choices"][0]["message"]
+            route_calls  = route_msg.get("tool_calls") or []
+            if not route_calls:
+                raise ValueError("Router returned no tool call")
+            selected_tool = route_calls[0]["function"]["name"]
+            try:
+                tool_params = _json.loads(route_calls[0]["function"].get("arguments", "{}"))
+            except _json.JSONDecodeError:
+                tool_params = {}
+        except Exception as e:
+            _chat_log.warning(f"[chat] Router call failed: {e}")
+            # Fallback: assume JD so match pipeline runs
+            return ChatResponse(tool="route_to_rank", intent="JD")
 
-        # Step 2: OFF_TOPIC — instant redirect
-        if intent == "OFF_TOPIC":
+        _chat_log.info(f"[chat] Router selected: {selected_tool} | user={user_id} | params={tool_params}")
+
+        # ── Step 2: Execute routing decision ──────────────────────────────────
+
+        # Pure routing — no extra work needed
+        if selected_tool == "route_to_rank":
+            return ChatResponse(tool="route_to_rank", intent="JD")
+
+        if selected_tool == "route_to_tailor":
             return ChatResponse(
-                intent="OFF_TOPIC",
-                reply="I'm built to help you land your next job, paste a job description and I'll instantly rank your resumes, or ask me anything about your job search, resume, or interview prep.",
+                tool="route_to_tailor", intent="JD",
+                params={"jd_text": tool_params.get("jd_text") or None},
             )
 
-        # Step 3: JD — tell frontend to run the match pipeline
-        if intent == "JD":
-            return ChatResponse(intent="JD", reply=None)
+        if selected_tool == "route_to_refine":
+            return ChatResponse(
+                tool="route_to_refine", intent="JD",
+                params={
+                    "modification_hint": tool_params.get("modification_hint", text),
+                    "jd_text":           tool_params.get("jd_text") or None,
+                },
+            )
 
-        # Step 4: CAREER_QUESTION — tool-calling loop
-        messages = [
+        if selected_tool == "route_off_topic":
+            return ChatResponse(
+                tool="route_off_topic", intent="OFF_TOPIC",
+                reply="I'm built to help you land your next job — paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
+            )
+
+        # show_matched_jobs — run the DB tool and return structured rows
+        if selected_tool == "show_matched_jobs":
+            min_score = int(tool_params.get("min_score", 0))
+            limit     = int(tool_params.get("limit", 5))
+            sort_by   = tool_params.get("sort_by", "score")
+            hours     = int(tool_params.get("hours", 0))
+            jobs_data = await _execute_tool(
+                "get_matched_jobs",
+                {"min_score": min_score, "limit": limit, "sort_by": sort_by, "hours": hours},
+                user_id, db,
+            )
+            jobs_parsed = _json.loads(jobs_data)
+            jobs_list   = jobs_parsed.get("jobs", [])
+            if jobs_list:
+                # Build label the same way the old FILTER_RESULT path did
+                if hours > 0:
+                    label = (f"Jobs matched in the past hour" if hours == 1
+                             else f"Jobs matched in the past {hours}h" if hours <= 24
+                             else f"Jobs matched in the past {hours // 24} day{'s' if hours // 24 != 1 else ''}")
+                elif sort_by == "recent":
+                    label = "Newly matched jobs"
+                elif min_score >= 85:
+                    label = "85%+ match jobs"
+                elif min_score >= 75:
+                    label = "75%+ match jobs"
+                elif min_score > 0:
+                    label = f"{min_score}%+ match jobs"
+                else:
+                    label = f"Top {limit} matched jobs" if limit < 20 else "All matched jobs"
+                return ChatResponse(tool="show_matched_jobs", intent="FILTER_RESULT", jobs=jobs_list, filter_label=label)
+            # No rows — fall through to career question answering so LLM can explain
+            selected_tool = "answer_career_question"
+
+        # answer_career_question — tool-calling loop with DB tools
+        # (same logic as before, now reached only for genuine career questions)
+        career_messages = [
             {"role": "system", "content": _CAREER_SYSTEM},
             {"role": "user",   "content": text},
         ]
 
-        # Round 1: LLM decides which tools it needs
         try:
             first_res = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "model": "gpt-4o-mini",
-                    "messages": messages,
-                    "tools": _TOOLS,
+                    "messages":    career_messages,
+                    "tools":       _TOOLS,
                     "tool_choice": "auto",
-                    "max_tokens": 500,
+                    "max_tokens":  500,
                     "temperature": 0.4,
                 },
                 timeout=15.0,
             )
-            first_data = first_res.json()
+            first_data    = first_res.json()
             assistant_msg = first_data["choices"][0]["message"]
-            tool_calls = assistant_msg.get("tool_calls") or []
+            tool_calls    = assistant_msg.get("tool_calls") or []
         except Exception as e:
-            _chat_log.warning(f"[chat] First LLM call failed: {e}")
-            return ChatResponse(intent="CAREER_QUESTION", reply="I ran into an issue. Try again in a moment.")
+            _chat_log.warning(f"[chat] Career LLM call failed: {e}")
+            return ChatResponse(tool="answer_career_question", intent="CAREER_QUESTION", reply="I ran into an issue. Try again in a moment.")
 
         if tool_calls:
-            # Append assistant turn with tool_calls
-            messages.append({
+            career_messages.append({
                 "role": "assistant",
                 "content": assistant_msg.get("content"),
                 "tool_calls": tool_calls,
             })
 
-            # Execute each requested tool and feed results back
-            tool_results_map = {}  # fn_name → parsed result dict
+            tool_results_map = {}
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
                 try:
@@ -562,63 +755,22 @@ async def chat(
                     fn_args = {}
 
                 tool_result_str = await _execute_tool(fn_name, fn_args, user_id, db)
-                _chat_log.info(f"[chat] Tool {fn_name} called for user={user_id}")
+                _chat_log.info(f"[chat] DB tool {fn_name} called for user={user_id}")
                 tool_results_map[fn_name] = _json.loads(tool_result_str)
 
-                messages.append({
+                career_messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": tool_result_str,
                 })
 
-            # ── FILTER_RESULT shortcut ────────────────────────────────────────
-            # If get_matched_jobs was called and returned rows, skip Round 2 —
-            # return structured data so the frontend renders the paginated table.
-            if "get_matched_jobs" in tool_results_map:
-                jobs_data = tool_results_map["get_matched_jobs"]
-                jobs_list = jobs_data.get("jobs", [])
-                if jobs_list:
-                    jobs_tc_args = {}
-                    for tc in tool_calls:
-                        if tc["function"]["name"] == "get_matched_jobs":
-                            try:
-                                jobs_tc_args = _json.loads(tc["function"].get("arguments", "{}"))
-                            except _json.JSONDecodeError:
-                                pass
-                    min_score = int(jobs_tc_args.get("min_score", 0))
-                    limit     = int(jobs_tc_args.get("limit", 5))
-                    sort_by   = jobs_tc_args.get("sort_by", "score")
-                    hours     = int(jobs_tc_args.get("hours", 0))
-                    if hours and hours > 0:
-                        if hours == 1:
-                            label = "Jobs matched in the past hour"
-                        elif hours <= 24:
-                            label = f"Jobs matched in the past {hours}h"
-                        elif hours <= 168:
-                            label = f"Jobs matched in the past {hours // 24} day{'s' if hours // 24 != 1 else ''}"
-                        else:
-                            label = f"Jobs matched in the past {hours // 168} week{'s' if hours // 168 != 1 else ''}"
-                    elif sort_by == "recent":
-                        label = "Newly matched jobs"
-                    elif min_score >= 85:
-                        label = "85%+ match jobs"
-                    elif min_score >= 75:
-                        label = "75%+ match jobs"
-                    elif min_score > 0:
-                        label = f"{min_score}%+ match jobs"
-                    else:
-                        label = f"Top {limit} matched jobs" if limit < 20 else "All matched jobs"
-                    return ChatResponse(intent="FILTER_RESULT", jobs=jobs_list, filter_label=label)
-                # No rows → fall through to Round 2 so LLM explains why
-
-            # Round 2: LLM answers with the real data
             try:
                 second_res = await client.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
                         "model": "gpt-4o-mini",
-                        "messages": messages,
+                        "messages": career_messages,
                         "max_tokens": 600,
                         "temperature": 0.4,
                     },
@@ -626,12 +778,11 @@ async def chat(
                 )
                 reply = second_res.json()["choices"][0]["message"]["content"].strip()
             except Exception as e:
-                _chat_log.warning(f"[chat] Second LLM call failed: {e}")
+                _chat_log.warning(f"[chat] Career round-2 LLM call failed: {e}")
                 reply = "I ran into an issue fetching your data. Try again in a moment."
         else:
-            # No tools needed — LLM answered directly (generic career advice)
             reply = assistant_msg.get("content", "").strip()
             if not reply:
                 reply = "Ask me anything about your job search, resume strategy, or interview prep."
 
-        return ChatResponse(intent="CAREER_QUESTION", reply=reply)
+        return ChatResponse(tool="answer_career_question", intent="CAREER_QUESTION", reply=reply)
