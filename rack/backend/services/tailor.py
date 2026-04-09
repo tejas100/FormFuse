@@ -87,6 +87,66 @@ STRICT RULES:
 """
 
 
+# ── Refinement-specific prompt — used on route_to_refine path only ────────────
+# Unlocks bullet strengthening: the LLM can expand and sharpen existing bullets
+# to better surface adjacent skills that match the JD, but may not fabricate
+# experience that doesn't exist in the source resume.
+_TAILOR_REFINEMENT_PROMPT = """You are an expert resume writer and ATS optimization specialist.
+
+Given a candidate's resume (which has already been tailored once) and a job description,
+return an improved JSON object that maximizes this resume's match score for the role.
+
+OUTPUT: Return ONLY valid JSON. No explanation, no markdown fences, no preamble.
+
+Schema:
+{
+  "name": "Full Name",
+  "contact": "Title | phone | email | linkedin | github",
+  "experience": [
+    {
+      "company": "exact company name from resume",
+      "role": "exact job title from resume",
+      "period": "exact date range from resume",
+      "bullets": ["full bullet text", ...]
+    }
+  ],
+  "projects": [
+    {
+      "name": "exact project name from resume",
+      "tech": "exact tech stack string from resume",
+      "location": "location string or empty string",
+      "bullets": ["full bullet text", ...]
+    }
+  ],
+  "publications": [
+    { "title": "exact title", "venue": "Published in IEEE / etc", "note": "achievement note" }
+  ],
+  "skills": [
+    { "category": "AI / LLM", "items": "comma-separated skills verbatim" }
+  ]
+}
+
+REFINEMENT RULES:
+1. REORDER bullets within each job/project so the most JD-relevant come first.
+2. STRENGTHEN bullet phrasing: you may expand or sharpen a bullet to surface
+   adjacent skills that are already implied by the work but not explicitly stated.
+   Example: "Built ML pipelines on AWS" → "Built distributed ML training pipelines
+   on AWS using PyTorch, optimizing for throughput and model reliability."
+   You are drawing out what is already there — not fabricating new experience.
+3. NEVER invent job titles, companies, dates, degrees, or projects that don't exist.
+4. NEVER claim specific tools/frameworks the candidate has never used if there is
+   no basis for it anywhere in the resume.
+5. ADD relevant skills to the skills section if they are genuinely implied by the
+   candidate's experience (e.g. if they built distributed systems, add Kubernetes
+   if it's a natural inference from their work).
+6. Keep ALL jobs, ALL projects, ALL publications — nothing omitted.
+7. Strip any leading bullet character (•, -, *) from bullet text strings.
+8. publications array may be [] if source has none.
+9. The goal is a resume that honestly represents the candidate's experience while
+   maximizing alignment with the JD's specific language and requirements.
+"""
+
+
 # ── Python HTML renderer — all layout is here, GPT never touches CSS ─────────
 
 def _render_html(data: dict) -> str:
@@ -534,34 +594,44 @@ async def _generate_tailored_html(
     resume_full_text: str,
     jd_text: str,
     modification_hint: str | None = None,
+    is_refinement: bool = False,
 ) -> str:
     """
     Two-step pipeline:
-      Step 1 — GPT returns structured JSON (ordering only, verbatim bullets)
+      Step 1 — GPT returns structured JSON
       Step 2 — Python renders HTML with hardcoded CSS (no GPT layout decisions)
 
-    If modification_hint is provided (follow-up refinement), it is appended
-    as an additional instruction after the standard rules.
+    is_refinement=True: uses _TAILOR_REFINEMENT_PROMPT which allows bullet
+    strengthening (not just reordering) and higher temperature for more variation.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY not configured")
 
+    system_prompt = _TAILOR_REFINEMENT_PROMPT if is_refinement else _TAILOR_JSON_PROMPT
+    temperature   = 0.4 if is_refinement else 0.1  # more variation on refinement rounds
+
     hint_block = ""
     if modification_hint:
-        hint_block = (
-            f"\n\nADDITIONAL INSTRUCTION FROM USER (apply on top of the rules above):\n"
-            f"{modification_hint.strip()}\n"
-            f"Apply this instruction while still following all STRICT RULES above — "
-            f"never invent bullets, never drop bullets, never paraphrase."
-        )
+        if is_refinement:
+            hint_block = (
+                f"\n\nUSER REFINEMENT GOAL:\n"
+                f"{modification_hint.strip()}\n"
+                f"Focus on achieving this goal while following the REFINEMENT RULES above."
+            )
+        else:
+            hint_block = (
+                f"\n\nADDITIONAL INSTRUCTION FROM USER (apply on top of the rules above):\n"
+                f"{modification_hint.strip()}\n"
+                f"Apply this instruction while still following all STRICT RULES above — "
+                f"never invent bullets, never drop bullets, never paraphrase."
+            )
 
     user_message = (
         f"SOURCE RESUME:\n{resume_full_text[:6000]}\n\n"
         f"===\n\n"
         f"JOB DESCRIPTION:\n{jd_text[:4000]}\n\n"
-        f"Return the JSON object. Copy every bullet VERBATIM — only reorder within each job/project. "
-        f"Ignore any trailing lines that are just bullet characters with no text."
+        f"Return the JSON object."
         f"{hint_block}"
     )
 
@@ -575,11 +645,11 @@ async def _generate_tailored_html(
             json={
                 "model":       LLM_MODEL,
                 "messages":    [
-                    {"role": "system", "content": _TAILOR_JSON_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_message},
                 ],
-                "temperature": 0.1,
-                "max_tokens":  3000,
+                "temperature": temperature,
+                "max_tokens":  3500,
             },
             timeout=LLM_TIMEOUT,
         )
@@ -807,6 +877,79 @@ async def run_tailor_pipeline(
     }
 
 
+def _extract_score_target(modification_hint: str | None, prev_score: int) -> int:
+    """
+    Parse a target score from the user's modification hint.
+    "push to 85 or 90"  → 87  (midpoint)
+    "at least 90"       → 90
+    "above 85"          → 85
+    "to 90"             → 90
+    "make it better"    → prev_score + 10  (relative improvement)
+    No numbers found    → prev_score + 10
+    """
+    if not modification_hint:
+        return min(prev_score + 10, 95)
+
+    nums = [int(n) for n in re.findall(r'\b([6-9]\d|100)\b', modification_hint)]
+    # Filter to plausible score range (60–100)
+    nums = [n for n in nums if 60 <= n <= 100]
+
+    if not nums:
+        return min(prev_score + 10, 95)
+    if len(nums) == 1:
+        return nums[0]
+    # Two numbers (e.g. "85 or 90") → midpoint, round up
+    return (nums[0] + nums[-1] + 1) // 2
+
+
+async def _rescore_tailored_text(
+    tailored_text: str,
+    jd_text: str,
+    jd_title: str,
+    resume_name: str,
+) -> tuple[int, str, list, list]:
+    """
+    Run LLM scorer on a tailored resume text against the JD.
+    Returns (score, recommendation, key_strengths, key_gaps).
+    """
+    from services.llm_scorer import llm_score_batch
+
+    job_ctx = {
+        "job_title":        jd_title,
+        "company":          "",
+        "description_text": jd_text,
+    }
+
+    # Build a minimal pair — no hybrid scoring needed, llm_score_batch handles it
+    pair = {
+        "resume_id":       "rescore",
+        "name":            resume_name,
+        "hybrid_score":    0,
+        "hybrid_components": {},
+        "job":             job_ctx,
+        "resume": {
+            "id":        "rescore",
+            "name":      resume_name,
+            "full_text": tailored_text,
+            "structured": {"years_exp": None, "titles": [], "domains": [], "skills": []},
+        },
+        "parsed_jd": {"title": jd_title},
+    }
+
+    try:
+        results = await llm_score_batch([pair])
+        r = results[0] if results else {}
+        return (
+            int(r.get("llm_score", 0)),
+            r.get("llm_recommendation", ""),
+            r.get("llm_key_strengths", []),
+            r.get("llm_key_gaps", []),
+        )
+    except Exception as e:
+        logger.warning(f"[tailor] Rescore failed: {e}")
+        return 0, "", [], []
+
+
 # ── Streaming entry point (SSE) ───────────────────────────────────────────────
 
 async def run_tailor_pipeline_streaming(
@@ -972,22 +1115,115 @@ async def run_tailor_pipeline_streaming(
         # ── Step 5: Generate tailored HTML via GPT ───────────────────────────
         yield _step("generate_resume", "start", "Tailoring resume for this role")
 
-        logger.info(f"[tailor] Generating tailored HTML — modification_hint={bool(modification_hint)}")
+        logger.info(f"[tailor] Generating tailored HTML — modification_hint={bool(modification_hint)}, is_refinement={bool(resume_override_text)}")
         tailored_html = await _generate_tailored_html(
             resume_full_text=full_text,
             jd_text=jd_text,
             modification_hint=modification_hint,
+            is_refinement=bool(resume_override_text),  # use refinement prompt on refine path
         )
 
-        # Extract plain text from the tailored HTML for follow-up chaining.
-        # We strip tags so the next refinement round sends clean text to GPT,
-        # not raw HTML (which would bloat the prompt and confuse the LLM).
-        try:
-            from bs4 import BeautifulSoup
-            tailored_full_text = BeautifulSoup(tailored_html, "html.parser").get_text(separator="\n", strip=True)
-        except ImportError:
-            # bs4 not installed — strip tags with regex as fallback
-            tailored_full_text = re.sub(r"<[^>]+>", " ", tailored_html).strip()
+        # Extract plain text for scoring and follow-up chaining
+        def _strip_html(html: str) -> str:
+            try:
+                from bs4 import BeautifulSoup
+                return BeautifulSoup(html, "html.parser").get_text(separator="\n", strip=True)
+            except ImportError:
+                return re.sub(r"<[^>]+>", " ", html).strip()
+
+        tailored_full_text = _strip_html(tailored_html)
+
+        # ── Reflexion loop — only runs on resume_override_text (refinement) path ──
+        # Fresh tailor scores are already computed pre-generation (pgvector + LLM).
+        # For refinements, the user expects the score to improve, so we:
+        #   1. Score the generated output against the JD
+        #   2. If score < target OR < prev_score: critique + regenerate (max 3 rounds)
+        #   3. Always keep the best-scoring attempt — never return something worse
+
+        llm_recommendation = top.get("llm_recommendation", "") if not resume_override_text else ""
+        llm_key_strengths  = top.get("llm_key_strengths", []) if not resume_override_text else []
+        llm_key_gaps       = top.get("llm_key_gaps", []) if not resume_override_text else []
+
+        if resume_override_text:
+            MAX_REFINEMENT_ROUNDS = 3
+            target_score = _extract_score_target(modification_hint, match_score)
+            logger.info(f"[tailor] Refinement loop — prev_score={match_score}, target={target_score}")
+
+            best_html       = tailored_html
+            best_text       = tailored_full_text
+            best_score      = 0
+            best_rec        = ""
+            best_strengths  = []
+            best_gaps       = []
+            current_text    = full_text  # start from the override text
+            critique        = ""
+
+            for round_num in range(1, MAX_REFINEMENT_ROUNDS + 1):
+                # Score current output
+                round_score, round_rec, round_strengths, round_gaps = await _rescore_tailored_text(
+                    tailored_full_text, jd_text, jd_title, top_resume_name,
+                )
+                logger.info(f"[tailor] Refinement round {round_num}: score={round_score}, target={target_score}")
+
+                # Emit SSE step so frontend shows progress
+                status_text = f"Round {round_num}: scored {round_score}"
+                if round_score >= target_score:
+                    status_text += f" ✓ (target {target_score} reached)"
+                elif round_num < MAX_REFINEMENT_ROUNDS:
+                    status_text += f" (target {target_score}, refining...)"
+                else:
+                    status_text += f" (best achieved, target was {target_score})"
+                yield _step("score_resumes", "done", status_text)
+
+                # Track best attempt
+                if round_score > best_score:
+                    best_score     = round_score
+                    best_html      = tailored_html
+                    best_text      = tailored_full_text
+                    best_rec       = round_rec
+                    best_strengths = round_strengths
+                    best_gaps      = round_gaps
+
+                # Stop if target reached
+                if round_score >= target_score:
+                    break
+
+                # Stop if on last round
+                if round_num == MAX_REFINEMENT_ROUNDS:
+                    break
+
+                # Build critique for next round from gaps identified by the scorer
+                critique_points = "\n".join(f"- {g}" for g in round_gaps[:4]) if round_gaps else "- Strengthen alignment with JD requirements"
+                critique = (
+                    f"\n\nREFINEMENT FEEDBACK (Round {round_num} scored {round_score}, target {target_score}):\n"
+                    f"The resume needs improvement in these areas identified by the AI scorer:\n"
+                    f"{critique_points}\n"
+                    f"Specifically: reorder bullets so the strongest JD-relevant achievements appear first "
+                    f"in each role. Do not invent or drop any bullets."
+                )
+
+                # Regenerate from the best text so far with accumulated critique
+                yield _step("generate_resume", "start", f"Improving resume (round {round_num + 1})")
+                tailored_html = await _generate_tailored_html(
+                    resume_full_text=best_text,
+                    jd_text=jd_text,
+                    modification_hint=(modification_hint or "") + critique,
+                    is_refinement=True,
+                )
+                tailored_full_text = _strip_html(tailored_html)
+                yield _step("generate_resume", "done", f"Improving resume (round {round_num + 1})")
+
+            # Use the best result regardless of which round produced it
+            tailored_html      = best_html
+            tailored_full_text = best_text
+            match_score        = best_score if best_score > 0 else match_score
+            llm_recommendation = best_rec
+            llm_key_strengths  = best_strengths
+            llm_key_gaps       = best_gaps
+
+            logger.info(f"[tailor] Refinement complete — best_score={match_score}, target={target_score}")
+
+        # fresh tailor path: llm_recommendation/strengths/gaps already set from lines above
 
         yield _step("generate_resume", "done", "Tailoring resume for this role")
 
@@ -999,7 +1235,6 @@ async def run_tailor_pipeline_streaming(
 
         # ── Step 7: Upload to Supabase Storage ───────────────────────────────
         logger.info(f"[tailor] Uploading PDF to Supabase Storage")
-        # For chained follow-ups top_resume_id is "chained" — use a placeholder uuid
         _storage_resume_id = top_resume_id if top_resume_id != "chained" else str(uuid.uuid4())[:8]
         storage_path, download_url = _upload_pdf_to_storage(user_id, _storage_resume_id, pdf_bytes)
 
@@ -1017,10 +1252,10 @@ async def run_tailor_pipeline_streaming(
             "resume_id":          top_resume_id,
             "resume_name":        top_resume_name,
             "match_score":        match_score,
-            "llm_recommendation": top.get("llm_recommendation", ""),
-            "llm_reasoning":      top.get("llm_reasoning", ""),
-            "key_strengths":      top.get("llm_key_strengths", []),
-            "key_gaps":           top.get("llm_key_gaps", []),
+            "llm_recommendation": llm_recommendation,
+            "llm_reasoning":      top.get("llm_reasoning", "") if not resume_override_text else "",
+            "key_strengths":      llm_key_strengths,
+            "key_gaps":           llm_key_gaps,
             "download_url":       download_url,
             "jd_title":           jd_title,
             "tailored_full_text": tailored_full_text,   # ← for follow-up chaining

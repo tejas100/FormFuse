@@ -1095,11 +1095,9 @@ export default function Home() {
   }
 
   // ── Tailor follow-up handler — refinement chaining ────────────────
-  // Called when the user sends a short conversational message after a
-  // resolved tailor result. Re-runs the tailor pipeline with the
-  // previously tailored text as the resume input (no re-matching) and
-  // the user's message as a modification_hint for the GPT prompt.
-  const handleTailorFollowUp = async (hint, prevTailorData, jdInput) => {
+  // fullJdText: the complete original JD — needed by the rescore loop in tailor.py.
+  // jdInput: short title used only for the tailor card title display.
+  const handleTailorFollowUp = async (hint, prevTailorData, jdInput, fullJdText = null) => {
     if (tailorLoading) return
 
     const capturedHint = hint.trim()
@@ -1119,7 +1117,7 @@ export default function Home() {
       tailorSteps: [],
       loading: true,
       error: null,
-      isRefinement: true,           // optional flag for future UI differentiation
+      isRefinement: true,
     }])
 
     try {
@@ -1128,10 +1126,11 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({
-          text:                 jdInput,                              // original JD or title — gives context
+          text:                 jdInput,                              // job title — for display context
           resume_override_text: prevTailorData.tailored_full_text,   // chain anchor
           modification_hint:    capturedHint,                        // what the user wants changed
           prev_match_score:     prevTailorData.match_score ?? null,  // carry forward score
+          full_jd_text:         fullJdText || null,                  // full JD for rescore loop
         }),
       })
 
@@ -1215,7 +1214,6 @@ export default function Home() {
     // ── route_to_refine — LLM detected refinement after a tailor result ─────
     if (tool === 'route_to_refine') {
       setLoading(false)
-      // Find the last resolved tailor message to get prevTailorData
       const lastTailorMsg = (() => {
         for (let i = messages.length - 1; i >= 0; i--) {
           const m = messages[i]
@@ -1225,13 +1223,26 @@ export default function Home() {
         return null
       })()
       if (lastTailorMsg) {
-        const hint     = triage.params?.modification_hint || capturedJd
-        const jdCtx    = triage.params?.jd_text || lastTailorMsg.tailorData.jd_title || lastTailorMsg.jd || capturedJd
-        handleTailorFollowUp(hint, lastTailorMsg.tailorData, jdCtx)
+        const hint = triage.params?.modification_hint || capturedJd
+
+        // Walk all messages to find the full JD text from the rank result.
+        // The router only gives us the job title in params.jd_text.
+        const fullJdText = (() => {
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].jdText) return messages[i].jdText
+          }
+          return null
+        })()
+
+        // jdCtx = short title for the card header display only
+        const jdCtx = lastTailorMsg.tailorData.jd_title
+          || triage.params?.jd_text
+          || lastTailorMsg.jd
+          || capturedJd
+
+        handleTailorFollowUp(hint, lastTailorMsg.tailorData, jdCtx, fullJdText)
       } else {
-        // No prior tailor result to refine — fall through to rank
         setLoading(true)
-        // continue to JD match pipeline below (no return)
       }
       if (lastTailorMsg) return
     }

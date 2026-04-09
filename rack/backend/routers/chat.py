@@ -41,6 +41,8 @@ class TailorRequest(BaseModel):
     resume_override_text: str | None = None      # tailored_full_text from a previous result (follow-up chaining)
     modification_hint:    str | None = None      # e.g. "make it more dense", "emphasize ML projects"
     prev_match_score:     int | None = None      # score from previous tailor card — carried forward on refinements
+    full_jd_text:         str | None = None      # full original JD text for refinement rescore loop
+                                                 # (text may be just a title on refine path; this carries the real JD)
 
 
 # ── SSE helper ────────────────────────────────────────────────────────────────
@@ -118,8 +120,12 @@ async def tailor_resume(
     async def event_stream() -> AsyncIterator[str]:
         try:
             from services.tailor import run_tailor_pipeline_streaming
+            # On refinement paths, text is just the job title (~30 chars).
+            # full_jd_text carries the original full JD — use it as jd_input
+            # so the rescore loop has real requirements to evaluate against.
+            jd_input = (request.full_jd_text.strip() if request.full_jd_text else None) or text
             async for event in run_tailor_pipeline_streaming(
-                jd_input=text,
+                jd_input=jd_input,
                 user_id=user_id,
                 db=db,
                 resume_override_text=request.resume_override_text or None,
