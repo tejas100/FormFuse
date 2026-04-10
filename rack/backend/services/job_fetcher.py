@@ -525,10 +525,178 @@ async def fetch_all_auto_match(semaphore: asyncio.Semaphore) -> list[dict]:
         elif isinstance(r, list):
             all_jobs.extend(r)
 
+    # YC auto-discovery: probe hiring YC companies not in hardcoded lists
+    # Runs concurrently with the main fetch but logged separately
+    try:
+        yc_jobs = await fetch_yc_discovered_jobs(semaphore)
+        all_jobs.extend(yc_jobs)
+    except Exception as e:
+        logger.warning(f"[YC-Discovery] Failed (non-fatal): {e}")
+
     logger.info(
         f"[AutoMatch] Pool fetch complete: {len(all_jobs)} jobs from "
         f"{total_companies - failed}/{total_companies} sources ({failed} failed)"
     )
+    return all_jobs
+
+
+# ── YC Auto-Discovery ────────────────────────────────────────────────
+# Fetches YC's public "currently hiring" company list, probes each company's
+# slug against Greenhouse and Ashby, and returns all jobs found.
+# No scraping — only hits public ATS APIs that are already used by the pipeline.
+#
+# Strategy:
+#   1. GET https://yc-oss.github.io/api/companies/hiring.json  (~1400 hiring companies)
+#   2. For each company slug, probe GH + Ashby concurrently (semaphore-limited)
+#   3. Deduplicate against GREENHOUSE_COMPANIES + ASHBY_COMPANIES (already fetched)
+#   4. Return normalized jobs from any new boards found
+#
+# This runs in addition to the hardcoded lists, not instead of them.
+# It auto-discovers new YC companies that joined Greenhouse/Ashby since
+# the last manual audit.
+
+YC_HIRING_API = "https://yc-oss.github.io/api/companies/hiring.json"
+YC_AI_TAGS_API = "https://yc-oss.github.io/api/tags/ai.json"
+
+# Tags we care about — company must match at least one
+YC_TARGET_TAGS = {
+    "artificial-intelligence", "machine-learning", "generative-ai",
+    "ai", "nlp", "computer-vision", "developer-tools", "developer-tool",
+    "infrastructure", "api", "b2b", "saas", "fintech",
+}
+
+
+async def _probe_yc_company(
+    client: httpx.AsyncClient,
+    slug: str,
+    existing_gh: set,
+    existing_ashby: set,
+) -> list[dict]:
+    """
+    Probe a single YC company slug against GH and Ashby.
+    Returns normalized jobs if the board exists and isn't already in our lists.
+    """
+    jobs = []
+
+    # Greenhouse probe (skip if already in hardcoded list)
+    if slug not in existing_gh:
+        try:
+            r = await client.get(
+                f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
+                timeout=10.0,
+            )
+            if r.status_code == 200:
+                raw = r.json().get("jobs", [])
+                if raw:
+                    logger.info(f"[YC-Discovery] Found GH board: {slug} ({len(raw)} jobs)")
+                    for j in raw:
+                        loc = j.get("location", {}).get("name", "") if isinstance(j.get("location"), dict) else ""
+                        dept = ""
+                        departments = j.get("departments", [])
+                        if departments and isinstance(departments[0], dict):
+                            dept = departments[0].get("name", "")
+                        jobs.append(_normalize_job(
+                            source="greenhouse",
+                            external_id=j["id"],
+                            title=j.get("title", "Unknown"),
+                            company=slug,
+                            location=loc,
+                            url=j.get("absolute_url", ""),
+                            description_html=j.get("content", ""),
+                            posted_at=j.get("updated_at") or j.get("created_at"),
+                            department=dept,
+                        ))
+        except Exception:
+            pass
+
+    # Ashby probe (skip if already in hardcoded list)
+    if slug not in existing_ashby:
+        try:
+            r = await client.get(
+                f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
+                timeout=10.0,
+            )
+            if r.status_code == 200:
+                raw = r.json().get("jobPostings", [])
+                if raw:
+                    logger.info(f"[YC-Discovery] Found Ashby board: {slug} ({len(raw)} jobs)")
+                    for j in raw:
+                        jobs.append(_normalize_job(
+                            source="ashby",
+                            external_id=j.get("id", j.get("jobId", "")),
+                            title=j.get("title", "Unknown"),
+                            company=slug,
+                            location=j.get("locationName", "") or j.get("location", ""),
+                            url=j.get("jobUrl", "") or j.get("applyUrl", ""),
+                            description_html=j.get("descriptionHtml", ""),
+                            description_text=j.get("descriptionPlain", ""),
+                            posted_at=j.get("publishedAt") or j.get("updatedAt"),
+                            department=j.get("departmentName", ""),
+                        ))
+        except Exception:
+            pass
+
+    return jobs
+
+
+async def fetch_yc_discovered_jobs(semaphore: asyncio.Semaphore) -> list[dict]:
+    """
+    Auto-discover YC companies on Greenhouse/Ashby that aren't in our hardcoded lists.
+
+    Uses the yc-oss public API (GitHub Pages, no auth) to get hiring companies,
+    filters to AI/dev-tools/infra tags, then probes each slug against GH + Ashby.
+
+    Called by fetch_all_auto_match() — runs concurrently with the main fetches.
+    """
+    existing_gh    = set(GREENHOUSE_COMPANIES)
+    existing_ashby = set(ASHBY_COMPANIES)
+
+    # Fetch YC hiring list
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(YC_HIRING_API)
+            r.raise_for_status()
+            companies = r.json()
+    except Exception as e:
+        logger.warning(f"[YC-Discovery] Failed to fetch YC hiring list: {e}")
+        return []
+
+    # Filter to companies with relevant tags and active hiring status
+    # Also exclude acquired/dead companies
+    candidates = []
+    for co in companies:
+        if co.get("status") not in ("Active", ""):
+            continue
+        tags = {t.lower().replace(" ", "-") for t in co.get("tags", [])}
+        if not tags.intersection(YC_TARGET_TAGS):
+            continue
+        slug = co.get("slug", "").strip().lower()
+        if not slug:
+            continue
+        # Skip if already in both lists (will be fetched by main pipeline)
+        if slug in existing_gh and slug in existing_ashby:
+            continue
+        candidates.append(slug)
+
+    logger.info(f"[YC-Discovery] {len(candidates)} candidate slugs to probe (from {len(companies)} hiring YC companies)")
+
+    # Probe all candidates concurrently, semaphore-limited
+    all_jobs = []
+    async def _guarded_probe(slug):
+        async with semaphore:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                return await _probe_yc_company(client, slug, existing_gh, existing_ashby)
+
+    results = await asyncio.gather(
+        *[_guarded_probe(slug) for slug in candidates],
+        return_exceptions=True,
+    )
+
+    for r in results:
+        if isinstance(r, list):
+            all_jobs.extend(r)
+
+    logger.info(f"[YC-Discovery] Found {len(all_jobs)} jobs from auto-discovered YC boards")
     return all_jobs
 
 
