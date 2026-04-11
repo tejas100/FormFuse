@@ -11,16 +11,18 @@ Session 21: AutoMatchResult restructured — normalized rows, one per (user, job
             for indexed sorting/filtering. job_data JSONB holds full payload.
 Session 22: SeenJobId table added — tracks every job_id ever fetched for a user,
             regardless of whether it passed Phase 1 or Phase 2 scoring.
-            Used as the skip filter for truly_new jobs (replaces already_scored_ids).
-            Also used as the pool for new-resume rescoring (future feature).
+Session 45: User.role + User.is_restricted added for admin control system.
+            DailySlotLog added — tracks which jobs were served in each daily slot
+            so the same roles don't repeat across days.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -56,6 +58,20 @@ class User(Base):
     )
     preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
+    # ── Admin / access control ─────────────────────────────────────────────────
+    # role:          'free' | 'pro' | 'admin'
+    #                admin  → full access + can see /admin dashboard
+    #                pro    → paid features (auto matches, tailoring, tracking)
+    #                free   → Home ranking only, 5-resume cap
+    # is_restricted: admin override to hard-limit a specific user regardless of role
+    #                (e.g. abusive free user, trial expired, suspicious activity)
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="free", default="free"
+    )
+    is_restricted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+
     resumes: Mapped[list["Resume"]] = relationship(
         "Resume", back_populates="user", cascade="all, delete-orphan"
     )
@@ -70,6 +86,9 @@ class User(Base):
     )
     seen_job_ids: Mapped[list["SeenJobId"]] = relationship(
         "SeenJobId", back_populates="user", cascade="all, delete-orphan"
+    )
+    daily_slot_logs: Mapped[list["DailySlotLog"]] = relationship(
+        "DailySlotLog", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -155,15 +174,6 @@ class TrackedJob(Base):
 
 
 # ── Auto Match Results ─────────────────────────────────────────────────────────
-# One row per (user, job). Upserted each time a job is scored for a user.
-# UNIQUE(user_id, job_id) ensures no duplicate scores per user per job, ever.
-#
-# Promoted columns (real DB columns with indexes):
-#   score     — llm_score (0–100), indexed for ORDER BY score DESC
-#   posted_at — job posting date, indexed for recency filters (last 7d, 30d)
-#
-# job_data JSONB holds the complete scored payload (all pipeline fields).
-# This schema scales to 10k+ users and 5+ years without modification.
 class AutoMatchResult(Base):
     __tablename__ = "auto_match_results"
 
@@ -182,8 +192,7 @@ class AutoMatchResult(Base):
     matched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
-
-    applied:    Mapped[bool]              = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    applied:    Mapped[bool]               = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     applied_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     __table_args__ = (
@@ -194,8 +203,6 @@ class AutoMatchResult(Base):
 
 
 # ── Archived Job IDs ───────────────────────────────────────────────────────────
-# Global archive — a job dismissed by a user is hidden from all future results.
-# Composite PK (user_id, job_id) enforces uniqueness.
 class ArchivedJobId(Base):
     __tablename__ = "archived_job_ids"
 
@@ -215,21 +222,6 @@ class ArchivedJobId(Base):
 
 
 # ── Seen Job IDs ───────────────────────────────────────────────────────────────
-# One row per (user, job_id) — inserted the moment a job enters Phase 1 scoring,
-# regardless of whether it passes Phase 1 or Phase 2.
-#
-# Purpose 1 (current): Skip filter for truly_new jobs.
-#   truly_new = [j for j in role_matched if j["job_id"] not in seen_job_ids_set]
-#   This ensures a job that scored 25 (below MIN_SCORE) is never re-attempted on
-#   the next run — unlike the old already_scored_ids which only tracked jobs that
-#   made it into auto_match_results.
-#
-# Purpose 2 (future — new resume upload):
-#   When a user uploads resume #N, we query seen_job_ids to get the full pool of
-#   jobs ever fetched for this user, then run Phase 1 + Phase 2 against resume #N
-#   only. This re-uses the existing pool without re-fetching Greenhouse.
-#
-# Composite PK (user_id, job_id) enforces uniqueness — no duplication possible.
 class SeenJobId(Base):
     __tablename__ = "seen_job_ids"
 
@@ -246,3 +238,48 @@ class SeenJobId(Base):
     )
 
     user: Mapped["User"] = relationship("User", back_populates="seen_job_ids")
+
+
+# ── Daily Slot Log ─────────────────────────────────────────────────────────────
+# Tracks which job_ids were served in each user's daily slot.
+#
+# Purpose:
+#   - Dedup: same job never re-appears in a daily slot for the same user
+#   - Query: "what was shown today?" without re-running scoring logic
+#   - Analytics: per-user engagement with daily surfaced jobs
+#
+# rank_reason: why this job was included in the slot
+#   'score'   — top-ranked by AI score
+#   'recency' — most recently posted
+#
+# slot_date: UTC date the slot was generated (DATE, not timestamp)
+#   Allows "show me today's slots" queries: WHERE slot_date = CURRENT_DATE
+#
+# UNIQUE(user_id, job_id, slot_date): idempotent — re-calling /daily-slots
+#   on the same day returns the same set without inserting duplicates.
+class DailySlotLog(Base):
+    __tablename__ = "daily_slot_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    slot_date: Mapped[date] = mapped_column(Date(), nullable=False)
+    rank_reason: Mapped[str] = mapped_column(String(20), nullable=False)  # 'score' | 'recency'
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    served_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "job_id", "slot_date",
+            name="uq_daily_slot_user_job_date"
+        ),
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="daily_slot_logs")

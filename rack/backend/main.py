@@ -1,6 +1,10 @@
 """
 main.py — FastAPI entry point for Rack backend
 CORS configured for localhost:5173 (Vite dev server)
+
+Admin dashboard: http://localhost:8000/admin
+  - HTTP Basic Auth (username: admin, password: ADMIN_SECRET from .env)
+  - Localhost-only — blocked for any external IP
 """
 
 from dotenv import load_dotenv
@@ -21,7 +25,7 @@ logging.getLogger().addHandler(file_handler)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import resumes, match, tracking, account, auth, chat
+from routers import resumes, match, tracking, account, auth, chat, admin
 
 app = FastAPI(
     title="Rack — Career Intelligence API",
@@ -29,7 +33,8 @@ app = FastAPI(
     description="AI-powered resume matching and career tracking",
 )
 
-# CORS — allow Vite dev server
+# CORS — allow Vite dev server only
+# Admin dashboard is server-rendered at /admin — no CORS needed for it
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -38,13 +43,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
+# ── Public API routers ────────────────────────────────────────────────────────
 app.include_router(resumes.router)
 app.include_router(match.router)
 app.include_router(tracking.router)
 app.include_router(account.router)
 app.include_router(auth.router)
 app.include_router(chat.router)
+
+# ── Admin dashboard — localhost only, HTTP Basic Auth ─────────────────────────
+# Accessible at: http://localhost:8000/admin
+# Never expose port 8000 publicly — keep it 127.0.0.1 bound in production
+app.include_router(admin.router)
 
 
 @app.get("/")
