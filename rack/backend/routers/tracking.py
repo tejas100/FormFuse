@@ -109,15 +109,61 @@ async def auto_refresh(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Run the auto-match pipeline for the authenticated user.
-    force=True bypasses the results cache (re-checks for new jobs)
-    but does NOT re-fetch the Greenhouse pool if it's still fresh.
+    Admin/Pro: Run the auto-match pipeline. force=True bypasses staleness cache.
+    Free users: Return their cumulative daily_slot_log immediately — no pipeline trigger.
     """
+    user_role = getattr(current_user, "role", "free") or "free"
+    user_id   = str(current_user.id)
+
+    # Free users never trigger the pipeline — return their slot view instantly
+    if user_role not in ("admin", "pro"):
+        from models.orm import AutoMatchResult, DailySlotLog
+        import uuid as _uuid
+        from datetime import date
+
+        user_uuid = _uuid.UUID(user_id)
+        today = date.today()
+
+        slots_stmt = (
+            select(DailySlotLog)
+            .where(DailySlotLog.user_id == user_uuid)
+            .order_by(DailySlotLog.slot_date.desc(), DailySlotLog.served_at.desc())
+        )
+        slots_result = await db.execute(slots_stmt)
+        slots = slots_result.scalars().all()
+
+        served_job_ids = [s.job_id for s in slots]
+        matches = []
+        if served_job_ids:
+            from sqlalchemy import select as sa_select
+            jobs_stmt = (
+                sa_select(AutoMatchResult)
+                .where(AutoMatchResult.user_id == user_uuid)
+                .where(AutoMatchResult.job_id.in_(served_job_ids))
+            )
+            jobs_result = await db.execute(jobs_stmt)
+            job_rows = {r.job_id: r for r in jobs_result.scalars().all()}
+            for slot in slots:
+                row = job_rows.get(slot.job_id)
+                if row:
+                    job = dict(row.job_data or {})
+                    job["score"]       = slot.score
+                    job["rank_reason"] = slot.rank_reason
+                    job["is_new"]      = (slot.slot_date == today)
+                    matches.append(job)
+
+        return {
+            "matches": matches,
+            "stats":   {"from_cache": True, "is_slot_view": True},
+            "from_cache": True,
+            "is_slot_view": True,
+        }
+
+    # Admin/Pro — run the full pipeline
     result = await db.execute(select(User).where(User.id == current_user.id))
-    user = result.scalar_one_or_none()
+    user   = result.scalar_one_or_none()
     profile = {**DEFAULT_PREFS, **(user.preferences or {})} if user else DEFAULT_PREFS
 
-    user_id = str(current_user.id)
     return await run_auto_pipeline(user_id=user_id, profile=profile, force=req.force, db=db)
 
 
@@ -133,22 +179,67 @@ async def auto_matches(
 ):
     """
     Return scored auto-match results for the authenticated user.
-    Results are ordered by score DESC.
 
-    Optional recency_days filter:
-      ?recency_days=1  → posted in last 24 hours
-      ?recency_days=7  → posted in last 7 days
-      ?recency_days=30 → posted in last 30 days
-      (omit)           → all scored jobs, no recency filter
+    Admin/Pro: full auto_match_results, ordered by score DESC.
+    Free: cumulative daily_slot_log results only (grows day by day),
+          with is_new=True on today's picks.
     """
     user_id = str(current_user.id)
-    results = await _load_results_from_db(
-        user_id=user_id,
-        db=db,
-        recency_days=recency_days,
-        limit=limit,
+    user_role = getattr(current_user, "role", "free") or "free"
+
+    # Admin and pro users get the full list — unchanged behavior
+    if user_role in ("admin", "pro"):
+        results = await _load_results_from_db(
+            user_id=user_id,
+            db=db,
+            recency_days=recency_days,
+            limit=limit,
+        )
+        return results
+
+    # Free users: return cumulative served jobs from daily_slot_log
+    from models.orm import AutoMatchResult, DailySlotLog
+    import uuid as _uuid
+    from datetime import date
+
+    user_uuid = _uuid.UUID(user_id)
+    today = date.today()
+
+    # All slots ever served for this user, newest batch first
+    slots_stmt = (
+        select(DailySlotLog)
+        .where(DailySlotLog.user_id == user_uuid)
+        .order_by(DailySlotLog.slot_date.desc(), DailySlotLog.served_at.desc())
     )
-    return results
+    slots_result = await db.execute(slots_stmt)
+    slots = slots_result.scalars().all()
+
+    if not slots:
+        return {"matches": [], "total": 0, "is_slot_view": True}
+
+    # Fetch full job_data for each served slot
+    served_job_ids = [s.job_id for s in slots]
+    jobs_stmt = (
+        select(AutoMatchResult)
+        .where(AutoMatchResult.user_id == user_uuid)
+        .where(AutoMatchResult.job_id.in_(served_job_ids))
+    )
+    jobs_result = await db.execute(jobs_stmt)
+    job_rows = {r.job_id: r for r in jobs_result.scalars().all()}
+
+    matches = []
+    for slot in slots:
+        row = job_rows.get(slot.job_id)
+        if not row:
+            continue
+        job = dict(row.job_data or {})
+        job["score"]       = slot.score
+        job["rank_reason"] = slot.rank_reason
+        job["is_new"]      = (slot.slot_date == today)
+        job["served_at"]   = slot.served_at.isoformat() if slot.served_at else None
+        matches.append(job)
+
+    return {"matches": matches, "total": len(matches), "is_slot_view": True}
 
 
 @router.get("/auto/meta")
@@ -266,6 +357,132 @@ async def mark_job_applied(
 
     return {"job_id": job_id, "applied": True, "applied_at": row.applied_at or datetime.now(timezone.utc)}
 
+
+@router.get("/daily-slots")
+async def daily_slots(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return today's daily slot recommendations (6-8 jobs).
+    - Top 4 by score DESC (rank_reason='score')
+    - Top 4 by posted_at DESC (rank_reason='recency'), deduped against score picks
+    - Cached in daily_slot_log — same set returned all day, regenerated at midnight UTC
+    """
+    from models.orm import AutoMatchResult, ArchivedJobId, DailySlotLog
+    import uuid as _uuid
+    from datetime import date
+
+    user_uuid = _uuid.UUID(str(current_user.id))
+    today = date.today()  # UTC date
+
+    # --- Check if we already served slots today ---
+    existing_stmt = (
+        select(DailySlotLog)
+        .where(DailySlotLog.user_id == user_uuid)
+        .where(DailySlotLog.slot_date == today)
+        .order_by(DailySlotLog.served_at.asc())
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing_slots = existing_result.scalars().all()
+
+    if existing_slots:
+        # Already served today — return cached set
+        job_ids = [s.job_id for s in existing_slots]
+        # Fetch the full job_data for each cached slot
+        job_stmt = (
+            select(AutoMatchResult)
+            .where(AutoMatchResult.user_id == user_uuid)
+            .where(AutoMatchResult.job_id.in_(job_ids))
+        )
+        job_result = await db.execute(job_stmt)
+        job_rows = {r.job_id: r for r in job_result.scalars().all()}
+        slots = []
+        for s in existing_slots:
+            row = job_rows.get(s.job_id)
+            if row:
+                slots.append({
+                    "job_id": s.job_id,
+                    "job_data": row.job_data,
+                    "score": s.score,
+                    "rank_reason": s.rank_reason,
+                    "is_new": False,
+                    "served_at": s.served_at.isoformat() if s.served_at else None,
+                })
+        return {"slots": slots, "slot_date": today.isoformat(), "is_fresh": False}
+
+    # --- Fresh serve — pick from UNSERVED pool only (never repeat) ---
+    # Exclude archived jobs
+    archived_stmt = select(ArchivedJobId.job_id).where(ArchivedJobId.user_id == user_uuid)
+    archived_result = await db.execute(archived_stmt)
+    archived_ids = {r[0] for r in archived_result.fetchall()}
+
+    # Exclude ALL previously served jobs (not just today — never repeat)
+    ever_served_stmt = select(DailySlotLog.job_id).where(DailySlotLog.user_id == user_uuid)
+    ever_served_result = await db.execute(ever_served_stmt)
+    ever_served_ids = {r[0] for r in ever_served_result.fetchall()}
+
+    excluded_ids = archived_ids | ever_served_ids
+
+    base_stmt = (
+        select(AutoMatchResult)
+        .where(AutoMatchResult.user_id == user_uuid)
+    )
+    if excluded_ids:
+        base_stmt = base_stmt.where(AutoMatchResult.job_id.notin_(excluded_ids))
+
+    # Top 4 by score from unserved pool
+    score_stmt = base_stmt.order_by(AutoMatchResult.score.desc()).limit(4)
+    score_result = await db.execute(score_stmt)
+    score_rows = score_result.scalars().all()
+
+    picked_ids = {r.job_id for r in score_rows}
+
+    # Top 4 by recency from unserved pool, deduped against score picks
+    recency_stmt = base_stmt.order_by(AutoMatchResult.posted_at.desc()).limit(8)
+    recency_result = await db.execute(recency_stmt)
+    recency_rows = [r for r in recency_result.scalars().all() if r.job_id not in picked_ids][:4]
+
+    # Build slot list
+    all_slot_rows = (
+        [(r, "score")   for r in score_rows] +
+        [(r, "recency") for r in recency_rows]
+    )
+
+    if not all_slot_rows:
+        return {"slots": [], "slot_date": today.isoformat(), "is_fresh": True}
+
+    # Upsert into daily_slot_log (idempotent — ON CONFLICT DO NOTHING)
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    import uuid as _uuid2
+
+    now_utc = datetime.now(timezone.utc)
+    for row, reason in all_slot_rows:
+        stmt = pg_insert(DailySlotLog).values(
+            id=_uuid2.uuid4(),
+            user_id=user_uuid,
+            job_id=row.job_id,
+            slot_date=today,
+            rank_reason=reason,
+            score=row.score,
+            served_at=now_utc,
+        ).on_conflict_do_nothing(index_elements=["user_id", "job_id", "slot_date"])
+        await db.execute(stmt)
+
+    await db.commit()
+
+    slots = [
+        {
+            "job_id": row.job_id,
+            "job_data": row.job_data,
+            "score": row.score,
+            "rank_reason": reason,
+            "is_new": True,
+            "served_at": now_utc.isoformat(),
+        }
+        for row, reason in all_slot_rows
+    ]
+    return {"slots": slots, "slot_date": today.isoformat(), "is_fresh": True}
 
 
 # ── Stats + Presets (shared, no auth needed) ──────────────────────────

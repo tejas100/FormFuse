@@ -159,6 +159,13 @@ async def get_current_user(
     display_name = user_metadata.get("full_name") or user_metadata.get("name")
 
     user = await _get_or_create_user(user_id, email, display_name, db)
+
+    if user.is_restricted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account restricted. Contact support.",
+        )
+
     return user
 
 
@@ -170,5 +177,6 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "id": str(current_user.id),
         "email": current_user.email,
         "display_name": current_user.display_name,
+        "role": current_user.role or "free",
         "created_at": current_user.created_at.isoformat(),
     }

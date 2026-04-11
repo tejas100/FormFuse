@@ -105,7 +105,13 @@ async function downloadResume(resumeId, resumeName, fileExt) {
 /* ══════════════════════════════════════════════════════════════════
    TAB BAR — subtle two-tab switcher
    ══════════════════════════════════════════════════════════════════ */
-function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount }) {
+function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, isPowerUser }) {
+  const allTabs = [
+    { id: "auto",   label: "Auto Matches", icon: "✦", count: autoCount,   power: false },
+    { id: "fresh",  label: "Fresh Jobs",   icon: "🆕", count: freshCount,  power: true  },
+    { id: "custom", label: "Custom Search", icon: "⚙", count: customCount, power: true  },
+  ];
+  const tabs = allTabs.filter(t => !t.power || isPowerUser);
   return (
     <div style={{
       display: "inline-flex",
@@ -116,11 +122,7 @@ function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount }
       gap: 2,
       marginBottom: 20,
     }}>
-      {[
-        { id: "auto",   label: "Auto Matches", icon: "✦", count: autoCount   },
-        { id: "fresh",  label: "Fresh Jobs",   icon: "🆕", count: freshCount  },
-        { id: "custom", label: "Custom Search", icon: "⚙", count: customCount },
-      ].map((tab) => {
+      {tabs.map((tab) => {
         const active = activeTab === tab.id;
         return (
           <button
@@ -1279,7 +1281,7 @@ function FreshJobsTab() {
    ══════════════════════════════════════════════════════════════════ */
 const PAGE_SIZE = 10;
 
-function AutoMatchesTab({ profile }) {
+function AutoMatchesTab({ profile, isPowerUser }) {
   const [matches, setMatches]           = useState([]);
   const [loading, setLoading]           = useState(false);
   const [meta, setMeta]                 = useState(null);
@@ -1292,11 +1294,16 @@ function AutoMatchesTab({ profile }) {
   const [page, setPage]                 = useState(1);
   const [showArchive, setShowArchive]   = useState(false);
   const [archiveCount, setArchiveCount] = useState(() => loadArchive().length);
+  const [isSlotView, setIsSlotView]     = useState(false); // true = free user cumulative view
+  const [newJobIds, setNewJobIds]       = useState(new Set()); // today's fresh picks
   const [appliedJobs, setAppliedJobs]   = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("rack_applied_jobs") || "[]")); }
     catch { return new Set(); }
   });
   const [applyPrompt, setApplyPrompt]   = useState(null); // { job_id, job_title }
+  const [dailySlots, setDailySlots]     = useState([]);
+  const [slotsIsFresh, setSlotsIsFresh] = useState(false);
+  const [expandedSlotId, setExpandedSlotId] = useState(null);
   const pendingApplyRef = useRef(null);
   const hasRun = useRef(false);
 
@@ -1356,6 +1363,50 @@ function AutoMatchesTab({ profile }) {
     hasRun.current = true;
     (async () => {
       await loadMeta();
+
+      // First load matches (role-aware)
+      try {
+        const headers = await getAuthHeaders();
+        const mr = await fetch(`${API}/auto/matches`, { headers });
+        if (mr.ok) {
+          const md = await mr.json();
+          if (md.is_slot_view) {
+            setIsSlotView(true);
+            setMatches(md.matches || []);
+            setNewJobIds(new Set((md.matches || []).filter(m => m.is_new).map(m => m.job_id)));
+          } else {
+            setIsSlotView(false);
+            setMatches(Array.isArray(md) ? md : (md.matches || []));
+          }
+        }
+      } catch {}
+
+      // For free users: trigger daily slot generation (picks today's batch if not yet done)
+      // For admin/pro: fetch daily slots for the banner only
+      try {
+        const headers = await getAuthHeaders();
+        const sr = await fetch(`${API}/daily-slots`, { headers });
+        if (sr.ok) {
+          const sd = await sr.json();
+          setDailySlots(sd.slots || []);
+          setSlotsIsFresh(sd.is_fresh || false);
+
+          // For free users: if fresh slots were just generated, reload matches to include them
+          if (sd.is_fresh && sd.slots.length > 0) {
+            const headers2 = await getAuthHeaders();
+            const mr2 = await fetch(`${API}/auto/matches`, { headers: headers2 });
+            if (mr2.ok) {
+              const md2 = await mr2.json();
+              if (md2.is_slot_view) {
+                setMatches(md2.matches || []);
+                setNewJobIds(new Set((md2.matches || []).filter(m => m.is_new).map(m => m.job_id)));
+              }
+            }
+          }
+        }
+      } catch {}
+
+      // Silently run pipeline refresh in background (force=false uses cache)
       handleRefresh(false);
     })();
   }, [hasProfile]);
@@ -1370,7 +1421,23 @@ function AutoMatchesTab({ profile }) {
         body: JSON.stringify({ force }),
       });
       const d = await r.json();
-      if (d.matches) setMatches(d.matches);
+
+      // After pipeline runs, reload matches (role-aware endpoint)
+      const mr = await fetch(`${API}/auto/matches`, { headers });
+      const md = await mr.json();
+
+      if (md.is_slot_view) {
+        // Free user — cumulative slot view
+        setIsSlotView(true);
+        setMatches(md.matches || []);
+        setNewJobIds(new Set((md.matches || []).filter(m => m.is_new).map(m => m.job_id)));
+      } else {
+        // Admin/Pro — full list
+        setIsSlotView(false);
+        setMatches(Array.isArray(md) ? md : (md.matches || []));
+        setNewJobIds(new Set());
+      }
+
       if (d.stats) setStats(d.stats);
       await loadMeta();
     } catch (e) { setError("Auto pipeline failed: " + e.message); }
@@ -1498,9 +1565,14 @@ function AutoMatchesTab({ profile }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
-            {matches.length > 0
-              ? <>RACK matched <span style={{ color: "var(--text)", fontWeight: 600 }}>{matches.length}</span> top job roles for your existing resumes{meta?.last_fetch_at && !loading && <span> · updated {timeAgo(meta.last_fetch_at)}</span>}</>
-              : "Automatically finds and AI-scores your best-fit jobs from top tech companies"}
+            {isSlotView
+              ? matches.length > 0
+                ? <>RACK is serving your matches daily · <span style={{ color: "var(--text)", fontWeight: 600 }}>{matches.length}</span> roles unlocked so far{newJobIds.size > 0 && <span style={{ color: "var(--accent)", fontWeight: 700 }}> · {newJobIds.size} new today ✦</span>}</>
+                : "Your daily job picks will appear here — RACK serves fresh roles every day"
+              : matches.length > 0
+                ? <>RACK matched <span style={{ color: "var(--text)", fontWeight: 600 }}>{matches.length}</span> top job roles for your existing resumes{meta?.last_fetch_at && !loading && <span> · updated {timeAgo(meta.last_fetch_at)}</span>}</>
+                : "Automatically finds and AI-scores your best-fit jobs from top tech companies"
+            }
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1513,13 +1585,121 @@ function AutoMatchesTab({ profile }) {
               <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: "rgba(232,255,107,0.12)", color: "var(--accent)", border: "1px solid rgba(232,255,107,0.2)" }}>{archiveCount}</span>
             )}
           </button>
-          <button onClick={() => handleRefresh(true)} disabled={loading}
-            title="Scan for new jobs"
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, transition: "all 0.2s" }}>
-            {loading ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span> Scanning…</> : "⟳ Refresh"}
-          </button>
+          {isPowerUser && (
+            <button onClick={() => handleRefresh(true)} disabled={loading}
+              title="Scan for new jobs"
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, transition: "all 0.2s" }}>
+              {loading ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span> Scanning…</> : "⟳ Refresh"}
+            </button>
+          )}
         </div>
       </div>
+
+      {/* ── Daily Slots Banner ─────────────────────────────────────── */}
+      {dailySlots.length > 0 && slotsIsFresh && (
+        <div style={{ marginBottom: 20, animation: "fadeUp 0.4s ease both" }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
+            padding: "9px 16px",
+            background: "rgba(232,255,107,0.06)",
+            border: "1px solid rgba(232,255,107,0.18)",
+            borderRadius: 12,
+          }}>
+            <span style={{ fontSize: 14 }}>🎯</span>
+            <span style={{ fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700, color: "var(--accent)" }}>
+              RACK found {dailySlots.length} new roles for you today
+            </span>
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-dim)", ...mono }}>
+              {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+            </span>
+          </div>
+
+          {dailySlots.map((slot, i) => {
+            const m = slot.job_data || {};
+            const score = slot.score ?? 0;
+            const sc = scoreColor(score);
+            const isScore   = slot.rank_reason === "score";
+            const slotKey   = slot.job_id || i;
+            const slotExpanded = expandedSlotId === slotKey;
+            return (
+              <div
+                key={slotKey}
+                onClick={() => setExpandedSlotId(slotExpanded ? null : slotKey)}
+                style={{
+                  background: "var(--surface)",
+                  border: `1px solid ${isScore ? "rgba(232,255,107,0.25)" : "rgba(52,211,153,0.22)"}`,
+                  borderLeft: `3px solid ${isScore ? "var(--accent)" : "var(--accent3)"}`,
+                  borderRadius: 14, padding: 0, marginBottom: 8, cursor: "pointer",
+                  transition: "all 0.2s", overflow: "hidden",
+                  animation: `fadeUp 0.4s ease ${i * 0.05}s both`,
+                }}
+              >
+                {/* Score bar */}
+                <div style={{ height: 2, background: scoreGradient(score), width: `${Math.min(score, 100)}%`, transition: "width 0.8s cubic-bezier(0.22,1,0.36,1)" }} />
+
+                <div style={{ padding: "14px 18px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                    {/* NEW badge */}
+                    <div style={{
+                      flexShrink: 0, marginTop: 2,
+                      fontSize: 8, fontWeight: 800, padding: "3px 7px", borderRadius: 20,
+                      letterSpacing: "0.12em", textTransform: "uppercase",
+                      background: isScore ? "rgba(232,255,107,0.12)" : "rgba(52,211,153,0.12)",
+                      color: isScore ? "var(--accent)" : "var(--accent3)",
+                      border: `1px solid ${isScore ? "rgba(232,255,107,0.25)" : "rgba(52,211,153,0.25)"}`,
+                    }}>
+                      {isScore ? "⭐ TOP" : "🆕 NEW"}
+                    </div>
+
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: "var(--font-display)", fontSize: 14, fontWeight: 700, color: "var(--text)", letterSpacing: "-0.3px", wordBreak: "break-word" }}>
+                        {m.job_title || "Untitled"}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 3, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {m.company && <span style={{ fontWeight: 500 }}>{m.company.charAt(0).toUpperCase() + m.company.slice(1)}</span>}
+                        {m.location && m.location !== "Not specified" && <span>· {m.location.length > 40 ? m.location.slice(0, 40) + "…" : m.location}</span>}
+                        {m.posted_at && <span>· {timeAgo(m.posted_at)}</span>}
+                      </div>
+                    </div>
+
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, color: sc, letterSpacing: "-1px", lineHeight: 1 }}>
+                        {Math.round(score)}%
+                      </div>
+                      {sourceBadge(m.source)}
+                    </div>
+                  </div>
+
+                  {/* Skills pills */}
+                  {((m.matched_skills || []).length > 0 || (m.missing_skills || []).length > 0) && (
+                    <div style={{ display: "flex", gap: 5, marginTop: 10, flexWrap: "wrap" }}>
+                      {(m.matched_skills || []).slice(0, 3).map(s => (
+                        <span key={s} style={{ fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 20, background: "rgba(52,211,153,0.1)", color: "var(--accent3)" }}>✓ {s}</span>
+                      ))}
+                      {(m.missing_skills || []).slice(0, 2).map(s => (
+                        <span key={s} style={{ fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 20, background: "rgba(248,113,113,0.1)", color: "var(--danger)" }}>✗ {s}</span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Expanded: apply link */}
+                  {slotExpanded && m.url && (
+                    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)", animation: "fadeUp 0.2s ease both", display: "flex", gap: 10 }}>
+                      <a
+                        href={m.url} target="_blank" rel="noopener noreferrer"
+                        onClick={e => { e.stopPropagation(); handleApplyClick(slot.job_id, m.job_title); }}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "8px 18px", borderRadius: 30, background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, textDecoration: "none" }}
+                      >
+                        Apply ↗
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {stats && !stats.from_cache && stats.new_processed > 0 && (
         <div style={{ background: "rgba(52,211,153,0.05)", border: "1px solid rgba(52,211,153,0.12)", borderRadius: 12, padding: "9px 16px", fontSize: 12, color: "var(--accent3)", marginBottom: 14, animation: "fadeUp 0.3s ease both", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1646,26 +1826,65 @@ function AutoMatchesTab({ profile }) {
 
       {!loading && matches.length === 0 && (
         <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
-          <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 24, marginBottom: 14, color: "var(--accent)", opacity: 0.4 }}>[ no matches ]</div>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>No matches yet</div>
-          <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto 20px", lineHeight: 1.6 }}>
-            Hit "Refresh Auto" to scan ~80 top tech companies and surface your best-matched {profile.target_roles?.[0] || "role"} openings.
-          </div>
-          <button onClick={() => handleRefresh(true)} disabled={loading}
-            style={{ padding: "10px 24px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-            ⟳ Refresh Auto
-          </button>
+          {isPowerUser ? (
+            <>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 24, marginBottom: 14, color: "var(--accent)", opacity: 0.4 }}>[ no matches ]</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>No matches yet</div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto 20px", lineHeight: 1.6 }}>
+                Hit "Refresh Auto" to scan ~80 top tech companies and surface your best-matched {profile.target_roles?.[0] || "role"} openings.
+              </div>
+              <button onClick={() => handleRefresh(true)} disabled={loading}
+                style={{ padding: "10px 24px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                ⟳ Refresh Auto
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 36, marginBottom: 14 }}>🎯</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>
+                RACK is finding your matches
+              </div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
+                We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {!loading && paginated.map((m, i) => (
-        <MatchCard key={m.job_id} match={m} index={(page - 1) * PAGE_SIZE + i}
-          expanded={expandedId === m.job_id}
-          onToggle={() => setExpandedId(expandedId === m.job_id ? null : m.job_id)}
-          isAuto={true}
-          isApplied={appliedJobs.has(m.job_id)}
-          onApply={() => handleApplyClick(m.job_id, m.job_title)} />
-      ))}
+      {!loading && paginated.map((m, i) => {
+        const isNew = isSlotView && newJobIds.has(m.job_id);
+        return (
+          <div key={m.job_id} style={{ position: "relative" }}>
+            {isNew && (
+              <div style={{
+                position: "absolute", top: 10, right: 10, zIndex: 2,
+                fontSize: 8, fontWeight: 800, padding: "3px 8px", borderRadius: 20,
+                letterSpacing: "0.12em", textTransform: "uppercase",
+                background: "rgba(232,255,107,0.15)", color: "var(--accent)",
+                border: "1px solid rgba(232,255,107,0.3)",
+                pointerEvents: "none",
+              }}>
+                🆕 NEW TODAY
+              </div>
+            )}
+            <div style={isNew ? {
+              border: "1px solid rgba(232,255,107,0.22)",
+              borderLeft: "3px solid var(--accent)",
+              borderRadius: 16,
+              overflow: "hidden",
+              marginBottom: 10,
+            } : {}}>
+              <MatchCard match={m} index={(page - 1) * PAGE_SIZE + i}
+                expanded={expandedId === m.job_id}
+                onToggle={() => setExpandedId(expandedId === m.job_id ? null : m.job_id)}
+                isAuto={true}
+                isApplied={appliedJobs.has(m.job_id)}
+                onApply={() => handleApplyClick(m.job_id, m.job_title)} />
+            </div>
+          </div>
+        );
+      })}
 
       {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
       {!loading && sorted.length > 0 && (
@@ -2096,28 +2315,44 @@ function CustomSearchTab({ profile }) {
 export default function Tracking() {
   const [activeTab, setActiveTab] = useState("auto");
   const [profile, setProfile] = useState(null);
+  const [userRole, setUserRole] = useState(null); // null = loading
   const [autoMatches, setAutoMatches] = useState([]);
   const [freshCount, setFreshCount] = useState(0);
   const [customMatches, setCustomMatches] = useState([]);
 
-  // Load profile + cached counts for tab badges
+  const isPowerUser = userRole === "admin" || userRole === "pro";
+
+  // Load profile + role + cached counts for tab badges
   useEffect(() => {
     (async () => {
       try {
         const headers = await getAuthHeaders();
-        const [pr, am, fr, cm] = await Promise.all([
+        const [pr, me, am, fr, cm] = await Promise.all([
           fetch(`${PROFILE_API}/profile`, { headers }),
+          fetch(`http://localhost:8000/api/auth/me`, { headers }),
           fetch(`${API}/auto/matches`, { headers }),
           fetch(`${API}/auto/fresh?hours=1`, { headers }),
           fetch(`${API}/matches?limit=50`),
         ]);
         if (pr.ok) setProfile(await pr.json());
-        if (am.ok) setAutoMatches(await am.json());
+        if (me.ok) { const d = await me.json(); setUserRole(d.role || "free"); }
+        else setUserRole("free");
+        if (am.ok) {
+          const d = await am.json();
+          setAutoMatches(Array.isArray(d) ? d : (d.matches || []));
+        }
         if (fr.ok) { const d = await fr.json(); setFreshCount(d.total || 0); }
         if (cm.ok) { const d = await cm.json(); setCustomMatches(Array.isArray(d) ? d : []); }
-      } catch {}
+      } catch { setUserRole("free"); }
     })();
   }, []);
+
+  // Force tab back to "auto" if user is free and somehow on a gated tab
+  useEffect(() => {
+    if (userRole && !isPowerUser && activeTab !== "auto") {
+      setActiveTab("auto");
+    }
+  }, [userRole]);
 
   return (
     <div style={{
@@ -2135,23 +2370,24 @@ export default function Tracking() {
           </div>
         </div>
 
-        {/* ── Tab switcher ────────────────────────────────────── */}
+        {/* ── Tab switcher — gated by role ─────────────────────── */}
         <TabSwitcher
           activeTab={activeTab}
           onSwitch={setActiveTab}
           autoCount={autoMatches.length}
-          freshCount={freshCount}
-          customCount={customMatches.length}
+          freshCount={isPowerUser ? freshCount : 0}
+          customCount={isPowerUser ? customMatches.length : 0}
+          isPowerUser={isPowerUser}
         />
 
         {/* ── Tab content ─────────────────────────────────────── */}
         {activeTab === "auto" && (
-          <AutoMatchesTab profile={profile} />
+          <AutoMatchesTab profile={profile} isPowerUser={isPowerUser} />
         )}
-        {activeTab === "fresh" && (
+        {activeTab === "fresh" && isPowerUser && (
           <FreshJobsTab />
         )}
-        {activeTab === "custom" && (
+        {activeTab === "custom" && isPowerUser && (
           <CustomSearchTab profile={profile} />
         )}
 

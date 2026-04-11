@@ -35,6 +35,19 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 logger = logging.getLogger(__name__)
 
+# ── Per-user pipeline locks ───────────────────────────────────────────
+# Prevents concurrent runs of run_auto_pipeline for the same user.
+# If a run is already in progress, callers get cached DB results immediately.
+_PIPELINE_LOCKS: dict[str, asyncio.Lock] = {}
+_PIPELINE_RUNNING: set[str] = set()  # which users are actively running right now
+_locks_mutex = asyncio.Lock()  # protects _PIPELINE_LOCKS dict itself
+
+async def _get_user_lock(user_id: str) -> asyncio.Lock:
+    async with _locks_mutex:
+        if user_id not in _PIPELINE_LOCKS:
+            _PIPELINE_LOCKS[user_id] = asyncio.Lock()
+        return _PIPELINE_LOCKS[user_id]
+
 # ── Storage ──────────────────────────────────────────────────────────
 WATCHLIST_DIR = os.path.join("uploads", "watchlist")
 
@@ -326,17 +339,52 @@ async def run_auto_pipeline(
     db: AsyncSession = None,
 ) -> dict:
     """
-    Incremental auto-matching pipeline.
+    Incremental auto-matching pipeline — per-user locked.
+
+    If a pipeline run is already in progress for this user, returns cached
+    DB results immediately instead of queueing a second run.
+    """
+    lock = await _get_user_lock(user_id)
+
+    if lock.locked():
+        # Another run in progress for this user — return cache immediately
+        logger.info(f"[AutoMatch] user={user_id} Pipeline already running — returning cached results")
+        try:
+            cached = await _load_results_from_db(user_id, db)
+            return {
+                "matches": cached[:DISPLAY_CAP],
+                "stats": {"from_cache": True, "reason": "pipeline_running"},
+                "from_cache": True,
+            }
+        except Exception:
+            return {"matches": [], "stats": {"from_cache": True, "reason": "pipeline_running"}, "from_cache": True}
+
+    async with lock:
+        _PIPELINE_RUNNING.add(user_id)
+        try:
+            return await _run_auto_pipeline_inner(user_id=user_id, profile=profile, force=force, db=db)
+        finally:
+            _PIPELINE_RUNNING.discard(user_id)
+
+
+async def _run_auto_pipeline_inner(
+    user_id: str,
+    profile: dict,
+    force: bool = False,
+    db: AsyncSession = None,
+) -> dict:
+    """
+    Incremental auto-matching pipeline (inner — called only when lock is held).
 
     Each run:
-      1. Loads the job pool (re-fetches Greenhouse only if pool is stale, ≥24h)
+      1. Loads the job pool (re-fetches from sources only if pool is stale)
       2. Loads already-scored job_ids from DB — O(1) set lookup per job
       3. Scores ONLY jobs not yet in the DB (truly new jobs)
       4. Upserts new scores — existing scores untouched
       5. Returns full result set from DB, sorted by score DESC
 
     force=True: bypasses the results staleness check (re-runs scoring for new jobs)
-                but does NOT re-fetch the Greenhouse pool if it's still fresh.
+                but does NOT re-fetch the job pool if it's still fresh.
     """
     from services.matcher import match_resumes
     from services.llm_scorer import llm_score_jobs_grouped
@@ -746,3 +794,54 @@ async def run_auto_pipeline(
         },
         "from_cache": False,
     }
+
+
+# ── APScheduler entry point ───────────────────────────────────────────
+async def run_pipeline_for_all_users() -> None:
+    """
+    Called by APScheduler every 30 minutes.
+    Runs the full auto-match pipeline for every user that has a profile
+    with target_roles set. Each user runs sequentially to avoid hammering
+    the job board APIs with concurrent multi-user fetches.
+
+    Per-user lock inside run_auto_pipeline() ensures that manual refreshes
+    triggered while this background run is in progress return cached results
+    instead of starting a duplicate run.
+    """
+    from db.database import AsyncSessionLocal
+    from models.orm import User
+    from sqlalchemy import select as sa_select
+
+    logger.info("[Scheduler] Starting scheduled pipeline run for all users…")
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(sa_select(User))
+        users = result.scalars().all()
+
+    active_users = []
+    for user in users:
+        prefs = user.preferences or {}
+        if prefs.get("target_roles"):
+            active_users.append(user)
+
+    logger.info(f"[Scheduler] {len(active_users)} users with target roles to process")
+
+    for user in active_users:
+        user_id = str(user.id)
+        profile = {
+            "target_roles":        user.preferences.get("target_roles", []),
+            "preferred_locations": user.preferences.get("preferred_locations", []),
+            "role_aliases":        user.preferences.get("role_aliases", {}),
+            "include_keywords":    user.preferences.get("include_keywords", []),
+            "exclude_keywords":    user.preferences.get("exclude_keywords", []),
+        }
+        try:
+            async with AsyncSessionLocal() as db:
+                logger.info(f"[Scheduler] Running pipeline for user={user_id}")
+                await run_auto_pipeline(user_id=user_id, profile=profile, force=False, db=db)
+                logger.info(f"[Scheduler] Pipeline complete for user={user_id}")
+        except Exception as e:
+            logger.error(f"[Scheduler] Pipeline failed for user={user_id}: {e}")
+            # Continue to next user — one failure doesn't block others
+
+    logger.info("[Scheduler] Scheduled pipeline run complete")
