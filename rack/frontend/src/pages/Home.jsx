@@ -26,6 +26,32 @@ const mobileCardStyles = `
     0%, 100% { opacity: 0.3; transform: scale(0.85); }
     50%       { opacity: 1;   transform: scale(1.15); }
   }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.97); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0)    scale(1);    }
+  }
+  @keyframes toastOut {
+    from { opacity: 1; transform: translateX(-50%) translateY(0); }
+    to   { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+  }
+  .rack-toast {
+    position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
+    z-index: 9999;
+    background: var(--surface);
+    border: 1px solid rgba(232,255,107,0.35);
+    border-radius: 24px; padding: 9px 20px;
+    font-size: 13px; font-weight: 500; color: var(--text);
+    font-family: var(--font-body);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    pointer-events: none; white-space: nowrap;
+    animation: toastIn 0.35s cubic-bezier(0.22,1,0.36,1) both;
+  }
+  .rack-toast.out { animation: toastOut 0.3s ease forwards; }
+  .rack-toast-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent); margin-right: 7px;
+    vertical-align: middle; position: relative; top: -1px;
+  }
   .rack-tracking-cta {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 12px; font-weight: 600; font-family: var(--font-body);
@@ -792,6 +818,52 @@ export default function Home() {
     return () => clearTimeout(t)
   }, [])
 
+  // ── Login toast ───────────────────────────────────────────────────
+  const [toast, setToast]     = useState(null)
+  const prevUserRef            = useRef(null)
+  useEffect(() => {
+    const wasNull  = prevUserRef.current === null
+    const isNowSet = !!user
+    if (wasNull && isNowSet) {
+      const name = user?.user_metadata?.full_name?.split(' ')[0]
+        || user?.email?.split('@')[0] || 'back'
+      setToast({ msg: `Welcome, ${name}! 👋`, out: true })
+      const t1 = setTimeout(() => setToast(t => t ? { ...t, out: true } : null), 2800)
+      const t2 = setTimeout(() => setToast(null), 3200)
+      return () => { clearTimeout(t1); clearTimeout(t2) }
+    }
+    prevUserRef.current = user
+  }, [user])
+
+  // ── Typewriter engine ─────────────────────────────────────────────
+  const [typewriterText, setTypewriterText]   = useState('')
+  const [typewriterMsgId, setTypewriterMsgId] = useState(null)
+  const typewriterRef = useRef(null)
+
+  const startTypewriter = (msgId, fullText) => {
+    setTypewriterMsgId(msgId)
+    setTypewriterText('')
+    let i = 0
+    const tick = () => {
+      i++
+      setTypewriterText(fullText.slice(0, i))
+      if (i < fullText.length) {
+        typewriterRef.current = setTimeout(tick, 16)
+      } else {
+        // Persist the full text into the message so it survives after
+        // typewriterMsgId is cleared — otherwise displayText falls back
+        // to msg.text which is still '' and the message disappears.
+        setMessages(prev => prev.map(m =>
+          m.id === msgId ? { ...m, text: fullText } : m
+        ))
+        setTypewriterMsgId(null)
+        setTypewriterText('')
+      }
+    }
+    typewriterRef.current = setTimeout(tick, 16)
+  }
+  useEffect(() => () => clearTimeout(typewriterRef.current), [])
+
   // ── Anonymous session ID — scopes FAISS index so only THIS session's
   //    resumes get matched. Generated once, persisted in localStorage.
   const sessionId = (() => {
@@ -812,6 +884,14 @@ export default function Home() {
   const [expandedIds, setExpandedIds] = useState(new Set()) // per-card key: `${msg.id}-${resume_id}`
   const [resumeCount, setResumeCount] = useState(null)
   const [resumeWarning, setResumeWarning] = useState(false)
+
+  // ── Onboarding state machine ────────────────────────────────────
+  // Steps: null → 'roles' → 'location' → 'yoe' → 'resume' → 'done'
+  // null = not yet determined (waiting for authChecked + prefs fetch)
+  // 'done' = onboarding complete, normal Home behavior resumes
+  const [onboardingStep, setOnboardingStep]       = useState(null)
+  const [userPreferences, setUserPreferences]     = useState(null)  // fetched from /api/account/profile
+  const [onboardingLoading, setOnboardingLoading] = useState(false) // LLM extracting answer
 
   // ── Slash command / tool mode ────────────────────────────────────
   const [activeMode, setActiveMode]       = useState(null)   // null | 'tailor'
@@ -860,20 +940,55 @@ export default function Home() {
     return () => clearTimeout(t)
   }, [creatureMood])
 
-  // ── Resume count ────────────────────────────────────────────────
+  // ── Resume count + preferences + onboarding detection ──────────
+  // Clean state machine — no localStorage flags.
+  // The DB is the only source of truth: hasRoles comes from /api/account/profile.
+  // Three-way branch: 'done' | 'resume' | 'roles'. Nothing else.
+  // Catch defaults to 'done' so a backend error never traps users in onboarding.
   useEffect(() => {
-    if (user) {
-      getAuthHeaders()
-        .then(headers => fetch('http://localhost:8000/api/resumes', { headers }))
-        .then(r => r.ok ? r.json() : { resumes: [] })
-        .then(data => setResumeCount((data.resumes || []).length))
-        .catch(() => setResumeCount(0))
-    } else {
+    if (!user) {
+      // Anonymous user — read localStorage resume count, skip onboarding entirely
       try {
         const ls = JSON.parse(localStorage.getItem('rack_resumes') || '[]')
         setResumeCount(ls.length)
       } catch { setResumeCount(0) }
+      setOnboardingStep('done')
+      return
     }
+
+    // Authenticated user — fetch prefs + resume count in parallel
+    getAuthHeaders().then(async headers => {
+      const [resumeRes, profileRes] = await Promise.all([
+        fetch('http://localhost:8000/api/resumes', { headers }),
+        fetch('http://localhost:8000/api/account/profile', { headers }),
+      ])
+      const resumeData  = resumeRes.ok  ? await resumeRes.json()  : { resumes: [] }
+      const profileData = profileRes.ok ? await profileRes.json() : {}
+
+      const count    = (resumeData.resumes || []).length
+      const prefs    = profileData  // /api/account/profile returns flat prefs at top level
+      const hasRoles = (prefs.target_roles || []).length > 0
+
+      setResumeCount(count)
+      setUserPreferences(prefs)
+
+      // Single source of truth — DB state drives everything:
+      // hasRoles + hasResumes → fully set up returning user → 'done'
+      // hasRoles, no resumes → completed setup but hasn't uploaded yet → 'resume'
+      // no roles             → brand new user, start from the beginning → 'roles'
+      if (hasRoles && count > 0) {
+        setOnboardingStep('done')
+      } else if (hasRoles && count === 0) {
+        setOnboardingStep('resume')
+      } else {
+        setOnboardingStep('roles')
+      }
+    }).catch(() => {
+      // Network error — fail open so normal home is shown, don't trap users
+      console.error('[Home] Failed to load profile — defaulting to done')
+      setResumeCount(0)
+      setOnboardingStep('done')
+    })
   }, [user])
 
   // ── File staging helpers ────────────────────────────────────────
@@ -931,13 +1046,125 @@ export default function Home() {
   })
 
   // ── Auto-scroll chat area to bottom when new messages arrive ──
+  // typewriterText included so scroll tracks content growing during typewriter animation
   useEffect(() => {
-    if (messages.length > 0 && chatScrollRef.current) {
-      setTimeout(() => {
-        chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
-      }, 100)
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
     }
-  }, [messages, loading])
+  }, [messages, loading, typewriterText])
+
+  // ── Auth users: upload files immediately on selection ──────────
+  // Anonymous users: files stay in fileQueue until they click send (Act 1 in handleMatch).
+  // Auth'd users: upload as soon as files are staged so resumeCount increments right away,
+  // which triggers the onboarding Turn 5 detection without requiring a JD send.
+  const authUploadingRef = useRef(false)
+  // Tracks the transient "uploading…" message ID shown in chat during onboarding upload
+  const uploadStatusMsgRef = useRef(null)
+
+  useEffect(() => {
+    if (!isAuthed || fileQueue.length === 0 || authUploadingRef.current) return
+
+    // Capture the full queue immediately — subsequent selections during upload
+    // will update fileQueue again and re-trigger this effect once the lock clears.
+    const filesToUpload = [...fileQueue]
+    const isOnboardingResume = onboardingStep === 'resume'
+
+    const uploadAll = async () => {
+      authUploadingRef.current = true
+      // Clear the queue up front so new selections can be staged independently
+      setFileQueue([])
+
+      // During onboarding resume step: inject a status message into the chat
+      // so the user can see their files being processed
+      if (isOnboardingResume) {
+        const statusId = Date.now()
+        uploadStatusMsgRef.current = statusId
+        const fileNames = filesToUpload.map(f => f.name).join(', ')
+        setMessages(prev => [...prev, {
+          id: statusId,
+          isRackMessage: true,
+          isOnboarding: true,
+          isUploadStatus: true,
+          text: `Uploading ${filesToUpload.length === 1 ? filesToUpload[0].name : `${filesToUpload.length} resumes (${fileNames})`}…`,
+        }])
+      }
+
+      try {
+        const headers = await getAuthHeaders()
+        let uploadedCount = 0
+        for (const file of filesToUpload) {
+          try {
+            const formData = new FormData()
+            formData.append('file', file)
+            const res = await fetch('http://localhost:8000/api/resumes/upload', {
+              method: 'POST',
+              headers,   // Authorization header only — browser sets multipart boundary
+              body: formData,
+            })
+            if (res.ok) uploadedCount++
+            else console.error('Auth upload failed for', file.name, res.status)
+          } catch (err) {
+            console.error('Auth upload error:', file.name, err)
+          }
+        }
+
+        // Refresh the resume count
+        const countRes = await fetch('http://localhost:8000/api/resumes', { headers })
+        const finalCount = countRes.ok
+          ? ((await countRes.json()).resumes || []).length
+          : uploadedCount
+
+        // Fire Turn 5 directly from here — deterministic, no useEffect race.
+        // The resumeCount useEffect approach had a race: the poll interval may have
+        // already set resumeCount to the same value (from its own checkResumes call),
+        // so React sees no change and Turn 5 never fires a second time.
+        if (isOnboardingResume && uploadStatusMsgRef.current) {
+          const chipId  = uploadStatusMsgRef.current
+          uploadStatusMsgRef.current = null
+          const plural  = uploadedCount !== 1
+          const plural2 = finalCount !== 1
+          const slotsLeft = Math.max(0, 5 - finalCount)
+
+          const doneId   = Date.now()
+          const doneText = `You're all set! 🎯
+
+I've got your ${finalCount} resume${plural2 ? 's' : ''} — you can add up to ${slotsLeft} more anytime in the **Resumes tab**.
+
+I'm now hunting for roles that match your profile across hundreds of companies. This runs automatically every 30 minutes in the background.
+
+Check the **Tracking tab** in a couple of minutes for your first matches — or paste a job description or a job URL below and I'll rank your resumes against it right now.`
+          const doneMsg  = {
+            id: doneId,
+            isRackMessage: true,
+            isOnboarding: true,
+            onboardingTurn: 'done',
+            isThinking: false,
+            text: '',
+          }
+
+          // Single batched update: chip → done, append Turn 5 message
+          setMessages(prev => [
+            ...prev.map(m =>
+              m.id === chipId
+                ? { ...m, text: `✓ ${uploadedCount} resume${plural ? 's' : ''} uploaded successfully`, isDone: true }
+                : m
+            ),
+            doneMsg,
+          ])
+          setResumeCount(finalCount)
+          setOnboardingStep('done')
+          startTypewriter(doneId, doneText)
+        } else {
+          // Non-onboarding upload (normal resume management) — just update count
+          setResumeCount(finalCount)
+        }
+      } finally {
+        authUploadingRef.current = false
+      }
+    }
+
+    uploadAll()
+  }, [isAuthed, fileQueue, onboardingStep])  // eslint-disable-line
 
   // ── Auto-resize textarea ─────────────────────────────────────────
   useEffect(() => {
@@ -946,6 +1173,175 @@ export default function Home() {
     ta.style.height = 'auto'
     ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'
   }, [jd])
+
+  // ── Onboarding: auto-inject Turn 1 when step resolves to 'roles' ──
+  useEffect(() => {
+    if (!isAuthed || !authChecked || onboardingStep !== 'roles') return
+    if (messages.length > 0) return
+
+    const firstName = user?.user_metadata?.full_name?.split(' ')[0]
+      || user?.email?.split('@')[0] || 'there'
+
+    const fullText = `Hey ${firstName}! 👋 I'm RACK — I automatically match your resumes to the best open roles across hundreds of companies.\n\nLet's get you set up in a minute.\n\nFirst: **what kinds of roles are you targeting?** You can describe them however feels natural — job titles, areas of interest, whatever. I'll handle the rest.`
+    const msgId = Date.now()
+
+    // Step 1: show thinking dots
+    setMessages([{ id: msgId, isRackMessage: true, isOnboarding: true, isThinking: true, onboardingTurn: 'roles' }])
+
+    // Step 2: after 900ms swap to typewriter
+    const t = setTimeout(() => {
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, isThinking: false, text: '' } : m))
+      startTypewriter(msgId, fullText)
+    }, 900)
+    return () => clearTimeout(t)
+  }, [isAuthed, authChecked, onboardingStep])  // eslint-disable-line
+
+    // ── Onboarding reply handler ────────────────────────────────────
+  // Intercepts user sends during active onboarding steps.
+  // Calls backend LLM to extract structured data, saves to DB, advances step.
+  const handleOnboardingReply = async () => {
+    const userText = jd.trim()
+    if (!userText || onboardingLoading) return
+
+    setJd('')
+    setOnboardingLoading(true)
+
+    // Append user bubble immediately so it feels responsive
+    const userBubble = {
+      id: Date.now(),
+      isUserBubble: true,
+      isOnboarding: true,
+      text: userText,
+    }
+    setMessages(prev => [...prev, userBubble])
+
+    // Show RACK thinking dots
+    const thinkingId = Date.now() + 1
+    setMessages(prev => [...prev, { id: thinkingId, isRackMessage: true, isOnboarding: true, isThinking: true }])
+
+    try {
+      const headers = await getAuthHeaders()
+
+      if (onboardingStep === 'roles') {
+        // ── Extract roles via LLM + save to DB ─────────────────────
+        const extractRes = await fetch('http://localhost:8000/api/account/onboarding/extract-roles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ text: userText }),
+        })
+        const extractData = extractRes.ok ? await extractRes.json() : {}
+        const roles = extractData.target_roles || []
+
+        // Save preferences
+        if (roles.length > 0) {
+          await fetch('http://localhost:8000/api/account/preferences', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({ target_roles: roles }),
+          })
+          setUserPreferences(prev => ({ ...(prev || {}), target_roles: roles }))
+        }
+
+        const rolesList = roles.length > 0
+          ? roles.map(r => `**${r}**`).join(', ')
+          : `**${userText.slice(0, 60)}**`
+
+        const locId = Date.now()
+        const locText = `Got it — I'll scan for ${rolesList} roles${extractData.alias_count > 0 ? ` (and ${extractData.alias_count} related titles)` : ''} across our job sources.\n\nNext: **where are you open to working?** Remote, a specific city, or both?`
+        const locMsg = { id: locId, isRackMessage: true, isOnboarding: true, onboardingTurn: 'location', isThinking: false, text: '' }
+        setMessages(prev => prev.filter(m => m.id !== thinkingId).concat(locMsg))
+        setOnboardingStep('location')
+        startTypewriter(locId, locText)
+
+      } else if (onboardingStep === 'location') {
+        // ── Extract + save location via LLM ────────────────────────
+        // Raw text goes to backend for LLM extraction — never store the
+        // raw sentence directly (e.g. "I am open to SF, NYC, or remote")
+        const locRes = await fetch('http://localhost:8000/api/account/onboarding/extract-location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ text: userText }),
+        })
+        const locData = locRes.ok ? await locRes.json() : {}
+        const cleanedLocations = locData.preferred_locations || [userText]
+        setUserPreferences(prev => ({ ...(prev || {}), preferred_locations: cleanedLocations }))
+
+        // Summarise what was parsed for the confirmation echo
+        const locSummary = cleanedLocations.length > 0
+          ? cleanedLocations.join(', ')
+          : userText
+
+        const yoeId = Date.now()
+        const yoeText = `Noted — **${locSummary}**.\n\nOne more: **how many years of experience do you have?** This helps me calibrate match scores so you're not competing against junior or senior roles you're not targeting.`
+        const yoeMsg = { id: yoeId, isRackMessage: true, isOnboarding: true, onboardingTurn: 'yoe', isThinking: false, text: '' }
+        setMessages(prev => prev.filter(m => m.id !== thinkingId).concat(yoeMsg))
+        setOnboardingStep('yoe')
+        startTypewriter(yoeId, yoeText)
+
+      } else if (onboardingStep === 'yoe') {
+        // ── Extract YOE via LLM — handles written numbers + ranges ──
+        // Replaces the old digit-only regex which broke on "three to four years"
+        const yoeRes = await fetch('http://localhost:8000/api/account/onboarding/extract-yoe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ text: userText }),
+        })
+        const yoeData = yoeRes.ok ? await yoeRes.json() : {}
+        const minYears = yoeData.min_years ?? null
+        const maxYears = yoeData.max_years ?? null
+        setUserPreferences(prev => ({ ...(prev || {}), min_years: minYears, max_years: maxYears }))
+
+        // Build a human-readable confirmation for the chat echo
+        const yearsLabel = minYears !== null
+          ? (maxYears !== null ? `${minYears}–${maxYears} years` : `${minYears} year${minYears !== 1 ? 's' : ''}`)
+          : null
+
+        const resId = Date.now()
+        const resText = `${yearsLabel ? `${yearsLabel} of experience — perfect.` : 'Got it.'}\n\nNow the most important step — **upload your resume(s)**. Click the 📎 button below, or drag files into this window. I support PDF and DOCX.\n\nEven if you only have one version right now, you can always upload up to 5 resume variants in the **Resumes tab** later — different versions tailored for different roles.`
+        const resMsg = { id: resId, isRackMessage: true, isOnboarding: true, onboardingTurn: 'resume', isThinking: false, text: '' }
+        setMessages(prev => prev.filter(m => m.id !== thinkingId).concat(resMsg))
+        setOnboardingStep('resume')
+        startTypewriter(resId, resText)
+      }
+    } catch (err) {
+      // On error, remove thinking bubble and let user try again
+      setMessages(prev => prev.filter(m => m.id !== thinkingId))
+      console.error('Onboarding reply error:', err)
+    }
+
+    setOnboardingLoading(false)
+  }
+
+  // ── Onboarding: poll for resume upload during 'resume' step ────
+  // Covers two paths: (a) user attaches via Home 📎 — our auth upload effect
+  // already refreshes resumeCount; (b) user goes to the Resumes tab and uploads
+  // there — resumeCount on Home stays stale unless we poll.
+  // Poll every 3s while the step is active; stop as soon as a resume lands.
+  const resumePollRef = useRef(null)
+  useEffect(() => {
+    if (onboardingStep !== 'resume') {
+      clearInterval(resumePollRef.current)
+      return
+    }
+
+    const checkResumes = async () => {
+      try {
+        const headers = await getAuthHeaders()
+        const res = await fetch('http://localhost:8000/api/resumes', { headers })
+        if (!res.ok) return
+        const data = await res.json()
+        const count = (data.resumes || []).length
+        if (count > 0) {
+          clearInterval(resumePollRef.current)
+          setResumeCount(count)
+        }
+      } catch { /* silent — will retry next interval */ }
+    }
+
+    checkResumes()
+    resumePollRef.current = setInterval(checkResumes, 3000)
+    return () => clearInterval(resumePollRef.current)
+  }, [onboardingStep]) // eslint-disable-line
 
   // ── Auto-match filter chips (auth'd greeting state) ──────────────
   const handleAutoMatchFilter = async (action) => {
@@ -1189,6 +1585,12 @@ export default function Home() {
   // No heuristics. No regex. No refs. The backend LLM picks the tool; we execute.
   const handleMatch = async () => {
     if (!jd.trim() || loading || tailorLoading) return
+
+    // ── Onboarding intercept — active steps consume the send ───────
+    if (isAuthed && onboardingStep && onboardingStep !== 'done' && onboardingStep !== 'resume') {
+      handleOnboardingReply()
+      return
+    }
 
     const capturedJd  = jd.trim()
     const msgId       = Date.now()
@@ -1732,7 +2134,12 @@ export default function Home() {
         )}
 
         {/* ── Greeting state (no conversation yet) ── */}
-        {!hasConversation && !loading && (
+        {/* Gate on onboardingStep !== null: while the profile fetch is in-flight,
+            render nothing rather than the bare hero with no chips (looks broken).
+            Once resolved: 'done' shows hero + chips; 'roles'/'resume' auto-injects
+            a message via the Turn 1 effect so hasConversation becomes true and
+            this block is hidden anyway. */}
+        {!hasConversation && !loading && onboardingStep !== null && (
           <div className="rack-greeting">
             <div className="rack-greeting-hero">
               <div className="rack-greeting-eyebrow">
@@ -1751,51 +2158,160 @@ export default function Home() {
               </p>
             </div>
 
-            {/* Suggestion chips — context-aware */}
-            <div className="rack-suggestion-chips">
-              {isAuthed ? (
-                // Auth'd users: quick-filters into their auto-match results
-                [
-                  { label: '⚡ View all matched jobs',        action: 'filter:all' },
-                  { label: '🏆 85%+ match jobs',              action: 'filter:85'  },
-                  { label: '✅ 75%+ match jobs',              action: 'filter:75'  },
-                  { label: '🆕 View newly matched jobs',      action: 'filter:new' },
-                ].map(chip => (
-                  <button
-                    key={chip.action}
-                    className="rack-suggestion-chip"
-                    onClick={() => handleAutoMatchFilter(chip.action)}
-                  >
-                    {chip.label}
-                  </button>
-                ))
-              ) : (
-                // Anon users: sample JD starters
-                [
-                  '🔍 Paste a job description',
-                  '🤖 Try an ML Engineer role',
-                  '💼 Software Engineer — Senior',
-                  '📊 Data Scientist position',
-                ].map(chip => (
-                  <button
-                    key={chip}
-                    className="rack-suggestion-chip"
-                    onClick={() => handleSuggestion(chip.replace(/^[\p{Emoji}\s]+/u, ''))}
-                  >
-                    {chip}
-                  </button>
-                ))
-              )}
-            </div>
+            {/* Suggestion chips — context-aware; hidden during onboarding */}
+            {onboardingStep === 'done' && (
+              <div className="rack-suggestion-chips">
+                {isAuthed ? (
+                  // Auth'd users: quick-filters into their auto-match results
+                  [
+                    { label: '⚡ View all matched jobs',        action: 'filter:all' },
+                    { label: '🏆 85%+ match jobs',              action: 'filter:85'  },
+                    { label: '✅ 75%+ match jobs',              action: 'filter:75'  },
+                    { label: '🆕 View newly matched jobs',      action: 'filter:new' },
+                  ].map(chip => (
+                    <button
+                      key={chip.action}
+                      className="rack-suggestion-chip"
+                      onClick={() => handleAutoMatchFilter(chip.action)}
+                    >
+                      {chip.label}
+                    </button>
+                  ))
+                ) : (
+                  // Anon users: sample JD starters
+                  [
+                    '🔍 Paste a job description',
+                    '🤖 Try an ML Engineer role',
+                    '💼 Software Engineer — Senior',
+                    '📊 Data Scientist position',
+                  ].map(chip => (
+                    <button
+                      key={chip}
+                      className="rack-suggestion-chip"
+                      onClick={() => handleSuggestion(chip.replace(/^[\p{Emoji}\s]+/u, ''))}
+                    >
+                      {chip}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
           </div>
         )}
 
         {/* ── Conversation thread — multi-turn, one entry per submitted JD ── */}
         {messages.map((msg) => {
+          // ── Onboarding message type ───────────────────────────────
+          if (msg.isOnboarding) {
+            if (msg.isThinking) {
+              return (
+                <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+                  <div className="rack-msg-row rack" style={{ marginBottom: 16 }}>
+                    <div className="rack-bubble-rack">
+                      <div className="rack-bubble-rack-label">
+                        <span className="rack-bubble-rack-label-dot" />
+                        RACK
+                      </div>
+                      <div style={{ display: 'flex', gap: 5, alignItems: 'center', paddingTop: 2 }}>
+                        {[0,1,2].map(i => (
+                          <span key={i} style={{
+                            width: 7, height: 7, borderRadius: '50%',
+                            background: 'var(--accent)', opacity: 0.6,
+                            animation: 'pulse 1.2s ease-in-out infinite',
+                            animationDelay: `${i * 0.18}s`,
+                          }} />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            }
+            if (msg.isUserBubble) {
+              return (
+                <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+                  <div className="rack-msg-row user" style={{ marginBottom: 8 }}>
+                    <div className="rack-bubble-user">
+                      <div className="rack-bubble-user-label">You</div>
+                      {msg.text}
+                    </div>
+                  </div>
+                </div>
+              )
+            }
+            // Upload status chip — shown inline during auth resume upload
+            if (msg.isUploadStatus) {
+              return (
+                <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+                  <div className="rack-msg-row rack" style={{ marginBottom: 12 }}>
+                    <div className="rack-bubble-rack">
+                      <div style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 8,
+                        padding: '7px 14px',
+                        background: msg.isDone ? 'rgba(52,211,153,0.08)' : 'rgba(232,255,107,0.06)',
+                        border: `1px solid ${msg.isDone ? 'rgba(52,211,153,0.25)' : 'rgba(232,255,107,0.18)'}`,
+                        borderRadius: 20,
+                        fontSize: 13, fontWeight: 500,
+                        color: msg.isDone ? 'var(--accent3)' : 'var(--text-mid)',
+                        animation: 'bubbleIn 0.25s ease both',
+                      }}>
+                        {!msg.isDone && (
+                          <div style={{
+                            width: 10, height: 10, borderRadius: '50%',
+                            border: '2px solid rgba(232,255,107,0.5)',
+                            borderTopColor: 'var(--accent)',
+                            animation: 'spin 0.7s linear infinite',
+                            flexShrink: 0,
+                          }} />
+                        )}
+                        {msg.text}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            }
+
+            // RACK onboarding message — render markdown-lite (bold via **)
+            const renderOnboardingText = (text) => {
+              const parts = text.split(/(\*\*[^*]+\*\*)/g)
+              return parts.map((part, i) =>
+                part.startsWith('**') && part.endsWith('**')
+                  ? <strong key={i} style={{ color: 'var(--accent)', fontWeight: 700 }}>{part.slice(2, -2)}</strong>
+                  : part.split('\n').map((line, j, arr) => (
+                      <span key={`${i}-${j}`}>{line}{j < arr.length - 1 ? <br /> : null}</span>
+                    ))
+              )
+            }
+            const displayText = typewriterMsgId === msg.id ? typewriterText : msg.text
+            const isActivelyTyping = typewriterMsgId === msg.id
+            return (
+              <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+                <div className="rack-msg-row rack" style={{ marginBottom: 16 }}>
+                  <div className="rack-bubble-rack" style={{ lineHeight: 1.65, fontSize: 14 }}>
+                    <div className="rack-bubble-rack-label">
+                      <span className="rack-bubble-rack-label-dot" />
+                      RACK
+                    </div>
+                    {renderOnboardingText(displayText)}
+                    {isActivelyTyping && (
+                      <span style={{
+                        display: 'inline-block', width: 2, height: '1em',
+                        background: 'var(--accent)', marginLeft: 2,
+                        verticalAlign: 'text-bottom', opacity: 0.8,
+                        animation: 'pulse 0.8s ease-in-out infinite',
+                      }} />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          }
+
           const msgJdPreview = msg.jd.length > 220 ? msg.jd.slice(0, 220).trimEnd() + '…' : msg.jd
 
           return (
-            <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: 0, width: '100%', maxWidth: '900px', margin: '0 auto' }}>
+            <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: 0, width: '55%', maxWidth: '900px', margin: '0 auto' }}>
 
               {/* User bubble — the JD they sent */}
               <div className="rack-msg-row user">
@@ -2511,8 +3027,8 @@ export default function Home() {
       {/* ── Bottom input bar ── */}
       <div className="rack-chat-input-bar">
 
-        {/* Staged file chips (anonymous only) */}
-        {!isAuthed && fileQueue.length > 0 && (
+        {/* Staged file chips (all users — clears after auth upload completes) */}
+        {fileQueue.length > 0 && (
           <div className="rack-staged-files">
             {fileQueue.map(f => (
               <div key={f.name} style={{
@@ -2603,8 +3119,12 @@ export default function Home() {
             ref={textareaRef}
             className="rack-chat-textarea"
             placeholder={
-              activeMode === 'tailor' ? 'Paste a job URL or JD to tailor your top resume…' :
-              activeMode === 'rank'   ? 'Paste a job description to rank your resumes…' :
+              onboardingStep === 'roles'    ? 'e.g. "ML Engineer, Backend Engineer" or "I want to work in AI research"…' :
+              onboardingStep === 'location' ? 'e.g. "Remote", "New York", "Open to anywhere"…' :
+              onboardingStep === 'yoe'      ? 'e.g. "3 years", "I graduated last year", "About 5 years"…' :
+              onboardingStep === 'resume'   ? 'Upload your resume with 📎 above, then paste a JD to match it…' :
+              activeMode === 'tailor'       ? 'Paste a job URL or JD to tailor your top resume…' :
+              activeMode === 'rank'         ? 'Paste a job description to rank your resumes…' :
               'Paste a job description or type / for tools…'
             }
             value={jd}
@@ -2634,7 +3154,7 @@ export default function Home() {
             <button
               className="rack-chat-send-btn"
               onClick={handleMatch}
-              disabled={!jd.trim() || loading || tailorLoading}
+              disabled={!jd.trim() || loading || tailorLoading || onboardingLoading}
               title={activeMode === 'tailor' ? 'Tailor resume (⌘+Enter)' : activeMode === 'rank' ? 'Rank resumes (⌘+Enter)' : 'Match (⌘+Enter)'}
             >
               {loading
@@ -2683,6 +3203,14 @@ export default function Home() {
     {/* Value preview overlay — portal, always above everything */}
     {lastResults && lastResults.length > 0 && authChecked && !isAuthed && (
       <ValuePreviewCard results={lastResults} onSignIn={signInWithGoogle} />
+    )}
+
+    {/* ── Login toast ── */}
+    {toast && (
+      <div className={`rack-toast${toast.out ? ' out' : ''}`}>
+        <span className="rack-toast-dot" />
+        {toast.msg}
+      </div>
     )}
     </>
   )

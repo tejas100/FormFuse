@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-from typing import Optional
+from typing import Optional, List
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -181,3 +181,349 @@ async def generate_role_aliases(
     except Exception as e:
         logger.error(f"[RoleAliases] Failed for '{role}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── PATCH /api/account/preferences ───────────────────────────────────────────
+# Merge-safe partial update — called by onboarding flow (one field at a time).
+# Unlike PUT /profile which overwrites entirely, this merges into existing prefs.
+
+class PreferencesUpdate(BaseModel):
+    target_roles: Optional[List[str]]       = None
+    preferred_locations: Optional[List[str]] = None  # onboarding maps location str → list
+    min_years: Optional[int]                = None
+    max_years: Optional[int]                = None
+
+@router.patch("/preferences")
+async def patch_preferences(
+    body: PreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Partial merge update for user preferences. Safe to call with any subset of fields."""
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+
+    existing = {**DEFAULT_PREFERENCES, **(user.preferences or {})}
+
+    # Only overwrite fields that were explicitly sent
+    updates = body.dict(exclude_none=True)
+    merged  = {**existing, **updates}
+
+    await db.execute(
+        update(User)
+        .where(User.id == current_user.id)
+        .values(preferences=merged)
+    )
+    await db.commit()
+
+    logger.info(f"[Preferences] Partial update for user {current_user.id}: {list(updates.keys())}")
+    return {"ok": True, "preferences": merged}
+
+
+# ── POST /api/account/onboarding/extract-location ───────────────────────────
+# Extracts clean location list from free-form onboarding text via LLM.
+# Saves preferred_locations to DB and returns the cleaned list.
+
+class ExtractLocationRequest(BaseModel):
+    text: str
+
+@router.post("/onboarding/extract-location")
+async def extract_location_from_onboarding(
+    body: ExtractLocationRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Parse free-form location preference, extract clean location tokens.
+    Saves to users.preferences.preferred_locations immediately.
+    Returns: { preferred_locations: [...] }
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+
+    prompt = (
+        f'The user described where they are open to working:\n\n'
+        f'"{body.text}"\n\n'
+        f'Extract a clean list of location tokens. Rules:\n'
+        f'- Return ONLY a JSON array of strings, no other text, no markdown\n'
+        f'- Each item is a short, canonical location string\n'
+        f'- If they mention "remote" or "anywhere" → include "Remote"\n'
+        f'- For US cities/states → format as "City, State" e.g. "San Francisco, CA"\n'
+        f'- For whole states → "Texas", "New York" etc\n'
+        f'- If they say "anywhere in the US" or "all over the US" → ["Remote", "United States"]\n'
+        f'- Deduplicate — do not repeat the same location twice\n'
+        f'- Max 10 items\n'
+        f'- Do NOT include long sentences, explanations, or punctuation\n\n'
+        f'Example input: "I am open to remote, NYC, or San Francisco"\n'
+        f'Example output: ["Remote", "New York, NY", "San Francisco, CA"]\n\n'
+        f'Now extract locations from the user text above.'
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "max_tokens": 200,
+                },
+                timeout=20.0,
+            )
+
+        if response.status_code != 200:
+            logger.warning(f"[ExtractLocation] OpenAI {response.status_code}")
+            raise HTTPException(status_code=502, detail="OpenAI request failed")
+
+        raw = response.json()["choices"][0]["message"]["content"].strip()
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        locations = json.loads(raw.strip())
+
+        if not isinstance(locations, list):
+            raise ValueError("expected a list")
+
+        # Normalise: strip, deduplicate, cap at 10
+        locations = list(dict.fromkeys(
+            loc.strip() for loc in locations if isinstance(loc, str) and loc.strip()
+        ))[:10]
+
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"[ExtractLocation] Parse error: {e} — falling back to raw text")
+        # Graceful fallback: store the raw input trimmed, better than losing data
+        locations = [body.text.strip()[:120]]
+
+    # Merge into existing preferences
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user   = result.scalar_one_or_none()
+    existing = {**DEFAULT_PREFERENCES, **(user.preferences or {})}
+    merged   = {**existing, "preferred_locations": locations}
+
+    await db.execute(
+        update(User)
+        .where(User.id == current_user.id)
+        .values(preferences=merged)
+    )
+    await db.commit()
+
+    logger.info(f"[ExtractLocation] user={current_user.id} → {locations}")
+    return {"preferred_locations": locations}
+
+
+# ── POST /api/account/onboarding/extract-yoe ─────────────────────────────────
+# Extracts years of experience from free-form text via LLM.
+# Handles written numbers ("three to four years"), ranges, and vague expressions.
+# Saves min_years (and optionally max_years) to DB and returns both.
+
+class ExtractYoeRequest(BaseModel):
+    text: str
+
+@router.post("/onboarding/extract-yoe")
+async def extract_yoe_from_onboarding(
+    body: ExtractYoeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Parse free-form YOE description, extract min_years and max_years integers.
+    Saves to users.preferences immediately.
+    Returns: { min_years, max_years }
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+
+    prompt = (
+        f'The user described their years of professional experience:\n\n'
+        f'"{body.text}"\n\n'
+        f'Extract the years of experience as integers. Rules:\n'
+        f'- Return ONLY valid JSON, no markdown, no other text\n'
+        f'- Convert written numbers to digits: "three" → 3, "five" → 5\n'
+        f'- For ranges ("3 to 5 years"): min_years=3, max_years=5\n'
+        f'- For single values ("4 years"): min_years=4, max_years=null\n'
+        f'- For "around X" or "about X": min_years=X, max_years=null\n'
+        f'- For "just graduated" or "fresh grad": min_years=0, max_years=1\n'
+        f'- For "10+" or "over 10": min_years=10, max_years=null\n'
+        f'- If completely unclear: min_years=null, max_years=null\n\n'
+        f'Respond with exactly this shape:\n'
+        f'{{"min_years": <int or null>, "max_years": <int or null>}}'
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "max_tokens": 60,
+                },
+                timeout=20.0,
+            )
+
+        if response.status_code != 200:
+            logger.warning(f"[ExtractYoe] OpenAI {response.status_code}")
+            raise HTTPException(status_code=502, detail="OpenAI request failed")
+
+        raw = response.json()["choices"][0]["message"]["content"].strip()
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        parsed = json.loads(raw.strip())
+
+        min_years = parsed.get("min_years")
+        max_years = parsed.get("max_years")
+
+        # Validate types — must be int or None
+        if min_years is not None:
+            min_years = int(min_years)
+        if max_years is not None:
+            max_years = int(max_years)
+
+    except (json.JSONDecodeError, ValueError, KeyError) as e:
+        logger.error(f"[ExtractYoe] Parse error: {e} — storing null")
+        min_years = None
+        max_years = None
+
+    # Merge into existing preferences
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user   = result.scalar_one_or_none()
+    existing = {**DEFAULT_PREFERENCES, **(user.preferences or {})}
+    merged   = {**existing, "min_years": min_years, "max_years": max_years}
+
+    await db.execute(
+        update(User)
+        .where(User.id == current_user.id)
+        .values(preferences=merged)
+    )
+    await db.commit()
+
+    logger.info(f"[ExtractYoe] user={current_user.id} → min={min_years}, max={max_years}")
+    return {"min_years": min_years, "max_years": max_years}
+
+
+# ── POST /api/account/onboarding/extract-roles ───────────────────────────────
+# Extracts structured target_roles from free-form onboarding text.
+# Generates aliases for each role in one LLM call (vs one call per role in /role-aliases).
+# Saves target_roles + role_aliases to DB atomically before returning.
+
+class ExtractRolesRequest(BaseModel):
+    text: str
+
+@router.post("/onboarding/extract-roles")
+async def extract_roles_from_onboarding(
+    body: ExtractRolesRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Parse free-form role description, extract clean role titles, generate aliases.
+    Saves to users.preferences immediately so the pipeline can use them.
+    Returns: { target_roles, alias_count }
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+
+    prompt = (
+        f'''The user is setting up their job search profile. They described their target roles:
+
+"{body.text}"
+
+Extract the distinct job role CATEGORIES they are targeting.
+
+Rules:
+- Normalize to clean, common job title format (Title Case, no slashes)
+- Max 5 roles
+- Strip seniority level (senior/junior/lead) from role name — just the core category
+- If text is vague, infer best guess
+- For each role, list 12–18 related job titles a recruiter might use (lowercase, common variants)
+
+Respond ONLY with valid JSON, no preamble, no markdown:
+{{
+  "target_roles": ["Role 1", "Role 2"],
+  "role_aliases": {{
+    "Role 1": ["alias a", "alias b", "alias c"],
+    "Role 2": ["alias a", "alias b"]
+  }}
+}}'''
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "max_tokens": 600,
+                },
+                timeout=20.0,
+            )
+
+        if response.status_code != 200:
+            logger.warning(f"[ExtractRoles] OpenAI {response.status_code}")
+            raise HTTPException(status_code=502, detail="OpenAI request failed")
+
+        raw = response.json()["choices"][0]["message"]["content"].strip()
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        parsed = json.loads(raw.strip())
+
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"[ExtractRoles] Parse error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse LLM response")
+
+    target_roles = parsed.get("target_roles", [])
+    role_aliases = parsed.get("role_aliases", {})
+
+    # Normalise aliases: lowercase, deduplicate, cap at 20 per role
+    for role in list(role_aliases.keys()):
+        aliases = list(dict.fromkeys(
+            a.lower().strip() for a in role_aliases[role]
+            if isinstance(a, str) and a.strip()
+        ))[:20]
+        role_aliases[role] = aliases
+
+    alias_count = sum(len(v) for v in role_aliases.values())
+
+    # Merge into existing preferences atomically
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user   = result.scalar_one_or_none()
+    existing = {**DEFAULT_PREFERENCES, **(user.preferences or {})}
+    merged   = {
+        **existing,
+        "target_roles": target_roles,
+        "role_aliases": role_aliases,
+    }
+
+    await db.execute(
+        update(User)
+        .where(User.id == current_user.id)
+        .values(preferences=merged)
+    )
+    await db.commit()
+
+    logger.info(
+        f"[ExtractRoles] user={current_user.id} → {len(target_roles)} roles, "
+        f"{alias_count} total aliases"
+    )
+    return {
+        "target_roles": target_roles,
+        "alias_count": alias_count,
+    }
