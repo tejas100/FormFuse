@@ -1130,7 +1130,7 @@ export default function Home() {
 
 I've got your ${finalCount} resume${plural2 ? 's' : ''} — you can add up to ${slotsLeft} more anytime in the **Resumes tab**.
 
-I'm now hunting for roles that match your profile across hundreds of companies. This runs automatically every 30 minutes in the background.
+I'm now hunting for roles that match your profile across hundreds of companies. This runs automatically every 60 minutes in the background.
 
 Check the **Tracking tab** in a couple of minutes for your first matches — or paste a job description or a job URL below and I'll rank your resumes against it right now.`
           const doneMsg  = {

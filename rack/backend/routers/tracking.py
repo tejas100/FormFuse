@@ -9,10 +9,16 @@ Session 21: Normalized auto_match_results schema — one row per (user, job).
   - Added recency_days param to GET /auto/matches (1 / 7 / 30 / None=all)
   - archive_jobs_for_user() now also deletes rows from auto_match_results
   - Imports updated: _load_snapshot_from_db/_get_run_dates_from_db removed
+Session 50: run_auto_pipeline() now requires job_pool parameter.
+  - auto_refresh() loads cached pool from disk or fetches fresh — never calls
+    job board APIs blindly. Consistent with two-phase scheduler architecture.
 """
 
 from typing import Optional
 from datetime import datetime, timezone
+import logging
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +33,10 @@ from services.auto_match import (
     archive_jobs_for_user,
     _load_auto_meta_for_user,
     _load_results_from_db,
+    _is_pool_cache_fresh,
+    _load_pool_from_disk,
+    _save_pool_to_disk,
+    MAX_CONCURRENT,
     DISPLAY_CAP,
 )
 
@@ -164,7 +174,28 @@ async def auto_refresh(
     user   = result.scalar_one_or_none()
     profile = {**DEFAULT_PREFS, **(user.preferences or {})} if user else DEFAULT_PREFS
 
-    return await run_auto_pipeline(user_id=user_id, profile=profile, force=req.force, db=db)
+    # Load cached pool if fresh — skip job board fetch entirely.
+    # force=True (admin manual trigger) still uses cached pool unless it's stale;
+    # the pool freshness is independent of the results staleness that force bypasses.
+    import asyncio as _asyncio
+    if _is_pool_cache_fresh():
+        job_pool = _load_pool_from_disk()
+        logger.info(f"[auto_refresh] Using cached pool: {len(job_pool)} jobs")
+    else:
+        logger.info("[auto_refresh] Pool stale — fetching from job boards…")
+        from services.job_fetcher import fetch_all_auto_match
+        semaphore = _asyncio.Semaphore(MAX_CONCURRENT)
+        job_pool = await fetch_all_auto_match(semaphore)
+        _save_pool_to_disk(job_pool)
+        logger.info(f"[auto_refresh] Pool fetched and cached: {len(job_pool)} jobs")
+
+    return await run_auto_pipeline(
+        user_id=user_id,
+        profile=profile,
+        job_pool=job_pool,
+        force=req.force,
+        db=db,
+    )
 
 
 @router.get("/auto/matches")

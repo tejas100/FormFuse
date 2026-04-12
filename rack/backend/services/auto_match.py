@@ -18,6 +18,13 @@ Session 31: Multi-source expansion + batched Phase 1.
   - Removed PHASE1_JOB_CAP — Phase 1 now processes all new jobs in batches of BATCH_SIZE
   - Pool staleness reduced from 24h to 0.5h (30 min)
   - Removed auto_job_pool.json disk cache — pool fetched fresh every cycle
+Session 50: Shared job pool cache + clean two-phase scheduler architecture.
+  - Restored job_pool.json disk cache (POOL_CACHE_PATH) with POOL_MAX_AGE_MINUTES=90
+  - run_pipeline_for_all_users(): fetch once → write to disk → score all users concurrently
+  - _run_auto_pipeline_inner(): no longer fetches — accepts job_pool list as parameter
+  - run_pipeline_for_new_user(): on-demand entry point for new user onboarding trigger;
+    reads cached pool if fresh, fetches fresh only if stale — no user-facing button
+  - Scheduler interval: 60 minutes (was 30)
 """
 
 import asyncio
@@ -64,6 +71,58 @@ MIN_DESC_LEN           = 100
 STALE_HOURS            = 0.5
 MAX_CONCURRENT         = 15
 ROLE_MATCH_RATIO       = 0.60  # Word overlap ratio for title matching — 0.60 balances precision vs recall
+
+# ── Shared job pool cache ─────────────────────────────────────────────
+# Written by run_pipeline_for_all_users() once per scheduled run.
+# Read by run_pipeline_for_new_user() so new users skip the job board fetch entirely.
+POOL_CACHE_PATH    = os.path.join(WATCHLIST_DIR, "job_pool.json")
+POOL_MAX_AGE_MINUTES = 90   # Pool older than 90 min is considered stale for new-user trigger
+
+
+def _save_pool_to_disk(pool: list) -> None:
+    """Write the fetched job pool to disk with a timestamp."""
+    os.makedirs(WATCHLIST_DIR, exist_ok=True)
+    payload = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "job_count":  len(pool),
+        "jobs":       pool,
+    }
+    with open(POOL_CACHE_PATH, "w") as f:
+        json.dump(payload, f)
+    logger.info(f"[AutoMatch] Pool written to disk: {len(pool)} jobs → {POOL_CACHE_PATH}")
+
+
+def _load_pool_from_disk() -> list:
+    """
+    Load the cached job pool from disk.
+    Returns empty list if file missing or unreadable — caller handles fallback.
+    """
+    try:
+        with open(POOL_CACHE_PATH) as f:
+            payload = json.load(f)
+        return payload.get("jobs", [])
+    except Exception:
+        return []
+
+
+def _is_pool_cache_fresh() -> bool:
+    """
+    Returns True if job_pool.json exists and was written within POOL_MAX_AGE_MINUTES.
+    Used by run_pipeline_for_new_user() to decide whether to re-fetch.
+    """
+    try:
+        with open(POOL_CACHE_PATH) as f:
+            payload = json.load(f)
+        fetched_at_str = payload.get("fetched_at")
+        if not fetched_at_str:
+            return False
+        fetched_at = datetime.fromisoformat(fetched_at_str)
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age_minutes = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 60
+        return age_minutes < POOL_MAX_AGE_MINUTES
+    except Exception:
+        return False
 
 
 # ── Role matching ─────────────────────────────────────────────────────
@@ -335,14 +394,16 @@ def _load_archived_ids_for_user(user_id: str) -> set:
 async def run_auto_pipeline(
     user_id: str,
     profile: dict,
+    job_pool: list,
     force: bool = False,
     db: AsyncSession = None,
 ) -> dict:
     """
-    Incremental auto-matching pipeline — per-user locked.
+    Per-user locked wrapper around _run_auto_pipeline_inner.
 
-    If a pipeline run is already in progress for this user, returns cached
-    DB results immediately instead of queueing a second run.
+    job_pool must be provided by the caller — this function never fetches from
+    job boards. If a pipeline run is already in progress for this user, returns
+    cached DB results immediately instead of queueing a second run.
     """
     lock = await _get_user_lock(user_id)
 
@@ -362,7 +423,13 @@ async def run_auto_pipeline(
     async with lock:
         _PIPELINE_RUNNING.add(user_id)
         try:
-            return await _run_auto_pipeline_inner(user_id=user_id, profile=profile, force=force, db=db)
+            return await _run_auto_pipeline_inner(
+                user_id=user_id,
+                profile=profile,
+                job_pool=job_pool,
+                force=force,
+                db=db,
+            )
         finally:
             _PIPELINE_RUNNING.discard(user_id)
 
@@ -370,21 +437,24 @@ async def run_auto_pipeline(
 async def _run_auto_pipeline_inner(
     user_id: str,
     profile: dict,
+    job_pool: list,          # ← passed in by caller — never fetched here
     force: bool = False,
     db: AsyncSession = None,
 ) -> dict:
     """
     Incremental auto-matching pipeline (inner — called only when lock is held).
 
+    job_pool is always provided by the caller (run_pipeline_for_all_users or
+    run_pipeline_for_new_user). This function never hits job board APIs.
+
     Each run:
-      1. Loads the job pool (re-fetches from sources only if pool is stale)
+      1. Filters the provided job pool by role + location for this user
       2. Loads already-scored job_ids from DB — O(1) set lookup per job
       3. Scores ONLY jobs not yet in the DB (truly new jobs)
       4. Upserts new scores — existing scores untouched
       5. Returns full result set from DB, sorted by score DESC
 
-    force=True: bypasses the results staleness check (re-runs scoring for new jobs)
-                but does NOT re-fetch the job pool if it's still fresh.
+    force=True: bypasses the results staleness check (re-runs scoring for new jobs).
     """
     from services.matcher import match_resumes
     from services.llm_scorer import llm_score_jobs_grouped
@@ -409,9 +479,9 @@ async def _run_auto_pipeline_inner(
         return {
             "matches": stored[:DISPLAY_CAP],
             "stats": {
-                "from_cache":   True,
+                "from_cache":    True,
                 "last_fetch_at": meta.get("last_fetch_at"),
-                "total_shown":  len(stored[:DISPLAY_CAP]),
+                "total_shown":   len(stored[:DISPLAY_CAP]),
             },
             "from_cache": True,
         }
@@ -428,37 +498,8 @@ async def _run_auto_pipeline_inner(
             "from_cache": False,
         }
 
-    logger.info(f"[AutoMatch] user={user_id} Starting pipeline for roles: {target_roles}")
-
-    # ── Step 1: Fetch job pool (re-fetches every 30 min) ─────────────
-    # Pool is always fetched fresh — no disk cache. force=True does NOT
-    # change this behaviour; staleness is the only trigger.
-    last_pool = meta.get("last_pool_fetch_at")
-    pool_stale = True
-    if last_pool:
-        try:
-            last_dt = datetime.fromisoformat(last_pool)
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
-            pool_stale = (datetime.now(timezone.utc) - last_dt) > timedelta(hours=STALE_HOURS)
-        except Exception:
-            pass
-
-    from services.job_fetcher import fetch_all_auto_match
-    if pool_stale:
-        logger.info("[AutoMatch] Pool stale — fetching from Greenhouse + Ashby + Lever…")
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-        raw_pool = await fetch_all_auto_match(semaphore)
-        meta["last_pool_fetch_at"] = datetime.now(timezone.utc).isoformat()
-    else:
-        logger.info("[AutoMatch] Pool fresh (< 30 min) — skipping fetch, re-using in-memory pool")
-        # On a fresh run within the window we still fetch — no disk cache exists.
-        # The "fresh" case only applies when run_auto_pipeline is called multiple
-        # times within the same server process (e.g. two users, or forced refresh).
-        # For simplicity, always fetch; the semaphore keeps it bounded.
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-        raw_pool = await fetch_all_auto_match(semaphore)
-        # Do NOT update last_pool_fetch_at — preserve the original timestamp
+    raw_pool = job_pool  # pool provided by caller — no fetch needed
+    logger.info(f"[AutoMatch] user={user_id} Starting pipeline — pool size: {len(raw_pool)}, roles: {target_roles}")
 
     # ── Step 2: Load seen + archived job IDs from DB ─────────────────
     # seen_job_ids: every job ever sent to Phase 1 for this user, regardless
@@ -799,14 +840,15 @@ async def _run_auto_pipeline_inner(
 # ── APScheduler entry point ───────────────────────────────────────────
 async def run_pipeline_for_all_users() -> None:
     """
-    Called by APScheduler every 30 minutes.
-    Runs the full auto-match pipeline for every user that has a profile
-    with target_roles set. Each user runs sequentially to avoid hammering
-    the job board APIs with concurrent multi-user fetches.
+    Called by APScheduler every 60 minutes.
 
-    Per-user lock inside run_auto_pipeline() ensures that manual refreshes
-    triggered while this background run is in progress return cached results
-    instead of starting a duplicate run.
+    Two-phase architecture:
+      Phase A — Fetch job pool ONCE from all job boards → write to job_pool.json
+      Phase B — Run per-user scoring concurrently against the shared pool
+
+    No user ever triggers a job board fetch. Only this scheduler does.
+    Per-user lock inside run_auto_pipeline() ensures manual refreshes that
+    arrive mid-run return cached results instead of starting a duplicate run.
     """
     from db.database import AsyncSessionLocal
     from models.orm import User
@@ -814,19 +856,27 @@ async def run_pipeline_for_all_users() -> None:
 
     logger.info("[Scheduler] Starting scheduled pipeline run for all users…")
 
+    # ── Phase A: Fetch job pool once ─────────────────────────────────
+    from services.job_fetcher import fetch_all_auto_match
+    try:
+        logger.info("[Scheduler] Fetching job pool from Greenhouse + Ashby + Lever…")
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+        raw_pool = await fetch_all_auto_match(semaphore)
+        logger.info(f"[Scheduler] Pool fetched: {len(raw_pool)} jobs")
+        _save_pool_to_disk(raw_pool)
+    except Exception as e:
+        logger.error(f"[Scheduler] Job pool fetch failed: {e} — aborting run")
+        return
+
+    # ── Phase B: Score all users concurrently ────────────────────────
     async with AsyncSessionLocal() as db:
         result = await db.execute(sa_select(User))
         users = result.scalars().all()
 
-    active_users = []
-    for user in users:
-        prefs = user.preferences or {}
-        if prefs.get("target_roles"):
-            active_users.append(user)
-
+    active_users = [u for u in users if (u.preferences or {}).get("target_roles")]
     logger.info(f"[Scheduler] {len(active_users)} users with target roles to process")
 
-    for user in active_users:
+    async def _run_one_user(user) -> None:
         user_id = str(user.id)
         profile = {
             "target_roles":        user.preferences.get("target_roles", []),
@@ -838,10 +888,99 @@ async def run_pipeline_for_all_users() -> None:
         try:
             async with AsyncSessionLocal() as db:
                 logger.info(f"[Scheduler] Running pipeline for user={user_id}")
-                await run_auto_pipeline(user_id=user_id, profile=profile, force=False, db=db)
+                await run_auto_pipeline(
+                    user_id=user_id,
+                    profile=profile,
+                    job_pool=raw_pool,
+                    force=False,
+                    db=db,
+                )
                 logger.info(f"[Scheduler] Pipeline complete for user={user_id}")
         except Exception as e:
             logger.error(f"[Scheduler] Pipeline failed for user={user_id}: {e}")
-            # Continue to next user — one failure doesn't block others
+            # One user failing never blocks others
+
+    # All users run concurrently — safe because each user's pipeline is fully
+    # isolated (their own resume embeddings, their own DB rows, their own locks).
+    # The shared pool is read-only — no writes, no contention.
+    await asyncio.gather(*[_run_one_user(u) for u in active_users])
 
     logger.info("[Scheduler] Scheduled pipeline run complete")
+
+
+async def run_pipeline_for_new_user(user_id: str) -> None:
+    """
+    On-demand pipeline trigger for new users completing onboarding.
+
+    Called via asyncio.create_task() from the onboarding trigger endpoint —
+    returns immediately so the user gets their Turn 5 message without waiting.
+
+    No user-facing button exists for this — it fires automatically once,
+    right after resume upload completes during onboarding.
+    Only admins can trigger it manually via the admin dashboard.
+
+    Pool strategy:
+      - If job_pool.json is fresh (< POOL_MAX_AGE_MINUTES), read from disk — instant
+      - If stale or missing, fetch fresh from job boards and write to disk
+    """
+    from db.database import AsyncSessionLocal
+    from models.orm import User
+    from sqlalchemy import select as sa_select
+
+    logger.info(f"[NewUser] On-demand pipeline triggered for user={user_id}")
+
+    # ── Load or fetch job pool ────────────────────────────────────────
+    if _is_pool_cache_fresh():
+        raw_pool = _load_pool_from_disk()
+        logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs (skipping job board fetch)")
+    else:
+        logger.info("[NewUser] Pool cache stale or missing — fetching from job boards…")
+        from services.job_fetcher import fetch_all_auto_match
+        try:
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+            raw_pool = await fetch_all_auto_match(semaphore)
+            _save_pool_to_disk(raw_pool)
+            logger.info(f"[NewUser] Pool fetched and cached: {len(raw_pool)} jobs")
+        except Exception as e:
+            logger.error(f"[NewUser] Job pool fetch failed for user={user_id}: {e}")
+            return
+
+    # ── Load user profile from DB ─────────────────────────────────────
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(sa_select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+
+        if not user:
+            logger.error(f"[NewUser] User not found in DB: user={user_id}")
+            return
+
+        prefs = user.preferences or {}
+        if not prefs.get("target_roles"):
+            logger.warning(f"[NewUser] No target_roles set for user={user_id} — skipping")
+            return
+
+        profile = {
+            "target_roles":        prefs.get("target_roles", []),
+            "preferred_locations": prefs.get("preferred_locations", []),
+            "role_aliases":        prefs.get("role_aliases", {}),
+            "include_keywords":    prefs.get("include_keywords", []),
+            "exclude_keywords":    prefs.get("exclude_keywords", []),
+        }
+    except Exception as e:
+        logger.error(f"[NewUser] Failed to load profile for user={user_id}: {e}")
+        return
+
+    # ── Run scoring pipeline for this user ───────────────────────────
+    try:
+        async with AsyncSessionLocal() as db:
+            await run_auto_pipeline(
+                user_id=user_id,
+                profile=profile,
+                job_pool=raw_pool,
+                force=False,
+                db=db,
+            )
+        logger.info(f"[NewUser] Pipeline complete for user={user_id}")
+    except Exception as e:
+        logger.error(f"[NewUser] Pipeline failed for user={user_id}: {e}")

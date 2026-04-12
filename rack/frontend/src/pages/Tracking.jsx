@@ -2370,15 +2370,17 @@ export default function Tracking() {
           </div>
         </div>
 
-        {/* ── Tab switcher — gated by role ─────────────────────── */}
-        <TabSwitcher
-          activeTab={activeTab}
-          onSwitch={setActiveTab}
-          autoCount={autoMatches.length}
-          freshCount={isPowerUser ? freshCount : 0}
-          customCount={isPowerUser ? customMatches.length : 0}
-          isPowerUser={isPowerUser}
-        />
+        {/* ── Tab switcher — power users only. Free users see no tab bar. */}
+        {isPowerUser && (
+          <TabSwitcher
+            activeTab={activeTab}
+            onSwitch={setActiveTab}
+            autoCount={autoMatches.length}
+            freshCount={isPowerUser ? freshCount : 0}
+            customCount={isPowerUser ? customMatches.length : 0}
+            isPowerUser={isPowerUser}
+          />
+        )}
 
         {/* ── Tab content ─────────────────────────────────────── */}
         {activeTab === "auto" && (

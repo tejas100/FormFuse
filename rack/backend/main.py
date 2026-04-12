@@ -39,7 +39,7 @@ async def _start_scheduler():
         scheduler.add_job(
             run_pipeline_for_all_users,
             trigger="interval",
-            minutes=30,
+            minutes=60,
             id="auto_pipeline",
             replace_existing=True,
             max_instances=1,          # Never run two scheduler jobs concurrently
@@ -51,7 +51,7 @@ async def _start_scheduler():
         import asyncio
         asyncio.create_task(run_pipeline_for_all_users())
 
-        logging.getLogger(__name__).info("[Scheduler] APScheduler started — 30-min pipeline interval")
+        logging.getLogger(__name__).info("[Scheduler] APScheduler started — 60-min pipeline interval")
         return scheduler
     except ImportError:
         logging.getLogger(__name__).warning(
