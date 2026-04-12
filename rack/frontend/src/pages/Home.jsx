@@ -914,6 +914,7 @@ export default function Home() {
 
   // ── Creature mood — derived from app state ──────────────────────
   const [creatureMood, setCreatureMood] = useState('idle')
+  const [startleCount, setStartleCount] = useState(0)
 
   // Mood transitions
   useEffect(() => {
@@ -933,11 +934,31 @@ export default function Home() {
     setCreatureMood('idle')
   }, [loading, filterLoading, jd, lastResults])
 
-  // Go to sleep after 30s of idle
+  // Real idle detection — sleep only after genuine inactivity
+  const lastActivityRef = useRef(Date.now())
+  const IDLE_SLEEP_MS = 90_000   // 90s of zero interaction → sleep
+
   useEffect(() => {
+    const bump = () => { lastActivityRef.current = Date.now() }
+    window.addEventListener('pointermove', bump, { passive: true })
+    window.addEventListener('keydown', bump, { passive: true })
+    window.addEventListener('pointerdown', bump, { passive: true })
+    return () => {
+      window.removeEventListener('pointermove', bump)
+      window.removeEventListener('keydown', bump)
+      window.removeEventListener('pointerdown', bump)
+    }
+  }, [])
+
+  useEffect(() => {
+    // Only arm the sleep timer when creature is idle
     if (creatureMood !== 'idle') return
-    const t = setTimeout(() => setCreatureMood('sleeping'), 30000)
-    return () => clearTimeout(t)
+    const iv = setInterval(() => {
+      if (Date.now() - lastActivityRef.current >= IDLE_SLEEP_MS) {
+        setCreatureMood('sleeping')
+      }
+    }, 5000) // poll every 5s — low overhead
+    return () => clearInterval(iv)
   }, [creatureMood])
 
   // ── Resume count + preferences + onboarding detection ──────────
@@ -3114,7 +3135,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           })()}
 
           {/* Creature walks along the top edge of this box */}
-          <RackCreature mood={creatureMood} />
+          <RackCreature mood={creatureMood} startle={startleCount} />
           <textarea
             ref={textareaRef}
             className="rack-chat-textarea"
@@ -3131,6 +3152,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             rows={1}
             autoFocus
             onChange={handleSlashInput}
+            onPaste={e => {
+              const text = e.clipboardData?.getData('text') || ''
+              if (text.length >= 200) {
+                setStartleCount(c => c + 1)
+              }
+            }}
             onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()

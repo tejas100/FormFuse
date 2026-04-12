@@ -216,6 +216,18 @@ function AuthenticatedAccount({ user, onSignOut }) {
   // which roles are currently fetching aliases
   const [fetchingAliases, setFetchingAliases] = useState(new Set())
   const { theme, toggleTheme } = useTheme()
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  const handleSignOutClick = () => setShowLogoutConfirm(true)
+
+  const handleLogoutConfirm = async () => {
+    setShowLogoutConfirm(false)
+    setLoggingOut(true)
+    await onSignOut()
+    // Small delay so the overlay is visible before redirect/re-render
+    setTimeout(() => setLoggingOut(false), 1200)
+  }
 
   const loadProfile = useCallback(async () => {
     try {
@@ -346,6 +358,119 @@ function AuthenticatedAccount({ user, onSignOut }) {
   const avatarUrl = user.user_metadata?.avatar_url
 
   return (
+    <>
+    {/* ── Logging-out full-screen overlay ── */}
+    {loggingOut && (
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: 'var(--bg)',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        gap: 12,
+        animation: 'fadeUp 0.3s ease both',
+      }}>
+        <style>{`
+          @keyframes rack-logout-shimmer {
+            0%   { background-position: -600px 0; }
+            100% { background-position:  600px 0; }
+          }
+          .rack-logout-shimmer-text {
+            background: linear-gradient(
+              90deg,
+              var(--text-dim) 0%,
+              var(--text) 40%,
+              var(--accent) 50%,
+              var(--text) 60%,
+              var(--text-dim) 100%
+            );
+            background-size: 600px 100%;
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: rack-logout-shimmer 1.6s ease-in-out infinite;
+          }
+        `}</style>
+        <div style={{
+          fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700,
+          letterSpacing: '-0.3px',
+        }} className="rack-logout-shimmer-text">
+          Logging out from Rack
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>Please wait…</div>
+      </div>
+    )}
+
+    {/* ── Logout confirm modal ── */}
+    {showLogoutConfirm && (
+      <div
+        onClick={() => setShowLogoutConfirm(false)}
+        style={{
+          position: 'fixed', inset: 0, zIndex: 9998,
+          background: 'rgba(0,0,0,0.55)',
+          backdropFilter: 'blur(6px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 24,
+          animation: 'fadeUp 0.2s ease both',
+        }}
+      >
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            width: '100%', maxWidth: 380,
+            background: 'var(--surface)',
+            border: '1px solid var(--border-bright)',
+            borderRadius: 20,
+            padding: '32px 28px 24px',
+            textAlign: 'center',
+            animation: 'fadeUp 0.25s ease both',
+          }}
+        >
+          <div style={{
+            fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 700,
+            color: 'var(--text)', letterSpacing: '-0.3px', marginBottom: 10,
+          }}>
+            Are you sure you<br />want to log out?
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 24, lineHeight: 1.5 }}>
+            Log out of Rack as<br />
+            <span style={{ color: 'var(--text-mid)', fontWeight: 500 }}>{user.email}</span>?
+          </div>
+          <button
+            onClick={handleLogoutConfirm}
+            style={{
+              display: 'block', width: '100%',
+              padding: '14px 24px', borderRadius: 30, border: 'none',
+              background: 'var(--danger)', color: '#fff',
+              fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15,
+              cursor: 'pointer', marginBottom: 10,
+              transition: 'opacity 0.2s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+            onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+          >
+            Log out
+          </button>
+          <button
+            onClick={() => setShowLogoutConfirm(false)}
+            style={{
+              display: 'block', width: '100%',
+              padding: '14px 24px', borderRadius: 30,
+              border: '1px solid var(--border)',
+              background: 'transparent',
+              color: 'var(--text-dim)',
+              fontFamily: 'var(--font-body)', fontSize: 14, fontWeight: 500,
+              cursor: 'pointer',
+              transition: 'background 0.2s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    )}
+
     <div style={{
       position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'flex-start',
@@ -577,7 +702,7 @@ function AuthenticatedAccount({ user, onSignOut }) {
         {/* ── Sign out ── */}
         <div style={{ textAlign: 'center', marginTop: 28, animation: 'fadeUp 0.4s ease 0.32s both' }}>
           <button
-            onClick={onSignOut}
+            onClick={handleSignOutClick}
             style={{ padding: '12px 32px', borderRadius: 30, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.2)', color: 'var(--danger)', fontFamily: 'var(--font-body)', fontSize: 14, fontWeight: 500, cursor: 'pointer', transition: 'all 0.2s' }}
           >
             Sign out
@@ -586,5 +711,6 @@ function AuthenticatedAccount({ user, onSignOut }) {
 
       </div>
     </div>
+    </>
   )
 }

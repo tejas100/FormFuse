@@ -312,7 +312,7 @@ function usePixelCanvas(grid, flip, scale = PX) {
   return ref
 }
 
-function PixelCanvas({ grid, flip, glow }) {
+function PixelCanvas({ grid, flip, glow, tickleGlow, startleGlow }) {
   const ref = usePixelCanvas(grid, flip)
   return (
     <canvas
@@ -320,10 +320,14 @@ function PixelCanvas({ grid, flip, glow }) {
       style={{
         display: 'block',
         imageRendering: 'pixelated',
-        filter: glow
+        filter: startleGlow
+          ? 'drop-shadow(0 0 10px rgba(251,146,60,0.75)) drop-shadow(0 2px 0 rgba(0,0,0,0.25))'
+          : tickleGlow
+          ? 'drop-shadow(0 0 8px rgba(249,168,212,0.7)) drop-shadow(0 2px 0 rgba(0,0,0,0.25))'
+          : glow
           ? 'drop-shadow(0 0 8px rgba(212,240,74,0.55)) drop-shadow(0 2px 0 rgba(0,0,0,0.25))'
           : 'drop-shadow(0 2px 0 rgba(0,0,0,0.22))',
-        transition: 'filter 0.25s ease',
+        transition: 'filter 0.2s ease',
       }}
     />
   )
@@ -335,6 +339,9 @@ const MESSAGES = {
   thinking: ['. . .', 'hmm...', 'thinking...', 'crunching!', 'almost!', 'big brain', 'computing', '🧠'],
   happy: ['found it!!', 'great match!', 'yay!!! :D', 'hired!!', 'boom!!', 'LETS GO!!', 'ur so good', '★★★'],
   sleeping: ['zzz...', 'zz~', '💤', '*snore*', 'dreaming~'],
+  tickle: ['hehe!!', 'stop it!!', 'hehehe :3', 'nO tickles!', '*giggle*', 'quit it!!', 'heHEHE!!', 'i cant!!', 'haha omg', 'staaahp!!'],
+  startle: ['woah!!', 'big one!!', '👀!!', 'thats a lot!', 'omg omg!!', 'so many words', '😱!!', 'hold on!!'],
+  sleepHover: ["don't. you. dare.", 'i sense u...', 'go away...', 'im warning u...', 'not now fren', '...i can hear u', 'leave me alone', 'shhhhhh!!', 'im SLEEPING', '😤 zz'],
 }
 
 function pickMessage(mood) {
@@ -406,7 +413,7 @@ function ZZZ() {
   ))
 }
 
-export default function RackCreature({ mood = 'idle' }) {
+export default function RackCreature({ mood = 'idle', startle = 0 }) {
   const wrapRef = useRef(null)
   const [maxX, setMaxX] = useState(0)
 
@@ -428,6 +435,54 @@ export default function RackCreature({ mood = 'idle' }) {
   const [bubble, setBubble] = useState(null)
   const [offsetY, setOffY] = useState(0)
   const [grid, setGrid] = useState(() => withMoodFace(MAME_IDLE_A, 'idle'))
+  const [tickled, setTickled] = useState(false)
+  const [startled, setStartled] = useState(false)
+  const tickleTimerRef = useRef(null)
+  const startleTimerRef = useRef(null)
+
+  // React to external startle signal (increments each paste)
+  const prevStartle = useRef(0)
+  useEffect(() => {
+    if (startle === 0 || startle === prevStartle.current) return
+    prevStartle.current = startle
+    if (startleTimerRef.current) clearTimeout(startleTimerRef.current)
+    setStartled(true)
+    setBubble({ text: pickMessage('startle'), color: '#fb923c' })
+    startleTimerRef.current = setTimeout(() => {
+      setStartled(false)
+      setBubble(null)
+    }, 1000)
+  }, [startle])
+  const hoverTimerRef = useRef(null)
+  const [sleepHovered, setSleepHovered] = useState(false)
+
+  const handleSleepHoverEnter = () => {
+    if (mood !== 'sleeping' || tickled) return
+    setSleepHovered(true)
+    setBubble({ text: pickMessage('sleepHover'), color: '#fbbf24' })
+  }
+
+  const handleSleepHoverLeave = () => {
+    if (!sleepHovered) return
+    setSleepHovered(false)
+    // Small delay before clearing so the bubble doesn't vanish too abruptly
+    hoverTimerRef.current = setTimeout(() => setBubble(null), 600)
+  }
+
+  const handleTickle = () => {
+    // Clear any pending tickle reset
+    if (tickleTimerRef.current) clearTimeout(tickleTimerRef.current)
+    // Clear any sleep hover state
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+    setSleepHovered(false)
+    setTickled(true)
+    // Show a tickle bubble — overrides whatever is showing
+    setBubble({ text: pickMessage('tickle'), color: '#f9a8d4' })
+    tickleTimerRef.current = setTimeout(() => {
+      setTickled(false)
+      setBubble(null)
+    }, 900)
+  }
 
   const xRef = useRef(0)
   const dirRef = useRef(1)
@@ -440,15 +495,20 @@ export default function RackCreature({ mood = 'idle' }) {
     moodRef.current = mood
   }, [mood])
 
+  // When startled or tickled, override sprite regardless of current mood
+  const effectiveMood = (startled || tickled) ? 'happy' : mood
+
   useEffect(() => {
-    const base = SPRITES[mood]?.[frame] ?? MAME_IDLE_A
-    setGrid(blink ? blinkify(base) : withMoodFace(base, mood))
-  }, [mood, frame, blink])
+    const base = SPRITES[effectiveMood]?.[frame] ?? MAME_IDLE_A
+    setGrid(blink ? blinkify(base) : withMoodFace(base, effectiveMood))
+  }, [effectiveMood, frame, blink])
 
   const prevMood = useRef(mood)
   useEffect(() => {
     if (mood === prevMood.current) return
     prevMood.current = mood
+    // Leaving sleep — clear any hover state
+    if (sleepHovered) { setSleepHovered(false) }
     const colors = {
       happy: '#d4f04a',
       thinking: '#c4b5fd',
@@ -579,6 +639,24 @@ export default function RackCreature({ mood = 'idle' }) {
           25% { opacity: 1; }
           100% { opacity: 0; transform: translateY(-22px); }
         }
+        @keyframes rackJump {
+          0%   { transform: translateY(0px)   scaleX(1);    }
+          20%  { transform: translateY(-14px) scaleX(0.88); }
+          45%  { transform: translateY(-20px) scaleX(0.82); }
+          65%  { transform: translateY(-8px)  scaleX(1.08); }
+          80%  { transform: translateY(-2px)  scaleX(1.04); }
+          100% { transform: translateY(0px)   scaleX(1);    }
+        }
+        @keyframes rackTickle {
+          0%   { transform: rotate(0deg)   translateY(0px); }
+          15%  { transform: rotate(-8deg)  translateY(-3px); }
+          30%  { transform: rotate(8deg)   translateY(-5px); }
+          45%  { transform: rotate(-6deg)  translateY(-3px); }
+          60%  { transform: rotate(6deg)   translateY(-2px); }
+          75%  { transform: rotate(-3deg)  translateY(-1px); }
+          90%  { transform: rotate(3deg)   translateY(0px); }
+          100% { transform: rotate(0deg)   translateY(0px); }
+        }
       `}</style>
 
       <div
@@ -595,17 +673,27 @@ export default function RackCreature({ mood = 'idle' }) {
         }}
       >
         <div
+          onClick={handleTickle}
+          onMouseEnter={handleSleepHoverEnter}
+          onMouseLeave={handleSleepHoverLeave}
           style={{
             position: 'absolute',
             left: 8 + x,
             bottom: 0,
             width: SW,
             transform: `translateY(${offsetY}px)`,
+            pointerEvents: 'auto',
+            cursor: mood === 'sleeping' ? 'default' : 'pointer',
+            animation: startled
+              ? 'rackJump 0.55s cubic-bezier(0.36,0.07,0.19,0.97) both'
+              : tickled
+              ? 'rackTickle 0.5s ease both'
+              : 'none',
           }}
         >
           {bubble && <Bubble text={bubble.text} color={bubble.color} />}
-          {mood === 'sleeping' && <ZZZ />}
-          <PixelCanvas grid={grid} flip={flip} glow={mood === 'happy'} />
+          {mood === 'sleeping' && !tickled && !startled && <ZZZ />}
+          <PixelCanvas grid={grid} flip={flip} glow={effectiveMood === 'happy'} tickleGlow={tickled} startleGlow={startled} />
         </div>
       </div>
     </>
