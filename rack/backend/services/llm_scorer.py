@@ -95,6 +95,39 @@ def _build_jd_summary(job: Dict, parsed_jd: Dict) -> str:
         if condensed:
             parts.append(f"KEY REQUIREMENTS EXCERPT:\n{condensed}")
 
+    # ── Seniority / people-management signal ─────────────────────────────
+    # Detect whether this role requires managing people or is a senior-leadership
+    # position. When detected, we inject an explicit signal so the LLM knows to
+    # penalize candidates who lack management / leadership evidence.
+    #
+    # Root cause of over-scoring: an IC engineer with strong impact metrics
+    # ("shipped X, improved Y by Z%") was getting 90+ on PM/TPM/Manager roles
+    # because the LLM read those metrics as PM evidence. This guard makes the
+    # seniority mismatch explicit in the prompt.
+    _mgmt_markers = [
+        "engineering manager", "eng manager", "engineering lead",
+        "technical program manager", "tpm", "program manager",
+        "product manager", "senior product manager", "staff product manager",
+        "vp of", "head of", "director of", "director,",
+        "people manager", "manages a team", "manage engineers",
+        "manage a team", "manage direct reports",
+    ]
+    _title_lower = (job.get("job_title") or job.get("title") or "").lower()
+    _desc_lower  = raw_desc.lower() if raw_desc else ""
+    _is_mgmt = any(m in _title_lower for m in _mgmt_markers) or any(
+        phrase in _desc_lower
+        for phrase in ["manage a team", "manage engineers", "manage direct reports",
+                       "people management", "line management", "direct reports"]
+    )
+    if _is_mgmt:
+        parts.append(
+            "⚠ SENIORITY FLAG: This is a people-management or senior-leadership role. "
+            "Candidates who are individual contributors (ICs) without demonstrated "
+            "people-management, program management, or leadership experience should "
+            "receive significantly lower experience_fit and trajectory_fit scores — "
+            "regardless of how strong their technical or delivery track record is."
+        )
+
     return "\n".join(parts)
 # ─────────────────────────────────────────────────────────────────
 # Patch for build resume
@@ -602,6 +635,13 @@ RECOMMENDATION MAPPING:
 - 70-84:  "Good Match"
 - 50-69:  "Partial Match"
 - 0-49:   "Weak Match"
+
+CRITICAL RULE — SENIORITY MISMATCH:
+If the job description includes a ⚠ SENIORITY FLAG, this role requires people management
+or senior leadership. A candidate who is clearly an individual contributor (IC) — no
+evidence of managing direct reports, owning programs across teams, or people leadership —
+MUST receive experience_fit ≤ 45 and trajectory_fit ≤ 50, even if their technical skills
+are strong. Strong IC delivery alone is NOT sufficient evidence for a management role.
 """
 
 async def _score_job_multi_resume(
@@ -682,6 +722,11 @@ async def _score_job_multi_resume(
                 timeout=LLM_TIMEOUT,
             )
 
+            if response.status_code == 429:
+                logger.warning(
+                    f"[LLMScorer] ⚠ OpenAI rate limit (429) for job {job_id} — falling back to hybrid"
+                )
+                raise ValueError("OpenAI rate limit")
             if response.status_code != 200:
                 logger.warning(
                     f"[LLMScorer][grouped] API {response.status_code} for job {job_id}"
@@ -740,8 +785,8 @@ async def _score_job_multi_resume(
                     base["llm_key_gaps"] = llm_result.get("key_gaps", [])
                     base["scoring_method"] = "llm+hybrid"
 
-                    logger.info(
-                        f"[LLMScorer][grouped] {base.get('resume_name')} × "
+                    logger.debug(
+                        f"[LLMScorer] {base.get('resume_name')} × "
                         f"{job.get('title', job_id)}: "
                         f"hybrid={base.get('hybrid_score')} → llm={score} "
                         f"({base['llm_recommendation']})"
@@ -757,6 +802,9 @@ async def _score_job_multi_resume(
             logger.warning(f"[LLMScorer][grouped] Unexpected error for job {job_id}: {type(e).__name__}: {e!r}")
 
     # Fallback — return all entries with hybrid scores
+    # This runs when the LLM call failed (429, timeout, parse error, etc.)
+    # Always log at WARNING so fallbacks are never silent.
+    job_title = resume_entries[0].get("job_title", job_id) if resume_entries else job_id
     fallback = []
     for entry in resume_entries:
         base = {k: v for k, v in entry.items() if k not in ("job", "resume", "parsed_jd")}
@@ -768,6 +816,10 @@ async def _score_job_multi_resume(
         base["llm_key_gaps"] = []
         base["scoring_method"] = "hybrid_only"
         fallback.append(base)
+    logger.warning(
+        f"[LLMScorer] ✗ Fallback to hybrid for '{job_title}' "
+        f"(hybrid scores: {[e.get('hybrid_score') for e in fallback]})"
+    )
     return fallback
 
 
@@ -859,8 +911,8 @@ async def llm_score_jobs_grouped(
             else:
                 llm_failed += 1
 
+    rate_limit_hint = " (check for ⚠ rate limit warnings above)" if llm_failed > llm_success else ""
     logger.info(
-        f"[LLMScorer][grouped] Complete: {llm_success} jobs LLM-scored, "
-        f"{llm_failed} hybrid fallback"
+        f"[LLMScorer] ✓ {llm_success} jobs LLM-scored · {llm_failed} hybrid fallback{rate_limit_hint}"
     )
     return enriched_groups

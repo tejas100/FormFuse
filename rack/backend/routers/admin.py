@@ -274,11 +274,69 @@ def _html_page(title: str, body: str) -> str:
       color: var(--muted);
       margin-bottom: 12px;
     }}
+
+    /* ── Scoring audit page ─────────────────────── */
+    .audit-filters {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+      align-items: center;
+    }}
+    .audit-filters input[type="text"] {{
+      background: #1e1e1e;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      padding: 5px 10px;
+      width: 260px;
+    }}
+    .audit-filters input[type="text"]:focus {{ outline: 1px solid var(--accent); }}
+    .score-cell {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .bar-wrap {{ display: flex; align-items: center; gap: 6px; justify-content: flex-end; }}
+    .bar {{ height: 3px; border-radius: 2px; min-width: 2px; }}
+    .pill-strong {{ color: var(--green);  font-size: 10px; font-weight: 700; }}
+    .pill-good   {{ color: var(--blue);   font-size: 10px; font-weight: 700; }}
+    .pill-partial {{ color: #ffaa33;      font-size: 10px; font-weight: 700; }}
+    .pill-weak   {{ color: var(--red);    font-size: 10px; font-weight: 700; }}
+    .mgmt-flag   {{ color: #ff88cc; font-size: 10px; margin-left: 4px; }}
+    .dropped-row td {{ opacity: 0.45; }}
+    details summary {{ cursor: pointer; list-style: none; }}
+    details summary::-webkit-details-marker {{ display: none; }}
+    .reasoning-box {{
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 14px;
+      font-size: 11px;
+      line-height: 1.7;
+      color: #aaa;
+      margin-top: 6px;
+      max-width: 700px;
+    }}
+    .comp-row {{ display: flex; gap: 16px; margin-top: 6px; font-size: 11px; }}
+    .comp-item span:first-child {{ color: var(--muted); }}
+    .alert-banner {{
+      background: #2a1000;
+      border: 1px solid #7a3000;
+      border-radius: 6px;
+      color: #ffaa33;
+      font-size: 12px;
+      padding: 10px 16px;
+      margin-bottom: 20px;
+    }}
   </style>
 </head>
 <body>
   <h1>⚡ RACK Admin</h1>
   <p class="subtitle">localhost only · {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</p>
+  <nav style="margin-bottom:24px;display:flex;gap:12px;font-size:11px;">
+    <a href="/admin" style="color:var(--accent);text-decoration:none;">Dashboard</a>
+    <span style="color:var(--muted);">·</span>
+    <a href="/admin/scoring-audit" style="color:var(--muted);text-decoration:none;">Scoring Audit</a>
+  </nav>
   {body}
 </body>
 </html>"""
@@ -541,3 +599,243 @@ async def unrestrict_user(
     user.is_restricted = False
     await db.commit()
     return RedirectResponse(url=f"/admin?msg={user.email}+unrestricted", status_code=303)
+
+
+# ── Scoring Audit ──────────────────────────────────────────────────────────────
+
+def _score_bar_html(score) -> str:
+    """Render a score as a number + mini color bar for the audit table."""
+    if score is None:
+        return '<span class="muted">—</span>'
+    score = int(score)
+    pct = min(100, max(0, score))
+    if pct >= 80:
+        color = "var(--green)"
+    elif pct >= 65:
+        color = "var(--blue)"
+    elif pct >= 50:
+        color = "#ffaa33"
+    else:
+        color = "var(--red)"
+    return (
+        f'<div class="bar-wrap">'
+        f'<span>{score}</span>'
+        f'<div class="bar" style="width:{max(4, pct // 2)}px;background:{color};"></div>'
+        f'</div>'
+    )
+
+
+def _rec_pill_html(rec: str) -> str:
+    if rec == "Strong Match":
+        return f'<span class="pill-strong">strong</span>'
+    if rec == "Good Match":
+        return f'<span class="pill-good">good</span>'
+    if rec == "Partial Match":
+        return f'<span class="pill-partial">partial</span>'
+    return f'<span class="pill-weak">weak</span>'
+
+
+_MGMT_TOKENS = {
+    "manager", "tpm", "program manager", "product manager",
+    "director", "vp ", "head of",
+}
+
+
+def _is_mgmt_role(title: str) -> bool:
+    t = title.lower()
+    return any(tok in t for tok in _MGMT_TOKENS)
+
+
+@router.get("/scoring-audit", response_class=HTMLResponse)
+async def scoring_audit_page(
+    request: Request,
+    user_id: str = ADMIN_USER_ID,
+    limit: int = 300,
+    filter: str = "",         # "mgmt_high" | "dropped" | ""
+    _: None = Depends(_check_auth),
+):
+    """
+    Scoring audit page — shows every LLM-scored job from the last pipeline run
+    for a given user, with phase 1 / phase 2 scores, component scores, and
+    the LLM's reasoning. Helps diagnose why Manager/PM/TPM roles are scoring high.
+
+    Query params:
+      user_id  — UUID of the user to inspect (defaults to ADMIN_USER_ID)
+      limit    — max records to load (default 300, newest first)
+      filter   — "mgmt_high" shows only mgmt roles ≥70; "dropped" shows only
+                 jobs that didn't pass MIN_SCORE; "" shows all
+    """
+    _check_localhost(request)
+
+    from services.auto_match import get_scoring_audit
+
+    records = get_scoring_audit(user_id, limit=limit)
+
+    # ── Summary stats ──────────────────────────────────────────────────
+    total        = len(records)
+    passed       = sum(1 for r in records if r.get("passed_min_score"))
+    dropped      = total - passed
+    avg_p2       = round(sum(r.get("phase2_score", 0) for r in records) / total) if total else 0
+    mgmt_high    = [r for r in records if _is_mgmt_role(r.get("job_title", "")) and (r.get("phase2_score") or 0) >= 70]
+
+    # ── Apply filter ───────────────────────────────────────────────────
+    if filter == "mgmt_high":
+        view_records = mgmt_high
+        filter_label = f"management / leadership roles scored ≥ 70 ({len(view_records)})"
+    elif filter == "dropped":
+        view_records = [r for r in records if not r.get("passed_min_score")]
+        filter_label = f"dropped (below MIN_SCORE) ({len(view_records)})"
+    else:
+        view_records = records
+        filter_label = f"all scored jobs ({total})"
+
+    # ── Alert banner ───────────────────────────────────────────────────
+    alert_html = ""
+    if mgmt_high:
+        alert_html = (
+            f'<div class="alert-banner">'
+            f'⚠  {len(mgmt_high)} management / leadership role(s) scored ≥ 70 — '
+            f'these may be false positives. '
+            f'<a href="/admin/scoring-audit?user_id={user_id}&filter=mgmt_high" '
+            f'style="color:inherit;text-decoration:underline;">View only these →</a>'
+            f'</div>'
+        )
+
+    # ── Filter bar ─────────────────────────────────────────────────────
+    def _flink(label, f):
+        active = "color:var(--accent);" if f == filter else ""
+        return f'<a href="/admin/scoring-audit?user_id={user_id}&filter={f}" style="color:var(--muted);text-decoration:none;{active}">{label}</a>'
+
+    filter_bar = (
+        f'<div class="audit-filters">'
+        f'{_flink("All", "")} &nbsp;·&nbsp; '
+        f'{_flink("⚠ Mgmt ≥70", "mgmt_high")} &nbsp;·&nbsp; '
+        f'{_flink("Dropped", "dropped")}'
+        f'<span style="margin-left:auto;color:var(--muted);font-size:11px;">showing {filter_label}</span>'
+        f'</div>'
+    )
+
+    # ── Stats row ──────────────────────────────────────────────────────
+    stats_html = f"""
+    <div class="stats-row">
+      <div class="stat-card">
+        <span class="num">{total}</span>
+        <span class="label">Total scored</span>
+      </div>
+      <div class="stat-card">
+        <span class="num" style="color:var(--green)">{passed}</span>
+        <span class="label">Passed MIN_SCORE</span>
+      </div>
+      <div class="stat-card">
+        <span class="num" style="color:var(--muted)">{dropped}</span>
+        <span class="label">Dropped</span>
+      </div>
+      <div class="stat-card">
+        <span class="num">{avg_p2}</span>
+        <span class="label">Avg LLM score</span>
+      </div>
+      <div class="stat-card" style="{'border-color:#7a3000;' if mgmt_high else ''}">
+        <span class="num" style="color:{'#ffaa33' if mgmt_high else 'var(--muted)'}">{len(mgmt_high)}</span>
+        <span class="label">Mgmt roles ≥70 ⚠</span>
+      </div>
+    </div>"""
+
+    # ── User switcher ──────────────────────────────────────────────────
+    user_switcher = f"""
+    <form method="GET" action="/admin/scoring-audit"
+          style="display:flex;gap:8px;align-items:center;margin-bottom:20px;">
+      <label style="font-size:11px;color:var(--muted);">User ID</label>
+      <input type="text" name="user_id" value="{user_id}"
+             style="background:#1e1e1e;border:1px solid var(--border);border-radius:4px;
+                    color:var(--text);font-family:inherit;font-size:12px;padding:5px 10px;width:320px;" />
+      <input type="hidden" name="limit" value="{limit}" />
+      <button type="submit" class="btn-primary">Load</button>
+      <span style="font-size:11px;color:var(--muted);">· newest {limit} records</span>
+    </form>"""
+
+    # ── Table rows ─────────────────────────────────────────────────────
+    if not view_records:
+        table_html = '<p class="muted" style="padding:20px 0;">No records match this filter.</p>'
+    else:
+        rows_html = ""
+        for r in view_records:
+            title    = r.get("job_title", "—")
+            company  = r.get("company", "")
+            location = r.get("location", "")
+            p1       = r.get("phase1_score")
+            p2       = r.get("phase2_score")
+            sf       = r.get("skills_fit")
+            ef       = r.get("experience_fit")
+            evf      = r.get("evidence_fit")
+            rec      = r.get("llm_recommendation", "")
+            passed_r = r.get("passed_min_score", False)
+            method   = r.get("scoring_method", "")
+            resume   = r.get("resume_name", "")
+            run_at   = r.get("run_at", "")
+            reasoning = r.get("llm_reasoning", "").replace("<", "&lt;").replace(">", "&gt;")
+            strengths = r.get("key_strengths", [])
+            gaps      = r.get("key_gaps", [])
+            mgmt_flag = '<span class="mgmt-flag">mgmt</span>' if _is_mgmt_role(title) else ""
+            row_class = "" if passed_r else "dropped-row"
+
+            # Expand details via <details>/<summary>
+            strengths_html = "".join(f"<li>{s}</li>" for s in strengths) if strengths else ""
+            gaps_html      = "".join(f"<li>{g}</li>" for g in gaps) if gaps else ""
+            detail_inner   = ""
+            if reasoning:
+                detail_inner += f'<div class="reasoning-box">{reasoning}</div>'
+            if strengths_html or gaps_html:
+                detail_inner += f'<div class="comp-row" style="margin-top:8px;">'
+                if strengths_html:
+                    detail_inner += f'<div><span style="color:var(--green);">+ strengths</span><ul style="margin:4px 0 0 14px;font-size:11px;color:#aaa;">{strengths_html}</ul></div>'
+                if gaps_html:
+                    detail_inner += f'<div><span style="color:var(--red);">– gaps</span><ul style="margin:4px 0 0 14px;font-size:11px;color:#aaa;">{gaps_html}</ul></div>'
+                detail_inner += '</div>'
+
+            detail_html = (
+                f'<details><summary style="font-size:10px;color:var(--muted);user-select:none;">'
+                f'▶ reasoning</summary>{detail_inner}</details>'
+            ) if detail_inner else ""
+
+            run_short = run_at[11:16] + " · " + run_at[:10] if len(run_at) >= 16 else run_at
+
+            rows_html += f"""
+            <tr class="{row_class}">
+              <td class="mono" style="white-space:nowrap;font-size:10px;">{run_short}</td>
+              <td>
+                <div>{title}{mgmt_flag}</div>
+                <div class="muted" style="font-size:11px;">{company}{' · ' + location if location else ''}</div>
+                {detail_html}
+              </td>
+              <td class="score-cell">{_score_bar_html(p1)}</td>
+              <td class="score-cell">{_score_bar_html(p2)}</td>
+              <td class="score-cell">{_score_bar_html(sf)}</td>
+              <td class="score-cell">{_score_bar_html(ef)}</td>
+              <td class="score-cell">{_score_bar_html(evf)}</td>
+              <td>{_rec_pill_html(rec)}</td>
+              <td style="text-align:center;font-size:14px;">{'<span style="color:var(--green)">✓</span>' if passed_r else '<span style="color:var(--muted)">✗</span>'}</td>
+              <td class="muted" style="font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{resume}</td>
+            </tr>"""
+
+        table_html = f"""
+        <p class="section-title">Scored jobs — {filter_label}</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Job</th>
+              <th>P1</th>
+              <th>P2 (LLM)</th>
+              <th>Skills</th>
+              <th>Exp fit</th>
+              <th>Evidence</th>
+              <th>Verdict</th>
+              <th>Stored</th>
+              <th>Resume</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table>"""
+
+    body = stats_html + alert_html + user_switcher + filter_bar + table_html
+    return HTMLResponse(_html_page("Scoring Audit", body))

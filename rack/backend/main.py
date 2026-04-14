@@ -22,6 +22,17 @@ file_handler.setFormatter(logging.Formatter(
 logging.getLogger().addHandler(file_handler)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Suppress noisy third-party loggers ───────────────────────────────────────
+# httpx logs every single HTTP request at INFO — kills readability
+# sentence_transformers + huggingface_hub log model load chatter + HF pings
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
+logging.getLogger("faiss.loader").setLevel(logging.WARNING)
+# ─────────────────────────────────────────────────────────────────────────────
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -47,9 +58,10 @@ async def _start_scheduler():
         )
         scheduler.start()
 
-        # Fire once immediately on startup so users don't wait 30 min for first run
-        import asyncio
-        asyncio.create_task(run_pipeline_for_all_users())
+        # NOTE: No immediate fire on startup.
+        # Pipeline runs on its 60-min schedule only.
+        # To trigger manually: visit /admin and use the Run Now button,
+        # or promote a user to pro and hit Refresh in the Tracking tab.
 
         logging.getLogger(__name__).info("[Scheduler] APScheduler started — 60-min pipeline interval")
         return scheduler

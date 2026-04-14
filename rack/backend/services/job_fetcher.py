@@ -264,11 +264,14 @@ async def fetch_greenhouse(board_token: str) -> list[dict]:
     board_token examples: openai, stripe, notion, anthropic, ramp
     """
     url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs?content=true"
-    logger.info(f"[Greenhouse] Fetching jobs from: {board_token}")
+    logger.debug(f"[Greenhouse] Fetching: {board_token}")
 
     try:
         async with httpx.AsyncClient(timeout=FETCH_TIMEOUT) as client:
             resp = await client.get(url)
+            if resp.status_code == 404:
+                logger.debug(f"[Greenhouse] 404 (dead slug): {board_token}")
+                return []
             resp.raise_for_status()
             data = resp.json()
 
@@ -300,14 +303,15 @@ async def fetch_greenhouse(board_token: str) -> list[dict]:
                 department=dept,
             ))
 
-        logger.info(f"[Greenhouse] {board_token}: {len(jobs)} jobs fetched")
+        if jobs:
+            logger.debug(f"[Greenhouse] {board_token}: {len(jobs)} jobs")
         return jobs
 
     except httpx.HTTPStatusError as e:
-        logger.error(f"[Greenhouse] {board_token} HTTP {e.response.status_code}: {e}")
+        logger.debug(f"[Greenhouse] {board_token} HTTP {e.response.status_code}")
         return []
     except Exception as e:
-        logger.error(f"[Greenhouse] {board_token} error: {e}")
+        logger.warning(f"[Greenhouse] {board_token} error: {e}")
         return []
 
 
@@ -318,7 +322,7 @@ async def fetch_lever(company: str) -> list[dict]:
     GET https://api.lever.co/v0/postings/{company}
     """
     url = f"https://api.lever.co/v0/postings/{company}"
-    logger.info(f"[Lever] Fetching jobs from: {company}")
+    logger.debug(f"[Lever] Fetching: {company}")
 
     try:
         async with httpx.AsyncClient(timeout=FETCH_TIMEOUT) as client:
@@ -359,14 +363,15 @@ async def fetch_lever(company: str) -> list[dict]:
                 commitment=cats.get("commitment", ""),
             ))
 
-        logger.info(f"[Lever] {company}: {len(jobs)} jobs fetched")
+        if jobs:
+            logger.debug(f"[Lever] {company}: {len(jobs)} jobs")
         return jobs
 
     except httpx.HTTPStatusError as e:
-        logger.error(f"[Lever] {company} HTTP {e.response.status_code}: {e}")
+        logger.debug(f"[Lever] {company} HTTP {e.response.status_code}")
         return []
     except Exception as e:
-        logger.error(f"[Lever] {company} error: {e}")
+        logger.warning(f"[Lever] {company} error: {e}")
         return []
 
 
@@ -442,7 +447,7 @@ async def fetch_ashby(slug: str) -> list[dict]:
     slug examples: openai, perplexity, linear, groq
     """
     url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
-    logger.info(f"[Ashby] Fetching jobs from: {slug}")
+    logger.debug(f"[Ashby] Fetching: {slug}")
 
     try:
         async with httpx.AsyncClient(timeout=FETCH_TIMEOUT) as client:
@@ -486,14 +491,15 @@ async def fetch_ashby(slug: str) -> list[dict]:
                 department=dept,
             ))
 
-        logger.info(f"[Ashby] {slug}: {len(jobs)} jobs fetched")
+        if jobs:
+            logger.debug(f"[Ashby] {slug}: {len(jobs)} jobs")
         return jobs
 
     except httpx.HTTPStatusError as e:
-        logger.error(f"[Ashby] {slug} HTTP {e.response.status_code}: {e}")
+        logger.debug(f"[Ashby] {slug} HTTP {e.response.status_code}")
         return []
     except Exception as e:
-        logger.error(f"[Ashby] {slug} error: {e}")
+        logger.warning(f"[Ashby] {slug} error: {e}")
         return []
 
 
@@ -509,21 +515,50 @@ async def fetch_all_auto_match(semaphore: asyncio.Semaphore) -> list[dict]:
         async with semaphore:
             return await coro
 
-    tasks = (
-        [_guarded(fetch_greenhouse(token)) for token in GREENHOUSE_COMPANIES]
-        + [_guarded(fetch_ashby(slug))     for slug   in ASHBY_COMPANIES]
-        + [_guarded(fetch_lever(company))  for company in LEVER_COMPANIES]
-    )
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    gh_count   = len(GREENHOUSE_COMPANIES)
+    ashby_count = len(ASHBY_COMPANIES)
+    lever_count = len(LEVER_COMPANIES)
+    total_companies = gh_count + ashby_count + lever_count
+
+    gh_tasks    = [_guarded(fetch_greenhouse(token)) for token in GREENHOUSE_COMPANIES]
+    ashby_tasks = [_guarded(fetch_ashby(slug))       for slug   in ASHBY_COMPANIES]
+    lever_tasks = [_guarded(fetch_lever(company))    for company in LEVER_COMPANIES]
+
+    all_tasks = gh_tasks + ashby_tasks + lever_tasks
+    results = await asyncio.gather(*all_tasks, return_exceptions=True)
 
     all_jobs = []
-    total_companies = len(GREENHOUSE_COMPANIES) + len(ASHBY_COMPANIES) + len(LEVER_COMPANIES)
-    failed = 0
-    for r in results:
+    dead_gh, dead_ashby, dead_lever = [], [], []
+    alive_sources = 0
+
+    for i, r in enumerate(results):
         if isinstance(r, Exception):
-            failed += 1
+            # Classify which source this was
+            if i < gh_count:
+                dead_gh.append(GREENHOUSE_COMPANIES[i])
+            elif i < gh_count + ashby_count:
+                dead_ashby.append(ASHBY_COMPANIES[i - gh_count])
+            else:
+                dead_lever.append(LEVER_COMPANIES[i - gh_count - ashby_count])
         elif isinstance(r, list):
+            if r:
+                alive_sources += 1
             all_jobs.extend(r)
+
+    # Dead slugs returned empty lists (404s) — those aren't exceptions, just 0 jobs.
+    # Count sources that actually returned jobs vs those that returned nothing.
+    empty_sources = total_companies - alive_sources - (len(dead_gh) + len(dead_ashby) + len(dead_lever))
+
+    logger.info(
+        f"[AutoMatch] Pool fetch: {len(all_jobs)} jobs · "
+        f"{alive_sources}/{total_companies} sources live · "
+        f"{empty_sources} returned 0 jobs · "
+        f"{len(dead_gh) + len(dead_ashby) + len(dead_lever)} errored"
+    )
+    if dead_gh:
+        logger.warning(f"[AutoMatch] Dead GH slugs ({len(dead_gh)}): {', '.join(dead_gh)}")
+    if dead_ashby:
+        logger.warning(f"[AutoMatch] Dead Ashby slugs ({len(dead_ashby)}): {', '.join(dead_ashby)}")
 
     # YC auto-discovery: probe hiring YC companies not in hardcoded lists
     # Runs concurrently with the main fetch but logged separately
@@ -535,7 +570,7 @@ async def fetch_all_auto_match(semaphore: asyncio.Semaphore) -> list[dict]:
 
     logger.info(
         f"[AutoMatch] Pool fetch complete: {len(all_jobs)} jobs from "
-        f"{total_companies - failed}/{total_companies} sources ({failed} failed)"
+        f"{total_companies - len(dead_gh) - len(dead_ashby) - len(dead_lever)}/{total_companies} sources ({len(dead_gh) + len(dead_ashby) + len(dead_lever)} failed)"
     )
     return all_jobs
 

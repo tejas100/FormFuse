@@ -253,7 +253,7 @@ async def _save_results_to_db(
         await db.execute(stmt)
 
     await db.commit()
-    logger.info(f"[AutoMatch] user={user_id} Upserted {len(entries)} job rows to DB")
+    logger.debug(f"[AutoMatch] user={user_id} Upserted {len(entries)} job rows to DB")
 
 
 async def _load_results_from_db(
@@ -370,7 +370,7 @@ async def _mark_jobs_seen(
         await db.execute(stmt)
 
     await db.commit()
-    logger.info(f"[AutoMatch] Marked {len(job_ids)} job(s) as seen in DB")
+    logger.debug(f"[AutoMatch] Marked {len(job_ids)} job(s) as seen in DB")
 
 
 # ── Legacy shim — kept for watchlist/custom-search callers ───────────
@@ -388,6 +388,105 @@ def _load_archived_ids_for_user(user_id: str) -> set:
     """Legacy — reads archived IDs from meta JSON. No longer used by main pipeline."""
     meta = _load_auto_meta_for_user(user_id)
     return set(meta.get("archived_job_ids", []))
+
+
+# ── Scoring audit log ─────────────────────────────────────────────────
+# Per-user JSONL file: one JSON object per line, one line per scored job.
+# Written after every pipeline run. Used to diagnose scoring quality:
+#   - Why did a PM/Manager role get a 90?
+#   - What did Phase 1 hybrid score vs Phase 2 LLM score for each job?
+#   - Which jobs cleared MIN_SCORE and which were dropped?
+#
+# Format: uploads/watchlist/{user_id}_audit.jsonl
+# Each line: { job_id, job_title, company, phase1_score, phase2_score,
+#              skills_fit, experience_fit, evidence_fit, llm_reasoning,
+#              passed_min_score, scoring_method, run_at }
+#
+# Audit file grows indefinitely — truncate manually or add rotation later.
+# Reading: `cat {user_id}_audit.jsonl | python -m json.tool` (one line at a time)
+# Or query via GET /api/admin/scoring-audit?user_id=...
+
+def _audit_path(user_id: str) -> str:
+    return os.path.join(WATCHLIST_DIR, f"{user_id}_audit.jsonl")
+
+
+def _write_scoring_audit(user_id: str, by_job: dict, min_score: int) -> None:
+    """
+    Append one audit record per scored job to the user's JSONL audit log.
+
+    Args:
+        user_id: The user's UUID string
+        by_job:  { job_id → best_entry_dict } — output of Step 9 in the pipeline.
+                 Each entry has hybrid_score, llm_score, llm_components, llm_reasoning,
+                 scoring_method, job_title, company.
+        min_score: The MIN_SCORE threshold used this run (for context in the log)
+    """
+    if not by_job:
+        return
+
+    os.makedirs(WATCHLIST_DIR, exist_ok=True)
+    run_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with open(_audit_path(user_id), "a") as f:
+            for job_id, pair in by_job.items():
+                llm_score = pair.get("llm_score", pair.get("hybrid_score", 0))
+                components = pair.get("llm_components", {})
+                record = {
+                    "run_at":          run_at,
+                    "job_id":          job_id,
+                    "job_title":       pair.get("job_title", ""),
+                    "company":         pair.get("company", ""),
+                    "location":        pair.get("location", ""),
+                    "phase1_score":    pair.get("hybrid_score", 0),
+                    "phase2_score":    llm_score,
+                    "skills_fit":      components.get("skills_fit"),
+                    "experience_fit":  components.get("experience_fit"),
+                    "evidence_fit":    components.get("evidence_fit"),
+                    "llm_reasoning":   pair.get("llm_reasoning", ""),
+                    "llm_recommendation": pair.get("llm_recommendation", ""),
+                    "key_strengths":   pair.get("llm_key_strengths", []),
+                    "key_gaps":        pair.get("llm_key_gaps", []),
+                    "passed_min_score": llm_score >= min_score,
+                    "scoring_method":  pair.get("scoring_method", "hybrid_only"),
+                    "resume_name":     pair.get("resume_name", ""),
+                }
+                f.write(json.dumps(record) + "\n")
+        logger.debug(f"[AutoMatch] Audit: wrote {len(by_job)} records → {_audit_path(user_id)}")
+    except Exception as e:
+        logger.warning(f"[AutoMatch] Audit write failed for user={user_id}: {e}")
+
+
+def _read_scoring_audit(user_id: str, limit: int = 200) -> list:
+    """
+    Read the most recent N audit records for a user, newest first.
+    Returns empty list if no audit file exists.
+    """
+    path = _audit_path(user_id)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+        records = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        # Newest first — lines are appended chronologically
+        records.reverse()
+        return records[:limit]
+    except Exception as e:
+        logger.warning(f"[AutoMatch] Audit read failed for user={user_id}: {e}")
+        return []
+
+
+def get_scoring_audit(user_id: str, limit: int = 200) -> list:
+    """Public accessor for the scoring audit log — used by the admin endpoint."""
+    return _read_scoring_audit(user_id, limit=limit)
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────
@@ -523,7 +622,7 @@ async def _run_auto_pipeline_inner(
     archived_result = await db.execute(archived_stmt)
     archived_ids: set[str] = {r[0] for r in archived_result.fetchall()}
 
-    logger.info(
+    logger.debug(
         f"[AutoMatch] user={user_id} DB state: "
         f"{len(seen_job_ids_set)} already seen, {len(archived_ids)} archived"
     )
@@ -537,7 +636,7 @@ async def _run_auto_pipeline_inner(
         j for j in raw_pool
         if _role_matches_title(j["title"], target_roles, role_aliases)
     ]
-    logger.info(
+    logger.debug(
         f"[AutoMatch] user={user_id} {len(role_matched)} jobs matched target roles "
         f"from pool of {len(raw_pool)}"
     )
@@ -560,7 +659,7 @@ async def _run_auto_pipeline_inner(
             if matches_any_preferred_location(loc, preferred_locations):
                 location_filtered.append(j)
         role_matched = location_filtered
-        logger.info(
+        logger.debug(
             f"[AutoMatch] user={user_id} {len(role_matched)} jobs after location filter "
             f"({before - len(role_matched)} excluded)"
         )
@@ -576,7 +675,7 @@ async def _run_auto_pipeline_inner(
         and j["job_id"] not in seen_job_ids_set
     ]
 
-    logger.info(
+    logger.debug(
         f"[AutoMatch] user={user_id} {len(truly_new)} new jobs to score "
         f"({len(role_matched) - len(truly_new)} already seen or archived — skipped)"
     )
@@ -629,7 +728,7 @@ async def _run_auto_pipeline_inner(
 
     total_new = len(new_sorted)
     num_batches = math.ceil(total_new / BATCH_SIZE)  # kept for stats only
-    logger.info(
+    logger.debug(
         f"[AutoMatch] user={user_id} Phase 1: scoring {total_new} new jobs "
         f"concurrently (max {PHASE1_CONCURRENCY} at a time)…"
     )
@@ -743,7 +842,7 @@ async def _run_auto_pipeline_inner(
         for job_id, entries in phase1_groups.items()
     }
     trimmed_pairs = sum(len(v) for v in phase1_groups_trimmed.values())
-    logger.info(
+    logger.debug(
         f"[AutoMatch] user={user_id} Phase 2: LLM scoring {len(phase1_groups_trimmed)} jobs "
         f"({trimmed_pairs} pairs after capping to top {MAX_RESUMES_PER_JOB} resumes/job)…"
     )
@@ -754,6 +853,12 @@ async def _run_auto_pipeline_inner(
     for job_id, entries in llm_scored_groups.items():
         best = max(entries, key=lambda e: e.get("llm_score", 0))
         by_job[job_id] = best
+
+    # ── Scoring audit — write BEFORE MIN_SCORE filter ─────────────────
+    # Audit captures ALL LLM-scored jobs, including those dropped by MIN_SCORE.
+    # This is the key diagnostic: you can see jobs that scored 45 and were
+    # correctly dropped, as well as jobs that scored 90 that shouldn't have.
+    _write_scoring_audit(user_id, by_job, MIN_SCORE)
 
     # ── Step 10: Build final entries ──────────────────────────────────
     new_entries = []
@@ -858,6 +963,7 @@ async def run_pipeline_for_all_users() -> None:
 
     # ── Phase A: Fetch job pool once ─────────────────────────────────
     from services.job_fetcher import fetch_all_auto_match
+    t0 = datetime.now(timezone.utc)
     try:
         logger.info("[Scheduler] Fetching job pool from Greenhouse + Ashby + Lever…")
         semaphore = asyncio.Semaphore(MAX_CONCURRENT)
@@ -876,6 +982,8 @@ async def run_pipeline_for_all_users() -> None:
     active_users = [u for u in users if (u.preferences or {}).get("target_roles")]
     logger.info(f"[Scheduler] {len(active_users)} users with target roles to process")
 
+    user_results: dict[str, dict] = {}  # user_id → stats dict
+
     async def _run_one_user(user) -> None:
         user_id = str(user.id)
         profile = {
@@ -887,25 +995,44 @@ async def run_pipeline_for_all_users() -> None:
         }
         try:
             async with AsyncSessionLocal() as db:
-                logger.info(f"[Scheduler] Running pipeline for user={user_id}")
-                await run_auto_pipeline(
+                result = await run_auto_pipeline(
                     user_id=user_id,
                     profile=profile,
                     job_pool=raw_pool,
                     force=False,
                     db=db,
                 )
-                logger.info(f"[Scheduler] Pipeline complete for user={user_id}")
+                user_results[user_id] = result.get("stats", {})
         except Exception as e:
             logger.error(f"[Scheduler] Pipeline failed for user={user_id}: {e}")
-            # One user failing never blocks others
+            user_results[user_id] = {"error": str(e)}
 
     # All users run concurrently — safe because each user's pipeline is fully
     # isolated (their own resume embeddings, their own DB rows, their own locks).
     # The shared pool is read-only — no writes, no contention.
     await asyncio.gather(*[_run_one_user(u) for u in active_users])
 
-    logger.info("[Scheduler] Scheduled pipeline run complete")
+    elapsed = round((datetime.now(timezone.utc) - t0).total_seconds())
+
+    # ── Clean run summary ─────────────────────────────────────────────
+    logger.info("━" * 60)
+    logger.info(f"[Scheduler] ✓ Run complete in {elapsed}s — {len(raw_pool)} jobs in pool")
+    for user in active_users:
+        uid = str(user.id)
+        s = user_results.get(uid, {})
+        if "error" in s:
+            logger.warning(f"[Scheduler]   ✗ {user.email or uid[:8]}: ERROR — {s['error']}")
+        elif s.get("from_cache"):
+            logger.info(f"[Scheduler]   ↩ {user.email or uid[:8]}: served from cache")
+        else:
+            new_j  = s.get("new_jobs", 0)
+            llm_ok = s.get("llm_scored", 0)
+            stored = s.get("new_processed", 0)
+            logger.info(
+                f"[Scheduler]   ✓ {user.email or uid[:8]}: "
+                f"{new_j} new jobs → {llm_ok} LLM-scored → {stored} stored"
+            )
+    logger.info("━" * 60)
 
 
 async def run_pipeline_for_new_user(user_id: str) -> None:
