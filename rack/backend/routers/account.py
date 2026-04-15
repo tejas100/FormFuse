@@ -41,6 +41,7 @@ DEFAULT_PREFERENCES = {
 
 
 class ProfileUpdate(BaseModel):
+    # Job preferences
     target_roles: Optional[list[str]] = None
     preferred_locations: Optional[list[str]] = None
     min_years: Optional[int] = None
@@ -48,6 +49,16 @@ class ProfileUpdate(BaseModel):
     include_keywords: Optional[list[str]] = None
     exclude_keywords: Optional[list[str]] = None
     role_aliases: Optional[dict[str, list[str]]] = None
+    # Application profile
+    phone: Optional[str] = None
+    linkedin: Optional[str] = None
+    github: Optional[str] = None
+    website: Optional[str] = None
+    work_auth: Optional[str] = None               # "yes" | "no"
+    requires_sponsorship: Optional[str] = None    # "yes" | "no"
+    gender_eeo: Optional[str] = None              # "male"|"female"|"non_binary"|"decline"
+    veteran_status: Optional[str] = None          # "protected_veteran"|"not_a_veteran"|"decline"
+    disability_status: Optional[str] = None       # "yes"|"no"|"decline"
 
 
 class RoleAliasRequest(BaseModel):
@@ -77,15 +88,33 @@ async def save_profile(
     db: AsyncSession = Depends(get_db),
 ):
     """Persist the current user's preferences to the DB."""
-    new_prefs = {
-        "target_roles": req.target_roles or [],
-        "preferred_locations": req.preferred_locations or [],
-        "min_years": req.min_years,
-        "max_years": req.max_years,
-        "include_keywords": req.include_keywords or [],
-        "exclude_keywords": req.exclude_keywords or [],
-        "role_aliases": req.role_aliases or {},
-    }
+    # Read existing prefs so we never wipe keys we don't know about
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user_row = result.scalar_one_or_none()
+    existing = user_row.preferences or {}
+
+    # Build update dict — only overwrite keys that were explicitly sent
+    updates = {}
+    # Job preferences
+    if req.target_roles        is not None: updates["target_roles"]        = req.target_roles
+    if req.preferred_locations is not None: updates["preferred_locations"]  = req.preferred_locations
+    if req.min_years           is not None: updates["min_years"]            = req.min_years
+    if req.max_years           is not None: updates["max_years"]            = req.max_years
+    if req.include_keywords    is not None: updates["include_keywords"]     = req.include_keywords
+    if req.exclude_keywords    is not None: updates["exclude_keywords"]     = req.exclude_keywords
+    if req.role_aliases        is not None: updates["role_aliases"]         = req.role_aliases
+    # Application profile — allow empty string to clear a field
+    if req.phone               is not None: updates["phone"]                = req.phone
+    if req.linkedin            is not None: updates["linkedin"]             = req.linkedin
+    if req.github              is not None: updates["github"]               = req.github
+    if req.website             is not None: updates["website"]              = req.website
+    if req.work_auth           is not None: updates["work_auth"]            = req.work_auth
+    if req.requires_sponsorship is not None: updates["requires_sponsorship"] = req.requires_sponsorship
+    if req.gender_eeo          is not None: updates["gender_eeo"]           = req.gender_eeo
+    if req.veteran_status      is not None: updates["veteran_status"]       = req.veteran_status
+    if req.disability_status   is not None: updates["disability_status"]    = req.disability_status
+
+    new_prefs = {**existing, **updates}
 
     await db.execute(
         update(User)
@@ -94,7 +123,7 @@ async def save_profile(
     )
     await db.commit()
 
-    logger.info(f"Preferences saved for user {current_user.id}")
+    logger.info(f"Preferences saved for user {current_user.id}: {list(updates.keys())}")
     return new_prefs
 
 

@@ -14,7 +14,7 @@
  *   company  — string — shown in header
  */
 
-export default function ApplyAgentCard({ steps, loading, error, done, jobTitle, company }) {
+export default function ApplyAgentCard({ steps, loading, error, done, submitted, jobTitle, company }) {
 
   const statusIcon = (status) => {
     if (status === 'ok')      return <span style={{ fontSize: '12px', color: 'var(--accent3)' }}>✓</span>
@@ -77,7 +77,7 @@ export default function ApplyAgentCard({ steps, loading, error, done, jobTitle, 
             ))}
           </div>
         )}
-        {done && !loading && (
+        {(submitted || done) && !loading && (
           <span style={{ fontSize: '14px', color: 'var(--accent3)' }}>✓</span>
         )}
         {error && !loading && (
@@ -85,7 +85,7 @@ export default function ApplyAgentCard({ steps, loading, error, done, jobTitle, 
         )}
         <div>
           <span style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500 }}>
-            {done ? 'Application filled' : loading ? 'Auto-applying…' : 'Apply agent'}
+            {submitted ? 'Submitted' : done ? 'Application filled' : loading ? 'Auto-applying…' : 'Apply agent'}
           </span>
           {(jobTitle || company) && (
             <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, marginLeft: '6px' }}>
@@ -133,8 +133,33 @@ export default function ApplyAgentCard({ steps, loading, error, done, jobTitle, 
         </div>
       )}
 
-      {/* ── Done state ── */}
-      {done && !loading && (
+      {/* ── Submitted state ── */}
+      {submitted && !loading && (
+        <div style={{
+          padding: '12px 14px',
+          borderRadius: '10px',
+          background: 'rgba(52,211,153,0.06)',
+          border: '1px solid rgba(52,211,153,0.18)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+        }}>
+          <div style={{ fontSize: '13px', color: 'var(--accent3)', fontWeight: 500 }}>
+            ✓ Applied to {company || 'this company'}
+          </div>
+          {submitted.confirmation && (
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 300 }}>
+              Confirmation: {submitted.confirmation}
+            </div>
+          )}
+          <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 300 }}>
+            Marked as applied in your Tracking tab.
+          </div>
+        </div>
+      )}
+
+      {/* ── Done state (filled but submit not confirmed) ── */}
+      {done && !submitted && !loading && (
         <div style={{
           padding: '12px 14px',
           borderRadius: '10px',

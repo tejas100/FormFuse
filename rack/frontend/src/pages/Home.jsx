@@ -1886,6 +1886,19 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     setApplyLoading(true)
 
+    // Show warning shimmer once per browser session before any apply fires
+    const hasShownWarning = sessionStorage.getItem('rack_apply_warned')
+    if (!hasShownWarning) {
+      const warnId = Date.now()
+      setMessages(prev => [...prev, {
+        id: warnId,
+        isApplyWarning: true,
+        loading: false,
+      }])
+      sessionStorage.setItem('rack_apply_warned', '1')
+      await new Promise(r => setTimeout(r, 2200))
+    }
+
     for (const job of applyJobs) {
       const msgId    = Date.now() + Math.random()
       const jobTitle = job.job_title || 'Unknown Role'
@@ -1925,6 +1938,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             job_title: jobTitle,
             company:   company,
             resume_id: resumeId,
+            job_id:    job.job_id || null,
           }),
         })
 
@@ -1957,6 +1971,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             if (event.type === 'step') {
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applySteps: [...(m.applySteps || []), event] }
+                : m
+              ))
+            } else if (event.type === 'submitted') {
+              const { type, ...submittedData } = event
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applySubmitted: submittedData, loading: false }
                 : m
               ))
             } else if (event.type === 'done') {
@@ -2463,6 +2483,24 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             )
           }
 
+          // ── Apply warning — early return before msg.jd access ──────────────
+          if (msg.isApplyWarning) {
+            return (
+              <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto', paddingBottom: 8 }}>
+                <div style={{
+                  padding: '13px 17px', borderRadius: '12px',
+                  background: 'rgba(232,255,107,0.04)',
+                  border: '1px solid rgba(232,255,107,0.18)',
+                  animation: 'bubbleIn 0.4s ease both',
+                }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                    ⚡ RACK is applying on your behalf — it will fill every field using your resume and profile, write answers to any custom questions, and submit. You won't need to do anything.
+                  </span>
+                </div>
+              </div>
+            )
+          }
+
           const msgJdPreview = msg.jd.length > 220 ? msg.jd.slice(0, 220).trimEnd() + '…' : msg.jd
 
           return (
@@ -2843,6 +2881,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                         loading={msg.loading}
                         error={msg.applyError || null}
                         done={msg.applyDone || null}
+                        submitted={msg.applySubmitted || null}
                         jobTitle={msg.applyJobTitle}
                         company={msg.applyCompany}
                       />

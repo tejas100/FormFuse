@@ -569,6 +569,255 @@ function AuthenticatedAccount({ user, onSignOut }) {
           </button>
         </div>
 
+        {/* ── Application Profile Header ── */}
+        <div style={{
+          fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: '0.1em',
+          color: 'var(--text-dim)', marginBottom: 12, marginTop: 8,
+          paddingLeft: 4, animation: 'fadeUp 0.4s ease 0.09s both',
+        }}>Application Profile</div>
+
+        {/* ── Application Profile section ── */}
+        <div style={{
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)', marginBottom: 24,
+          animation: 'fadeUp 0.4s ease 0.1s both', overflow: 'hidden',
+        }}>
+          {/* Phone */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px' }}>
+                  📞 Phone number
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  Used for application phone fields
+                </div>
+              </div>
+              <input
+                type="tel"
+                value={profile.phone || ''}
+                onChange={e => updateField('phone', e.target.value)}
+                placeholder="+1 (555) 000-0000"
+                style={{
+                  width: 160, padding: '8px 14px', borderRadius: 30,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text)', fontFamily: 'var(--font-body)',
+                  fontSize: 13, outline: 'none', textAlign: 'right',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* LinkedIn */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px' }}>
+                  🔗 LinkedIn URL
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  linkedin.com/in/yourhandle
+                </div>
+              </div>
+              <input
+                type="url"
+                value={profile.linkedin || ''}
+                onChange={e => updateField('linkedin', e.target.value)}
+                placeholder="linkedin.com/in/…"
+                style={{
+                  width: 200, padding: '8px 14px', borderRadius: 30,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text)', fontFamily: 'var(--font-body)',
+                  fontSize: 13, outline: 'none', textAlign: 'right',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* GitHub */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px' }}>
+                  🐙 GitHub URL
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  github.com/yourhandle
+                </div>
+              </div>
+              <input
+                type="url"
+                value={profile.github || ''}
+                onChange={e => updateField('github', e.target.value)}
+                placeholder="github.com/…"
+                style={{
+                  width: 200, padding: '8px 14px', borderRadius: 30,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text)', fontFamily: 'var(--font-body)',
+                  fontSize: 13, outline: 'none', textAlign: 'right',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Portfolio / Website */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px' }}>
+                  🌐 Portfolio / Website
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  Personal site or portfolio URL
+                </div>
+              </div>
+              <input
+                type="url"
+                value={profile.website || ''}
+                onChange={e => updateField('website', e.target.value)}
+                placeholder="yoursite.com"
+                style={{
+                  width: 200, padding: '8px 14px', borderRadius: 30,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text)', fontFamily: 'var(--font-body)',
+                  fontSize: 13, outline: 'none', textAlign: 'right',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Work Authorization */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px' }}>
+                  🛂 Authorized to work
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  Legally authorized to work without sponsorship
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {['yes', 'no'].map(opt => (
+                  <button key={opt} onClick={() => updateField('work_auth', opt)} style={{
+                    padding: '6px 16px', borderRadius: 20, border: 'none',
+                    background: profile.work_auth === opt ? 'var(--accent)' : 'var(--surface2)',
+                    color: profile.work_auth === opt ? '#000' : 'var(--text-dim)',
+                    fontFamily: 'var(--font-body)', fontSize: 12, fontWeight: 600,
+                    cursor: 'pointer', textTransform: 'capitalize', transition: 'all 0.15s',
+                  }}>{opt}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Sponsorship */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px' }}>
+                  🌐 Require sponsorship
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  Do you need visa sponsorship now or in the future?
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {['yes', 'no'].map(opt => (
+                  <button key={opt} onClick={() => updateField('requires_sponsorship', opt)} style={{
+                    padding: '6px 16px', borderRadius: 20, border: 'none',
+                    background: profile.requires_sponsorship === opt ? (opt === 'yes' ? 'rgba(248,113,113,0.2)' : 'var(--accent)') : 'var(--surface2)',
+                    color: profile.requires_sponsorship === opt ? (opt === 'yes' ? 'var(--danger)' : '#000') : 'var(--text-dim)',
+                    fontFamily: 'var(--font-body)', fontSize: 12, fontWeight: 600,
+                    cursor: 'pointer', textTransform: 'capitalize', transition: 'all 0.15s',
+                  }}>{opt}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* EEO fields header */}
+          <div style={{ padding: '12px 20px 8px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>
+              Voluntary Self-ID (EEO) — used only for application forms
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2, opacity: 0.7 }}>
+              Defaults to "Decline to self-identify" if not set. This information is never used for matching.
+            </div>
+          </div>
+
+          {/* Gender */}
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>Gender</div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {[
+                  { label: 'Male', value: 'male' },
+                  { label: 'Female', value: 'female' },
+                  { label: 'Non-binary', value: 'non_binary' },
+                  { label: 'Decline', value: 'decline' },
+                ].map(opt => (
+                  <button key={opt.value} onClick={() => updateField('gender_eeo', opt.value)} style={{
+                    padding: '5px 12px', borderRadius: 20, border: '1px solid var(--border)',
+                    background: profile.gender_eeo === opt.value ? 'rgba(232,255,107,0.12)' : 'transparent',
+                    color: profile.gender_eeo === opt.value ? 'var(--accent)' : 'var(--text-dim)',
+                    fontFamily: 'var(--font-body)', fontSize: 11, fontWeight: 500,
+                    cursor: 'pointer', transition: 'all 0.15s',
+                    borderColor: profile.gender_eeo === opt.value ? 'rgba(232,255,107,0.3)' : 'var(--border)',
+                  }}>{opt.label}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Veteran Status */}
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>Veteran status</div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {[
+                  { label: 'Veteran', value: 'protected_veteran' },
+                  { label: 'Not a veteran', value: 'not_a_veteran' },
+                  { label: 'Decline', value: 'decline' },
+                ].map(opt => (
+                  <button key={opt.value} onClick={() => updateField('veteran_status', opt.value)} style={{
+                    padding: '5px 12px', borderRadius: 20, border: '1px solid var(--border)',
+                    background: profile.veteran_status === opt.value ? 'rgba(232,255,107,0.12)' : 'transparent',
+                    color: profile.veteran_status === opt.value ? 'var(--accent)' : 'var(--text-dim)',
+                    fontFamily: 'var(--font-body)', fontSize: 11, fontWeight: 500,
+                    cursor: 'pointer', transition: 'all 0.15s',
+                    borderColor: profile.veteran_status === opt.value ? 'rgba(232,255,107,0.3)' : 'var(--border)',
+                  }}>{opt.label}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Disability */}
+          <div style={{ padding: '14px 20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>Disability status</div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {[
+                  { label: 'Yes', value: 'yes' },
+                  { label: 'No', value: 'no' },
+                  { label: 'Decline', value: 'decline' },
+                ].map(opt => (
+                  <button key={opt.value} onClick={() => updateField('disability_status', opt.value)} style={{
+                    padding: '5px 12px', borderRadius: 20, border: '1px solid var(--border)',
+                    background: profile.disability_status === opt.value ? 'rgba(232,255,107,0.12)' : 'transparent',
+                    color: profile.disability_status === opt.value ? 'var(--accent)' : 'var(--text-dim)',
+                    fontFamily: 'var(--font-body)', fontSize: 11, fontWeight: 500,
+                    cursor: 'pointer', transition: 'all 0.15s',
+                    borderColor: profile.disability_status === opt.value ? 'rgba(232,255,107,0.3)' : 'var(--border)',
+                  }}>{opt.label}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* ── Job Preferences Header ── */}
         <div style={{
           fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700,

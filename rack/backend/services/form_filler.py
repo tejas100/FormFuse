@@ -51,19 +51,25 @@ RULES:
 9. For "Require sponsorship?" or work authorization: answer based on profile.
 10. Keep values concise and factual."""
 
-_FREE_TEXT_SYSTEM = """You are an expert job application writer helping a candidate auto-apply.
+_FREE_TEXT_SYSTEM = """You are an expert job application writer helping a candidate auto-apply to jobs.
 
 Given the candidate's resume, their profile, and a specific application question, write a compelling answer.
 
-RULES:
-1. Be specific — reference actual experience from the resume.
-2. Be concise — 2-4 sentences unless the question clearly requires more.
-3. Do NOT fabricate experience, companies, titles, or metrics not in the resume.
-4. Write in first person ("I built...", "My experience includes...").
-5. Match the tone of the question — casual questions get casual answers.
-6. For "Why do you want to work here?" — focus on the company's domain/mission + candidate's relevant background.
-7. For behavioral questions ("Tell me about a time...") — use STAR format briefly.
-8. Output ONLY the answer text. No preamble, no explanation."""
+CRITICAL STYLE RULES — read carefully:
+- Write like a real person typing a thoughtful paragraph, NOT like a cover letter template.
+- Use plain sentences. Never use bullet points, hyphens as list markers, or numbered lists.
+- Never use hollow filler phrases: "passionate about", "excited to", "eager to", "strong background in",
+  "proven track record", "team player", "results-driven", "I believe in your mission".
+- Be specific — pull real project names, technologies, or outcomes from the resume.
+- Be concise — 2-4 sentences is ideal. Do not pad with generalities.
+- Write in first person ("I built...", "At my last role I...").
+- Match the register of the question: casual question → casual answer, formal → formal.
+- For "Why do you want to work here?" — connect ONE specific thing about the company
+  (product, technical approach, domain) to ONE concrete thing from the candidate's background.
+- For "Tell me about a time..." — one quick STAR paragraph, no headers, no sub-bullets.
+- For generic "Tell us about yourself" — 2-3 sentences: current focus, best relevant skill, why this role.
+- Do NOT fabricate companies, titles, metrics, or projects not in the resume.
+- Output ONLY the answer text. No preamble, no explanation, no quotes around the answer."""
 
 
 # ── Helper: strip HTML to a clean form-focused excerpt ────────────────────────
@@ -104,8 +110,21 @@ def _build_profile_block(profile: dict) -> str:
     if profile.get("years_exp"):   lines.append(f"Years of Experience: {profile['years_exp']}")
     if profile.get("titles"):      lines.append(f"Job Titles: {', '.join(profile['titles'][:5])}")
     if profile.get("skills"):      lines.append(f"Skills: {', '.join(profile['skills'][:20])}")
-    if profile.get("work_auth"):   lines.append(f"Work Authorization: {profile['work_auth']}")
-    if profile.get("sponsorship"): lines.append(f"Requires Sponsorship: {profile['sponsorship']}")
+    if profile.get("work_auth"):            lines.append(f"Work Authorization: {profile['work_auth']}")
+    if profile.get("requires_sponsorship"): lines.append(f"Requires Sponsorship: {profile['requires_sponsorship']}")
+    # EEO voluntary self-ID
+    eeo_gender   = profile.get("gender_eeo")       or "decline"
+    eeo_veteran  = profile.get("veteran_status")   or "decline"
+    eeo_disab    = profile.get("disability_status") or "decline"
+    # Map internal values to form-friendly display strings
+    _gender_map  = {"male": "Male", "female": "Female", "non_binary": "Non-binary / Non-conforming", "decline": "Decline to self-identify"}
+    _veteran_map = {"protected_veteran": "I am a protected veteran", "not_a_veteran": "I am not a protected veteran", "decline": "I don't wish to answer"}
+    _disab_map   = {"yes": "Yes, I have a disability", "no": "No, I do not have a disability", "decline": "I don't wish to answer"}
+    _decline_eeo = "Decline to self-identify"
+    _decline_vet = "I don't wish to answer"
+    lines.append(f"Gender (EEO): {_gender_map.get(eeo_gender, _decline_eeo)}")
+    lines.append(f"Veteran Status (EEO): {_veteran_map.get(eeo_veteran, _decline_vet)}")
+    lines.append(f"Disability Status (EEO): {_disab_map.get(eeo_disab, _decline_vet)}")
     return "\n".join(lines)
 
 

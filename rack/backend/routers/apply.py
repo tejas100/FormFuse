@@ -65,15 +65,20 @@ async def _build_profile(current_user, resume_id: Optional[str], db: AsyncSessio
     prefs = current_user.preferences or {}
 
     profile = {
-        "name":        prefs.get("name")     or (current_user.display_name or ""),
-        "email":       current_user.email    or "",
-        "phone":       prefs.get("phone")    or "",
-        "location":    prefs.get("location") or "",
-        "linkedin":    prefs.get("linkedin") or "",
-        "github":      prefs.get("github")   or "",
-        "website":     prefs.get("website")  or "",
-        "work_auth":   prefs.get("work_auth")   or "authorized",
-        "sponsorship": prefs.get("sponsorship") or "no",
+        "name":                prefs.get("name")     or (current_user.display_name or ""),
+        "email":               current_user.email    or "",
+        "phone":               prefs.get("phone")    or "",
+        "location":            prefs.get("location") or "",
+        "linkedin":            prefs.get("linkedin") or "",
+        "github":              prefs.get("github")   or "",
+        "website":             prefs.get("website")  or "",
+        # work_auth / sponsorship — stored as "yes"/"no" in preferences
+        "work_auth":           "yes" if prefs.get("work_auth") == "yes" else "no",
+        "requires_sponsorship":"yes" if prefs.get("requires_sponsorship") == "yes" else "no",
+        # EEO voluntary self-ID — default to "decline" if not set
+        "gender_eeo":          prefs.get("gender_eeo")          or "decline",
+        "veteran_status":      prefs.get("veteran_status")      or "decline",
+        "disability_status":   prefs.get("disability_status")   or "decline",
     }
 
     # Fetch resume — specific one if requested, otherwise most recent active
@@ -162,6 +167,9 @@ async def apply_stream(
     # ── Stream generator ──────────────────────────────────────────────────────
     async def event_stream() -> AsyncGenerator[str, None]:
         from services.browser_agent import run_apply_agent
+        from datetime import datetime, timezone
+        from models.orm import AutoMatchResult
+        from sqlalchemy import update as sa_update
 
         try:
             async for event in run_apply_agent(
@@ -170,8 +178,29 @@ async def apply_stream(
                 company     = request.company,
                 resume_text = profile.get("resume_text", ""),
                 profile     = profile,
+                job_id      = request.job_id,
             ):
                 yield _sse(event)
+
+                # On successful submit — mark applied in DB
+                if event.get("type") == "submitted" and event.get("job_id"):
+                    try:
+                        async with __import__("db.database", fromlist=["AsyncSessionLocal"]).AsyncSessionLocal() as apply_db:
+                            await apply_db.execute(
+                                sa_update(AutoMatchResult)
+                                .where(
+                                    AutoMatchResult.user_id == current_user.id,
+                                    AutoMatchResult.job_id  == event["job_id"],
+                                )
+                                .values(
+                                    applied    = True,
+                                    applied_at = datetime.now(timezone.utc),
+                                )
+                            )
+                            await apply_db.commit()
+                        logger.info(f"[apply] Marked job {event['job_id']} as applied for user {current_user.email}")
+                    except Exception as db_err:
+                        logger.warning(f"[apply] DB update after submit failed: {db_err}")
 
         except Exception as e:
             logger.error(f"[apply] Stream error: {e}", exc_info=True)

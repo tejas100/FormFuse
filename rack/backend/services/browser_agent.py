@@ -29,9 +29,14 @@ _GH_SELECTORS = {
     "email address"  : ("#email",                 "email"),
     "phone"          : ("#phone",                 "text"),
     "phone number"   : ("#phone",                 "text"),
-    "linkedin"       : ("#job_application_answers_attributes_0_text_value, input[name*='linkedin']", "text"),
-    "website"        : ("input[name*='website'], input[name*='portfolio']", "text"),
-    "location"       : ("#job_application_answers_attributes_0_text_value, input[name*='location']", "text"),
+    # LinkedIn / GitHub / Website — Greenhouse uses input[type=url] or labeled text inputs
+    "linkedin"       : ("input[type='url'][id*='linkedin'], input[name*='linkedin'], input[placeholder*='linkedin' i], input[placeholder*='LinkedIn']", "text"),
+    "linkedin url"   : ("input[type='url'][id*='linkedin'], input[name*='linkedin'], input[placeholder*='linkedin' i]", "text"),
+    "github"         : ("input[type='url'][id*='github'], input[name*='github'], input[placeholder*='github' i]", "text"),
+    "github url"     : ("input[type='url'][id*='github'], input[name*='github'], input[placeholder*='github' i]", "text"),
+    "website"        : ("input[type='url'][id*='website'], input[type='url'][id*='portfolio'], input[name*='website'], input[name*='portfolio'], input[placeholder*='website' i], input[placeholder*='portfolio' i]", "text"),
+    "portfolio"      : ("input[type='url'][id*='portfolio'], input[name*='portfolio'], input[placeholder*='portfolio' i]", "text"),
+    "location"       : ("input[name*='location'], input[placeholder*='location' i]", "text"),
 }
 
 _ASHBY_SELECTORS = {
@@ -53,6 +58,246 @@ _LEVER_SELECTORS = {
     "additional info": ("textarea[name='comments']", "textarea"),
     "why"            : ("textarea[name='comments']", "textarea"),
 }
+
+# -- Greenhouse select2 dropdown value maps -----------------------------------
+# Maps our internal profile values to the exact option text Greenhouse shows.
+# Work Authorization — Greenhouse shows a "select2" custom dropdown.
+_GH_WORK_AUTH_MAP = {
+    "yes": "Yes",
+    "no":  "No",
+}
+_GH_SPONSORSHIP_MAP = {
+    "yes": "Yes",
+    "no":  "No",
+}
+# EEO dropdowns — exact option text from Greenhouse's standard EEO form
+_GH_GENDER_MAP = {
+    "male":       "Male",
+    "female":     "Female",
+    "non_binary": "Non-Binary",
+    "decline":    "I don't wish to answer",
+}
+_GH_VETERAN_MAP = {
+    "protected_veteran": "I am a protected veteran",
+    "not_a_veteran":     "I am not a protected veteran",
+    "decline":           "I don't wish to answer",
+}
+_GH_DISABILITY_MAP = {
+    "yes":     "Yes, I have a disability, or have had one in the past",
+    "no":      "No, I do not have a disability and have not had one in the past",
+    "decline": "I don't wish to answer",
+}
+
+# Which field labels are Greenhouse select2 dropdowns and what value map + container to use
+_GH_SELECT2_FIELDS = {
+    "work authorization":  (_GH_WORK_AUTH_MAP,   "work_auth"),
+    "authorized to work":  (_GH_WORK_AUTH_MAP,   "work_auth"),
+    "require sponsorship": (_GH_SPONSORSHIP_MAP, "requires_sponsorship"),
+    "visa sponsorship":    (_GH_SPONSORSHIP_MAP, "requires_sponsorship"),
+    "gender":              (_GH_GENDER_MAP,       "gender_eeo"),
+    "gender (eeo)":        (_GH_GENDER_MAP,       "gender_eeo"),
+    "veteran":             (_GH_VETERAN_MAP,      "veteran_status"),
+    "veteran status":      (_GH_VETERAN_MAP,      "veteran_status"),
+    "disability":          (_GH_DISABILITY_MAP,   "disability_status"),
+    "disability status":   (_GH_DISABILITY_MAP,   "disability_status"),
+}
+
+
+async def _fill_gh_url_field(page, label: str, value: str) -> bool:
+    """
+    Fill a Greenhouse URL input field (LinkedIn, GitHub, Website).
+    Greenhouse renders these as input[type="url"] inside a labeled div.
+    Strategy: find all url inputs, match by nearby label text, fill the right one.
+    """
+    label_lower = label.lower().strip()
+    try:
+        # First try: standard CSS selectors based on common Greenhouse patterns
+        keywords = []
+        if "linkedin" in label_lower:
+            keywords = ["linkedin"]
+        elif "github" in label_lower:
+            keywords = ["github"]
+        elif "website" in label_lower or "portfolio" in label_lower:
+            keywords = ["website", "portfolio"]
+
+        # Try direct attribute selectors first
+        for kw in keywords:
+            for sel in [
+                f'input[id*="{kw}" i]',
+                f'input[name*="{kw}" i]',
+                f'input[placeholder*="{kw}" i]',
+                f'input[aria-label*="{kw}" i]',
+            ]:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0:
+                        await loc.fill(value, timeout=3000)
+                        return True
+                except Exception:
+                    continue
+
+        # Fallback: find all url inputs, pick the one whose label contains our keyword
+        url_inputs = page.locator('input[type="url"]')
+        count = await url_inputs.count()
+        for i in range(count):
+            inp = url_inputs.nth(i)
+            try:
+                # Check nearby text via JS
+                nearby = await page.evaluate(
+                    """el => {
+                        let node = el;
+                        for (let i = 0; i < 5; i++) {
+                            if (!node.parentElement) break;
+                            node = node.parentElement;
+                            const text = node.textContent.toLowerCase();
+                            if (text.length < 300) return text;
+                        }
+                        return '';
+                    }""",
+                    await inp.element_handle()
+                )
+                if any(kw in nearby for kw in keywords):
+                    await inp.fill(value, timeout=3000)
+                    return True
+            except Exception:
+                continue
+
+        # Last resort: text inputs that might be URL fields
+        text_inputs = page.locator('input[type="text"]')
+        tcount = await text_inputs.count()
+        for i in range(tcount):
+            inp = text_inputs.nth(i)
+            try:
+                ph = await inp.get_attribute("placeholder") or ""
+                iid = await inp.get_attribute("id") or ""
+                nm = await inp.get_attribute("name") or ""
+                combined = (ph + iid + nm).lower()
+                if any(kw in combined for kw in keywords):
+                    await inp.fill(value, timeout=3000)
+                    return True
+            except Exception:
+                continue
+
+    except Exception as e:
+        logger.debug(f"[browser_agent] _fill_gh_url_field failed for '{label}': {e}")
+    return False
+
+
+async def _fill_gh_select2(page, label: str, profile: dict) -> bool:
+    """
+    Fill a Greenhouse select2 custom dropdown.
+    These are NOT standard <select> elements.
+
+    Strategy:
+      1. Match label → value map + profile key
+      2. Try hidden <select> first (fastest, works on many Greenhouse forms)
+      3. Fall back to clicking select2 UI trigger → option in dropdown list
+      4. Fall back to finding <select> near any label text match on page
+    """
+    label_lower = label.lower().strip()
+    match = None
+    for key, (val_map, profile_key) in _GH_SELECT2_FIELDS.items():
+        if key in label_lower or label_lower in key:
+            match = (val_map, profile_key)
+            break
+    if not match:
+        return False
+
+    val_map, profile_key = match
+    raw_val = profile.get(profile_key, "decline")
+    option_text = val_map.get(raw_val, list(val_map.values())[-1])
+
+    logger.debug(f"[select2] Filling '{label}' with '{option_text}' (profile key={profile_key}, raw={raw_val})")
+
+    try:
+        # ── Strategy A: hidden <select> — Greenhouse often keeps the real select
+        # in the DOM even when select2 overlays it. Force-set via JS evaluate.
+        selects = page.locator("select")
+        count = await selects.count()
+        for i in range(count):
+            sel = selects.nth(i)
+            try:
+                # Check if this select has an option matching our text
+                option_exists = await page.evaluate(
+                    """([sel_idx, text]) => {
+                        const selects = document.querySelectorAll('select');
+                        const sel = selects[sel_idx];
+                        if (!sel) return false;
+                        const opts = Array.from(sel.options);
+                        return opts.some(o => o.text.trim().toLowerCase().includes(text.toLowerCase()));
+                    }""",
+                    [i, option_text[:20]]
+                )
+                if option_exists:
+                    await sel.select_option(label=option_text, timeout=2000)
+                    # Trigger change event so select2 UI updates
+                    await page.evaluate(
+                        "idx => { const s = document.querySelectorAll('select')[idx]; s.dispatchEvent(new Event('change', {bubbles:true})); }",
+                        i
+                    )
+                    await asyncio.sleep(0.2)
+                    logger.debug(f"[select2] Strategy A succeeded for '{label}'")
+                    return True
+            except Exception:
+                continue
+
+        # ── Strategy B: click select2 UI trigger near matching label text
+        # Find all select2 containers on page, check which one is near our label
+        triggers = page.locator(
+            'a.select2-choice, span.select2-chosen, '
+            '.select2-container, span[role="combobox"], '
+            'button[role="combobox"]'
+        )
+        tcount = await triggers.count()
+        for i in range(tcount):
+            trigger = triggers.nth(i)
+            try:
+                # Check if there's label text nearby (within 3 ancestor levels)
+                nearby_text = await page.evaluate(
+                    """el => {
+                        let node = el;
+                        for (let i = 0; i < 4; i++) {
+                            if (!node.parentElement) break;
+                            node = node.parentElement;
+                            if (node.textContent) return node.textContent.toLowerCase();
+                        }
+                        return '';
+                    }""",
+                    await trigger.element_handle()
+                )
+                if not any(k in nearby_text for k in label_lower.split() if len(k) > 3):
+                    continue
+
+                await trigger.click(timeout=2000)
+                await asyncio.sleep(0.5)
+
+                # Options appear in a global dropdown — try multiple selectors
+                for opt_sel in [
+                    f'.select2-results li:has-text("{option_text}")',
+                    f'.select2-results__option:has-text("{option_text}")',
+                    f'li[role="option"]:has-text("{option_text}")',
+                    f'.select2-result-label:has-text("{option_text}")',
+                    # Partial match fallback
+                    f'.select2-results li:has-text("{option_text[:15]}")',
+                ]:
+                    opt = page.locator(opt_sel).first
+                    if await opt.count() > 0:
+                        await opt.click(timeout=2000)
+                        await asyncio.sleep(0.2)
+                        logger.debug(f"[select2] Strategy B succeeded for '{label}' via '{opt_sel}'")
+                        return True
+
+                # Close dropdown if nothing matched
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.2)
+            except Exception:
+                continue
+
+    except Exception as e:
+        logger.debug(f"[browser_agent] _fill_gh_select2 failed for '{label}': {e}")
+
+    return False
+
 
 def _get_ats_selectors(url: str) -> dict:
     if "greenhouse.io" in url:
@@ -181,7 +426,16 @@ _FREE_TEXT_SIGNALS = [
     "what interests", "additional information", "cover letter", "anything else",
     "motivat", "passion", "background", "experience with", "accomplish",
     "challeng", "strength", "weakness", "goal", "comments",
+    "hear about", "how did you", "referred by", "how did you find",
 ]
+
+# Questions where a fixed short answer beats LLM generation
+_FIXED_ANSWERS = {
+    "hear about": "RACK — an AI job matching tool",
+    "how did you find": "RACK — an AI job matching tool",
+    "referred by": "",   # skip — no referrer
+    "how did you hear": "RACK — an AI job matching tool",
+}
 
 def _is_free_text_question(label: str) -> bool:
     ll = label.lower()
@@ -196,6 +450,7 @@ async def run_apply_agent(
     company:     str,
     resume_text: str,
     profile:     dict,
+    job_id:      str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Async generator yielding SSE-ready step dicts."""
     from services.form_filler import detect_fields, write_free_text
@@ -275,6 +530,13 @@ async def run_apply_agent(
 
             fillable = [f for f in fields if not f.get("skip")]
             yield _step("ok", "Found " + str(len(fillable)) + " fields to fill")
+            # Debug: log every detected field so we can see what LLM returned
+            for _dbg in fields:
+                logger.info(f"[field_debug] label={_dbg.get('field_label')!r} "
+                            f"type={_dbg.get('field_type')!r} "
+                            f"hint={_dbg.get('selector_hint')!r} "
+                            f"skip={_dbg.get('skip')} "
+                            f"value={str(_dbg.get('value',''))[:40]!r}")
 
             # -- Fill loop ----------------------------------------------------
             filled_count = 0
@@ -291,13 +553,23 @@ async def run_apply_agent(
                     await asyncio.sleep(0.1)
                     continue
 
-                # Free-text question -- write with LLM
+                # Free-text question -- write with LLM (or use fixed answer)
                 if field_type == "textarea" and _is_free_text_question(label):
-                    yield _step("writing", "Writing answer for: " + label + "...")
-                    answer = await write_free_text(
-                        question=label, company=company, job_title=job_title,
-                        resume_text=resume_text, profile=profile,
+                    # Check for fixed short answers first (e.g. "how did you hear")
+                    label_lower_ft = label.lower()
+                    fixed_answer = next(
+                        (v for k, v in _FIXED_ANSWERS.items() if k in label_lower_ft),
+                        None
                     )
+                    if fixed_answer is not None:
+                        answer = fixed_answer
+                        yield _step("ok", 'Filled "' + label + '" -> ' + answer[:40])
+                    else:
+                        yield _step("writing", "Writing answer for: " + label + "...")
+                        answer = await write_free_text(
+                            question=label, company=company, job_title=job_title,
+                            resume_text=resume_text, profile=profile,
+                        )
                     if answer:
                         ok = await _fill_field(page, label, selector, answer,
                                                "textarea", ats_selectors)
@@ -316,6 +588,51 @@ async def run_apply_agent(
                     yield _step("skip", "No value for: " + label)
                     continue
 
+                is_gh = "greenhouse.io" in job_url
+                label_lower_chk = label.lower()
+                filled_this = False
+
+                # ── Greenhouse URL fields (LinkedIn, GitHub, Website) ──────────
+                # Use JS to find input[type="url"] elements in DOM order,
+                # match by nearby label text, fill directly.
+                if is_gh and field_type == "url" and value:
+                    filled_this = await _fill_gh_url_field(page, label, value)
+                    if filled_this:
+                        filled_count += 1
+                        yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
+                    else:
+                        yield _step("error", 'Could not locate "' + label + '" - skipping')
+                    await asyncio.sleep(0.3)
+                    continue
+
+                # ── Greenhouse select2 dropdowns ──────────────────────────────
+                # Route: known select2 labels, OR type='checkbox'/'select' on GH
+                # (LLM often misclassifies select2 as checkbox or select)
+                is_select2_label = any(
+                    k in label_lower_chk or label_lower_chk in k
+                    for k in _GH_SELECT2_FIELDS
+                )
+                if is_gh and (is_select2_label or field_type in ("checkbox", "select")):
+                    ok = await _fill_gh_select2(page, label, profile)
+                    if ok:
+                        filled_count += 1
+                        yield _step("ok", 'Filled "' + label + '" (dropdown)')
+                    else:
+                        # For non-select2 selects, fall through to standard fill
+                        if field_type == "select" and not is_select2_label:
+                            ok = await _fill_field(page, label, selector, value,
+                                                   field_type, ats_selectors)
+                            if ok:
+                                filled_count += 1
+                                yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
+                            else:
+                                yield _step("error", 'Could not locate "' + label + '" - skipping')
+                        else:
+                            yield _step("error", 'Could not locate "' + label + '" - skipping')
+                    await asyncio.sleep(0.35)
+                    continue
+
+                # ── Standard fill ─────────────────────────────────────────────
                 ok = await _fill_field(page, label, selector, value,
                                        field_type, ats_selectors)
                 if ok:
@@ -327,16 +644,128 @@ async def run_apply_agent(
 
                 await asyncio.sleep(0.35)
 
-            # -- Done ---------------------------------------------------------
-            skipped = len(fields) - filled_count
-            yield _step("ok", str(filled_count) + " field(s) filled, " +
-                        str(skipped) + " skipped")
-            yield {
-                "type":         "done",
-                "text":         "Form filled for " + job_title + " at " + company,
-                "filled_count": filled_count,
-                "job_url":      job_url,
-            }
+            # -- Pre-submit scroll & validation ----------------------------------
+            yield _step("ok", str(filled_count) + " field(s) filled — preparing to submit...")
+            await asyncio.sleep(0.4)
+
+            # Scroll to bottom so all fields are visible and validation triggers
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(0.6)
+            except Exception:
+                pass
+
+            # Check for any visible validation errors before clicking submit
+            try:
+                error_locs = page.locator(
+                    '.error-message:visible, .field-error:visible, '
+                    '[aria-invalid="true"]:visible, .invalid-feedback:visible'
+                )
+                err_count = await error_locs.count()
+                if err_count > 0:
+                    yield _step("ok", f"Fixing {err_count} validation issue(s)...")
+                    await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+            # -- Find and click Submit ----------------------------------------
+            submit_selectors = [
+                'input[type="submit"]',
+                'button[type="submit"]',
+                'button:has-text("Submit Application")',
+                'button:has-text("Submit")',
+                'button:has-text("Apply Now")',
+                'button:has-text("Send Application")',
+                'button:has-text("Apply")',
+            ]
+
+            submit_clicked = False
+            for sel in submit_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        yield _step("ok", "Submitting application...")
+                        await loc.scroll_into_view_if_needed()
+                        await asyncio.sleep(0.3)
+                        await loc.click(timeout=5000)
+                        submit_clicked = True
+                        break
+                except Exception:
+                    continue
+
+            if not submit_clicked:
+                yield _step("error", "Could not find Submit button — form filled but not submitted")
+                yield {
+                    "type":         "done",
+                    "text":         "Form filled for " + job_title + " at " + company,
+                    "filled_count": filled_count,
+                    "job_url":      job_url,
+                }
+                return
+
+            # -- Wait for confirmation ----------------------------------------
+            yield _step("ok", "Waiting for confirmation...")
+            confirmation_text = None
+            is_confirmed = False
+
+            # Wait up to 12s for navigation or confirmation text
+            for attempt in range(24):
+                await asyncio.sleep(0.5)
+                try:
+                    page_text = await page.inner_text("body")
+                    page_url  = page.url
+
+                    # Check URL-based confirmation
+                    if any(k in page_url for k in ["/confirmation", "/thank", "/success", "/submitted"]):
+                        is_confirmed = True
+                        break
+
+                    # Check text-based confirmation
+                    text_lower = page_text.lower()
+                    if any(phrase in text_lower for phrase in [
+                        "thank you", "application received", "we'll be in touch",
+                        "successfully submitted", "application has been submitted",
+                        "we have received your application", "your application was submitted",
+                        "application is complete",
+                    ]):
+                        is_confirmed = True
+                        # Try to extract a confirmation number
+                        import re as _re
+                        for pattern in [
+                            r"#([A-Z0-9-]{4,20})",
+                            r"Application .{0,15}([A-Z0-9-]{4,20})",
+                            r"Reference.{0,5}([A-Z0-9-]{4,20})",
+                            r"Confirmation.{0,5}([A-Z0-9-]{4,20})",
+                        ]:
+                            m = _re.search(pattern, page_text, _re.IGNORECASE)
+                            if m:
+                                confirmation_text = m.group(1)
+                                break
+                        break
+                except Exception:
+                    pass
+
+            if is_confirmed:
+                yield _step("ok", "Application confirmed by " + company)
+                yield {
+                    "type":         "submitted",
+                    "text":         "Application submitted to " + company,
+                    "filled_count": filled_count,
+                    "job_url":      job_url,
+                    "confirmation": confirmation_text,
+                    "job_id":       job_id,
+                }
+            else:
+                # Submit was clicked but we couldn't confirm — still report success
+                yield _step("ok", "Submit clicked — could not detect confirmation page")
+                yield {
+                    "type":         "submitted",
+                    "text":         "Application submitted to " + company,
+                    "filled_count": filled_count,
+                    "job_url":      job_url,
+                    "confirmation": None,
+                    "job_id":       job_id,
+                }
 
         except Exception as e:
             logger.error("[browser_agent] Error: " + str(e), exc_info=True)
