@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
 import RackCreature from '../components/RackCreature'
+import ApplyAgentCard from '../components/ApplyAgentCard'
 
 const mobileCardStyles = `
   /* ── Keyframes ── */
@@ -897,6 +898,7 @@ export default function Home() {
   const [activeMode, setActiveMode]       = useState(null)   // null | 'tailor'
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [tailorLoading, setTailorLoading] = useState(false)
+  const [applyLoading, setApplyLoading]   = useState(false)
 
   // Derived: last completed message's results (for ValuePreviewCard)
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
@@ -1718,6 +1720,26 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       return
     }
 
+    // ── route_to_apply — auto-fill application forms ────────────────────────
+    if (tool === 'route_to_apply') {
+      setLoading(false)
+      const applyJobs = triage.apply_jobs || []
+      if (!applyJobs.length) {
+        setMessages(prev => [...prev, {
+          id: msgId,
+          jd: capturedJd,
+          isAssistantReply: true,
+          replyText: triage.reply || 'No matched jobs found to apply to. Run Auto Matches in the Tracking tab first.',
+          loading: false,
+          error: null,
+        }])
+        return
+      }
+      // Fire the apply agent — each job gets its own card via handleApply
+      handleApply(applyJobs)
+      return
+    }
+
     // ── route_to_rank (default) — full match pipeline ──────────────────────
     const hasExistingResumes = resumeCount > 0
     const hasQueuedFiles     = fileQueue.length > 0
@@ -1851,6 +1873,118 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       setLoading(false)
       setUploadQueue([])
     }
+  }
+
+
+  // ── Auto-apply handler — SSE streaming ──────────────────────────
+  // Called when router returns route_to_apply with a list of jobs.
+  // Fires one SSE stream per job sequentially, each gets its own
+  // message card in the conversation thread.
+  const handleApply = async (applyJobs) => {
+    if (!applyJobs || applyJobs.length === 0) return
+    if (!isAuthed) return   // apply router requires auth — enforced server-side too
+
+    setApplyLoading(true)
+
+    for (const job of applyJobs) {
+      const msgId    = Date.now() + Math.random()
+      const jobTitle = job.job_title || 'Unknown Role'
+      const company  = job.company   || 'Unknown Company'
+      const jobUrl   = job.url       || ''
+      const resumeId = job.resume_id || null
+
+      // Append a loading placeholder for this job
+      setMessages(prev => [...prev, {
+        id:           msgId,
+        jd:           `${jobTitle} · ${company}`,
+        isApplyResult: true,
+        applySteps:   [],
+        applyDone:    null,
+        applyError:   null,
+        applyJobTitle: jobTitle,
+        applyCompany:  company,
+        loading:       true,
+        error:         null,
+      }])
+
+      if (!jobUrl) {
+        setMessages(prev => prev.map(m => m.id === msgId
+          ? { ...m, applyError: 'No application URL available for this job.', loading: false }
+          : m
+        ))
+        continue
+      }
+
+      try {
+        const headers = await getAuthHeaders()
+        const res = await fetch('http://localhost:8000/api/apply/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({
+            job_url:   jobUrl,
+            job_title: jobTitle,
+            company:   company,
+            resume_id: resumeId,
+          }),
+        })
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}))
+          throw new Error(errData.detail || `Server error (${res.status})`)
+        }
+
+        // Read SSE stream
+        const reader  = res.body.getReader()
+        const decoder = new TextDecoder()
+        let   buffer  = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const parts = buffer.split('\n\n')
+          buffer = parts.pop()
+
+          for (const part of parts) {
+            const line = part.trim()
+            if (!line.startsWith('data:')) continue
+
+            let event
+            try { event = JSON.parse(line.slice(5).trim()) }
+            catch { continue }
+
+            if (event.type === 'step') {
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applySteps: [...(m.applySteps || []), event] }
+                : m
+              ))
+            } else if (event.type === 'done') {
+              const { type, ...doneData } = event
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applyDone: doneData, loading: false }
+                : m
+              ))
+            } else if (event.type === 'error') {
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applyError: event.text, loading: false }
+                : m
+              ))
+            }
+          }
+        }
+      } catch (err) {
+        setMessages(prev => prev.map(m => m.id === msgId
+          ? { ...m, applyError: err.message || 'Apply agent failed.', loading: false }
+          : m
+        ))
+      }
+
+      // Small gap between jobs when applying to multiple
+      if (applyJobs.length > 1) await new Promise(r => setTimeout(r, 800))
+    }
+
+    setApplyLoading(false)
   }
 
 
@@ -2522,28 +2656,58 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                                     </div>
                                   )}
 
-                                  {/* Resume download — no Apply button (use Tracking for that) */}
-                                  {job.resume_name && (
-                                    <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-dim)' }}>
-                                      Best resume:{' '}
-                                      {job.resume_id ? (
-                                        <button
-                                          onClick={(e) => handleDownload(e, job.resume_id, job.resume_name)}
-                                          style={{
-                                            background: 'none', border: 'none', padding: '0 2px',
-                                            cursor: 'pointer', color: 'var(--accent)', fontWeight: 600,
-                                            fontSize: '11px', fontFamily: 'var(--font-body)',
-                                            textDecoration: 'underline', textDecorationStyle: 'dotted',
-                                            textUnderlineOffset: '2px',
-                                          }}
-                                        >
-                                          {job.resume_name} ↓
-                                        </button>
-                                      ) : (
-                                        <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{job.resume_name}</span>
-                                      )}
-                                    </div>
-                                  )}
+                                  {/* Bottom row: resume download + Apply button */}
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px', gap: '8px' }}>
+
+                                    {/* Resume download */}
+                                    {job.resume_name ? (
+                                      <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                                        Best resume:{' '}
+                                        {job.resume_id ? (
+                                          <button
+                                            onClick={(e) => handleDownload(e, job.resume_id, job.resume_name)}
+                                            style={{
+                                              background: 'none', border: 'none', padding: '0 2px',
+                                              cursor: 'pointer', color: 'var(--accent)', fontWeight: 600,
+                                              fontSize: '11px', fontFamily: 'var(--font-body)',
+                                              textDecoration: 'underline', textDecorationStyle: 'dotted',
+                                              textUnderlineOffset: '2px',
+                                            }}
+                                          >
+                                            {job.resume_name} ↓
+                                          </button>
+                                        ) : (
+                                          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{job.resume_name}</span>
+                                        )}
+                                      </div>
+                                    ) : <div />}
+
+                                    {/* ⚡ Apply button — only for auth'd users with a URL */}
+                                    {isAuthed && job.url && (
+                                      <button
+                                        onClick={() => handleApply([job])}
+                                        disabled={applyLoading}
+                                        style={{
+                                          display: 'flex', alignItems: 'center', gap: '4px',
+                                          padding: '4px 12px', borderRadius: '20px',
+                                          fontSize: '11px', fontWeight: 700,
+                                          fontFamily: 'var(--font-body)',
+                                          background: applyLoading
+                                            ? 'rgba(232,255,107,0.04)'
+                                            : 'rgba(232,255,107,0.1)',
+                                          border: '1px solid rgba(232,255,107,0.25)',
+                                          color: applyLoading ? 'var(--text-dim)' : 'var(--accent)',
+                                          cursor: applyLoading ? 'not-allowed' : 'pointer',
+                                          transition: 'all 0.15s ease',
+                                          flexShrink: 0,
+                                        }}
+                                        onMouseEnter={e => { if (!applyLoading) e.currentTarget.style.background = 'rgba(232,255,107,0.18)' }}
+                                        onMouseLeave={e => { if (!applyLoading) e.currentTarget.style.background = 'rgba(232,255,107,0.1)' }}
+                                      >
+                                        ⚡ Apply
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             )
@@ -2671,6 +2835,20 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                   )}
 
                   {/* ── Tailor result card ── */}
+                  {/* ── Apply agent live feed card ── */}
+                  {msg.isApplyResult && (
+                    <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
+                      <ApplyAgentCard
+                        steps={msg.applySteps || []}
+                        loading={msg.loading}
+                        error={msg.applyError || null}
+                        done={msg.applyDone || null}
+                        jobTitle={msg.applyJobTitle}
+                        company={msg.applyCompany}
+                      />
+                    </div>
+                  )}
+
                   {msg.isTailorResult && (
                     <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
                       {msg.loading ? (

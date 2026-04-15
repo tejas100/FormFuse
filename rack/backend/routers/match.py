@@ -188,13 +188,15 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     # Routing tool selected by the LLM — the single source of truth for frontend routing
     # tool: "route_to_rank" | "route_to_tailor" | "route_to_refine" |
-    #        "answer_career_question" | "show_matched_jobs" | "route_off_topic"
+    #        "answer_career_question" | "show_matched_jobs" | "route_off_topic" |
+    #        "route_to_apply"
     tool: str
     intent: str                         # legacy alias for tool — kept for backward compat
     params: Optional[dict] = None       # tool-specific params (jd_text, modification_hint, etc.)
     reply: Optional[str] = None         # populated for answer_career_question and route_off_topic
     jobs: Optional[list] = None         # populated for show_matched_jobs
     filter_label: Optional[str] = None  # human-readable label for the job table header
+    apply_jobs: Optional[list] = None   # populated for route_to_apply — jobs to apply to
 
 
 # ── Unified router system prompt ──────────────────────────────────────────────
@@ -214,6 +216,8 @@ answer_career_question: User asked a career-related question (about their resume
 show_matched_jobs: User wants to SEE their matched jobs as a list/table. Triggers on "show me my matches", "what jobs did you find", "top jobs for me", "85%+ matches". Distinct from answer_career_question which gives a text answer.
 
 route_off_topic: Anything not related to jobs, careers, resumes, or professional development. Greetings alone ("hi", "hello") should be route_off_topic unless combined with a career request.
+
+route_to_apply: User wants to auto-fill and submit job applications. Triggers on: "apply", "fill the form", "start applying", "apply to all", "apply to these jobs", "submit my application". Only use when jobs have already been shown in the conversation. Extract apply_all and job_indices from context.
 
 MODE HINT: If a mode_hint is provided ("tailor" or "rank"), treat it as a strong signal toward that routing tool but the message content still matters."""
 
@@ -302,6 +306,28 @@ _ROUTER_TOOLS = [
                     "limit":     {"type": "integer", "description": "Number of jobs to return. Default 5, max 20."},
                     "sort_by":   {"type": "string", "enum": ["score", "recent"], "description": "Sort by best score or most recently posted."},
                     "hours":     {"type": "integer", "description": "Only return jobs matched within the last N hours."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "route_to_apply",
+            "description": "User wants to auto-apply to one or more matched jobs. Triggers on: 'apply', 'fill the form', 'start applying', 'apply to all', 'apply to these jobs', 'submit my application'. Only use when the user is referencing specific jobs they have already seen in matched results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "apply_all": {
+                        "type": "boolean",
+                        "description": "True if the user said 'all', 'all of them', or similar. False if they named/selected specific jobs.",
+                    },
+                    "job_indices": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "0-based indices of the specific jobs the user wants to apply to (e.g. [0] for the first job, [0,1,2] for first three). Empty if apply_all=true.",
+                    },
                 },
                 "required": [],
             },
@@ -434,7 +460,9 @@ async def _tool_get_matched_jobs(user_uuid, db, min_score: int = 0, limit: int =
                 "matched_skills":     ((r.job_data or {}).get("matched_skills") or [])[:6],
                 "missing_skills":     ((r.job_data or {}).get("missing_skills") or [])[:4],
                 "posted_at":          r.posted_at.isoformat() if r.posted_at else None,
-                "url":                (r.job_data or {}).get("url", ""),
+                # job_url is the canonical key written by auto_match; fall back to url
+                "url":                (r.job_data or {}).get("job_url") or (r.job_data or {}).get("url", ""),
+                "job_id":             r.job_id,
                 "scoring_method":     (r.job_data or {}).get("scoring_method", ""),
                 "resume_name":        (r.job_data or {}).get("best_resume_name", None),
                 "resume_id":          (r.job_data or {}).get("best_resume_id", None),
@@ -670,6 +698,35 @@ Call exactly ONE routing tool now."""
                     "modification_hint": tool_params.get("modification_hint", text),
                     "jd_text":           tool_params.get("jd_text") or None,
                 },
+            )
+
+        if selected_tool == "route_to_apply":
+            apply_all   = bool(tool_params.get("apply_all", False))
+            job_indices = tool_params.get("job_indices", [])
+
+            jobs_data = await _execute_tool(
+                "get_matched_jobs",
+                {"min_score": 0, "limit": 20, "sort_by": "score"},
+                user_id, db,
+            )
+            all_jobs = _json.loads(jobs_data).get("jobs", [])
+
+            if apply_all:
+                apply_jobs = all_jobs[:5]
+            elif job_indices:
+                apply_jobs = [all_jobs[i] for i in job_indices if i < len(all_jobs)]
+            else:
+                apply_jobs = all_jobs[:1]
+
+            if not apply_jobs:
+                return ChatResponse(
+                    tool="route_to_apply", intent="APPLY",
+                    reply="No matched jobs found to apply to. Run Auto Matches in the Tracking tab first.",
+                )
+
+            return ChatResponse(
+                tool="route_to_apply", intent="APPLY",
+                apply_jobs=apply_jobs,
             )
 
         if selected_tool == "route_off_topic":
