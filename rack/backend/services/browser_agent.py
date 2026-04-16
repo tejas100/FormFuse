@@ -451,6 +451,8 @@ async def run_apply_agent(
     resume_text: str,
     profile:     dict,
     job_id:      str | None = None,
+    resume_id:   str | None = None,
+    user_id:     str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Async generator yielding SSE-ready step dicts."""
     from services.form_filler import detect_fields, write_free_text
@@ -500,6 +502,31 @@ async def run_apply_agent(
 
             # -- DOM snapshot -------------------------------------------------
             raw_html = await page.content()
+
+            # -- DOM dump (debug) — logs all form elements with label context --
+            try:
+                form_elements = await page.evaluate("""() => {
+                    const results = [];
+                    document.querySelectorAll('input, select, textarea').forEach((el, i) => {
+                        const label = document.querySelector(`label[for="${el.id}"]`);
+                        const parentText = el.closest('.field, .form-field, [class*="question"], .application-field, .field-row')?.textContent?.trim()?.slice(0, 120) || '';
+                        results.push({
+                            i, tag: el.tagName, type: el.type || '',
+                            id: el.id, name: el.name,
+                            placeholder: el.getAttribute('placeholder') || '',
+                            classes: el.className.slice(0, 80),
+                            labelText: label?.textContent?.trim() || '',
+                            parentText: parentText,
+                            optionCount: el.tagName === 'SELECT' ? el.options.length : 0,
+                            firstOptions: el.tagName === 'SELECT' ? Array.from(el.options).slice(0,4).map(o=>o.text) : [],
+                        });
+                    });
+                    return results;
+                }""")
+                for el in form_elements:
+                    logger.info(f"[dom_dump] {el}")
+            except Exception as _de:
+                logger.warning(f"[dom_dump] failed: {_de}")
 
             # -- LLM field detection ------------------------------------------
             yield _step("ok", "Analysing form fields...")
@@ -644,6 +671,78 @@ async def run_apply_agent(
 
                 await asyncio.sleep(0.35)
 
+            # -- Resume file upload ------------------------------------------
+            # The LLM marks file fields as skip=True. We handle them here
+            # by downloading from Supabase Storage and using set_input_files().
+            resume_file_field = next(
+                (f for f in fields
+                 if f.get("field_type") == "file"
+                 or "resume" in (f.get("field_label") or "").lower()
+                 or "cv" in (f.get("field_label") or "").lower()),
+                None
+            )
+            if resume_file_field and resume_id and user_id:
+                import tempfile, os as _os, httpx as _httpx
+                try:
+                    # Get signed URL from our own resumes endpoint
+                    from db.database import AsyncSessionLocal as _ASL
+                    from models.orm import Resume as _ResumeORM
+                    from sqlalchemy import select as _select
+                    import uuid as _uuid2
+                    async with _ASL() as _rdb:
+                        _res = await _rdb.execute(
+                            _select(_ResumeORM).where(
+                                _ResumeORM.id == _uuid2.UUID(resume_id),
+                                _ResumeORM.user_id == _uuid2.UUID(user_id),
+                            )
+                        )
+                        _resume_row = _res.scalar_one_or_none()
+
+                    if _resume_row and _resume_row.storage_path:
+                        from supabase import create_client as _sb_create
+                        _sb = _sb_create(
+                            _os.environ["SUPABASE_URL"],
+                            _os.environ["SUPABASE_SERVICE_KEY"],
+                        )
+                        _signed = _sb.storage.from_("resumes").create_signed_url(
+                            _resume_row.storage_path, 120
+                        )
+                        _signed_url = _signed.get("signedURL") or _signed.get("signedUrl") or ""
+                        if _signed_url:
+                            yield _step("ok", "Downloading resume for upload...")
+                            async with _httpx.AsyncClient() as _hx:
+                                _r = await _hx.get(_signed_url, timeout=20)
+                            _ext = (_resume_row.file_ext or "pdf").lstrip(".")
+                            _fname = (_resume_row.filename or f"resume.{_ext}")
+                            with tempfile.NamedTemporaryFile(
+                                suffix=f".{_ext}", prefix="rack_resume_", delete=False
+                            ) as _tf:
+                                _tf.write(_r.content)
+                                _tmp_path = _tf.name
+
+                            # Find file input on page and upload
+                            _file_inp = page.locator('input[type="file"]').first
+                            if await _file_inp.count() > 0:
+                                await _file_inp.set_input_files(_tmp_path)
+                                filled_count += 1
+                                yield _step("ok", f'Attached resume: {_fname}')
+                            else:
+                                yield _step("skip", "No file input found on page")
+                            # Clean up temp file
+                            try:
+                                _os.unlink(_tmp_path)
+                            except Exception:
+                                pass
+                        else:
+                            yield _step("skip", "Could not get resume download URL")
+                    else:
+                        yield _step("skip", "Resume storage path not found")
+                except Exception as _fe:
+                    logger.warning(f"[browser_agent] Resume upload failed: {_fe}")
+                    yield _step("skip", f"Resume attach failed: {str(_fe)[:80]}")
+            elif resume_file_field:
+                yield _step("skip", "Skipping: Resume (no resume_id provided)")
+
             # -- Pre-submit scroll & validation ----------------------------------
             yield _step("ok", str(filled_count) + " field(s) filled — preparing to submit...")
             await asyncio.sleep(0.4)
@@ -756,15 +855,14 @@ async def run_apply_agent(
                     "job_id":       job_id,
                 }
             else:
-                # Submit was clicked but we couldn't confirm — still report success
-                yield _step("ok", "Submit clicked — could not detect confirmation page")
+                # Submit was clicked but confirmation page not detected —
+                # do NOT mark as applied (form may have had validation errors)
+                yield _step("error", "Submit clicked — could not detect confirmation page")
                 yield {
-                    "type":         "submitted",
-                    "text":         "Application submitted to " + company,
+                    "type":         "done",
+                    "text":         "Form filled but submission unconfirmed — check " + company + " for status",
                     "filled_count": filled_count,
                     "job_url":      job_url,
-                    "confirmation": None,
-                    "job_id":       job_id,
                 }
 
         except Exception as e:

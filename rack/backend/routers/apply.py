@@ -179,13 +179,16 @@ async def apply_stream(
                 resume_text = profile.get("resume_text", ""),
                 profile     = profile,
                 job_id      = request.job_id,
+                resume_id   = request.resume_id,
+                user_id     = str(current_user.id),
             ):
                 yield _sse(event)
 
                 # On successful submit — mark applied in DB
                 if event.get("type") == "submitted" and event.get("job_id"):
                     try:
-                        async with __import__("db.database", fromlist=["AsyncSessionLocal"]).AsyncSessionLocal() as apply_db:
+                        from db.database import AsyncSessionLocal
+                        async with AsyncSessionLocal() as apply_db:
                             await apply_db.execute(
                                 sa_update(AutoMatchResult)
                                 .where(
