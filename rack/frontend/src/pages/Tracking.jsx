@@ -164,7 +164,7 @@ function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, 
 /* ══════════════════════════════════════════════════════════════════
    MATCH CARD — shared between both tabs
    ══════════════════════════════════════════════════════════════════ */
-function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onApply }) {
+function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onApply, isNew, isSaved, onSave }) {
   const displayScore = match.llm_score ?? match.score ?? 0;
   const sc = scoreColor(displayScore);
   const pct = Math.min(displayScore, 100);
@@ -183,10 +183,14 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
       onClick={onToggle}
       style={{
         background: "var(--surface)",
-        border: expanded ? "1px solid var(--border-bright)" : "1px solid var(--border)",
-        borderRadius: 16, padding: 0, marginBottom: 10, cursor: "pointer",
-        transition: "all 0.2s", overflow: "hidden",
-        animation: `fadeUp 0.4s ease ${index * 0.05}s both`,
+        border: isNew
+          ? "1px solid rgba(232,255,107,0.22)"
+          : expanded ? "1px solid var(--border-bright)" : "1px solid var(--border)",
+        borderLeft: isNew ? "3px solid var(--accent)" : undefined,
+        borderRadius: 16, padding: 0, marginBottom: 6, cursor: "pointer",
+        transition: "border 0.2s", overflow: "hidden",
+        opacity: 0,
+        animation: `fadeUp 0.4s ease ${Math.min(index * 0.04, 0.3)}s forwards`,
       }}
     >
       {/* Score bar top accent */}
@@ -195,14 +199,14 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
         width: `${pct}%`, transition: "width 0.8s cubic-bezier(0.22,1,0.36,1)",
       }} />
 
-      <div style={{ padding: "16px 20px" }}>
+      <div style={{ padding: "12px 16px" }}>
         {/* Row 1: Title + Score + Source */}
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
           <div style={{
-            width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+            width: 30, height: 30, borderRadius: 8, flexShrink: 0,
             background: `${sc}12`, border: `1px solid ${sc}25`,
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontFamily: "var(--font-display)", fontSize: 14, fontWeight: 800,
+            fontFamily: "var(--font-display)", fontSize: 12, fontWeight: 800,
             color: sc,
           }}>
             {index + 1}
@@ -210,13 +214,45 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
 
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{
-              fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 700,
-              color: "var(--text)", letterSpacing: "-0.3px",
+              fontFamily: "var(--font-display)", fontSize: 14, fontWeight: 700,
+              color: "var(--text)", letterSpacing: "-0.2px",
               wordBreak: "break-word", overflowWrap: "break-word",
+              display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
             }}>
-              {match.job_title}
+              <span>{match.job_title}</span>
+              {isNew && (
+                <span style={{
+                  fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 20,
+                  letterSpacing: "0.12em", textTransform: "uppercase",
+                  background: "rgba(232,255,107,0.15)", color: "var(--accent)",
+                  border: "1px solid rgba(232,255,107,0.3)",
+                  flexShrink: 0,
+                }}>🆕 NEW TODAY</span>
+              )}
+              {onSave && (
+                <button
+                  onClick={onSave}
+                  title={isSaved ? "Saved" : "Save job"}
+                  style={{
+                    background: "none", border: "none", padding: "1px 2px",
+                    cursor: "pointer", lineHeight: 1, flexShrink: 0,
+                    color: isSaved ? "var(--accent)" : "var(--text-dim)",
+                    fontSize: 13, transition: "color 0.15s",
+                    opacity: isSaved ? 1 : 0.5,
+                  }}
+                >
+                  {isSaved ? "★" : "☆"}
+                </button>
+              )}
+              {isApplied && (
+                <span style={{
+                  fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20,
+                  background: "rgba(52,211,153,0.12)", color: "#34d399",
+                  border: "1px solid rgba(52,211,153,0.28)", flexShrink: 0,
+                }}>✓ Applied</span>
+              )}
             </div>
-            <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 3, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
               <span style={{ fontWeight: 500 }}>
                 {match.company ? match.company.charAt(0).toUpperCase() + match.company.slice(1) : ""}
               </span>
@@ -230,7 +266,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
           </div>
 
           <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end", marginBottom: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end", marginBottom: 3 }}>
               {match.scoring_method === "llm+hybrid" && (
                 <span style={{
                   fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 20,
@@ -239,14 +275,14 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
                 }}>AI</span>
               )}
               <div style={{
-                fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 800,
+                fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800,
                 color: sc, letterSpacing: "-1px", lineHeight: 1,
               }}>
                 {match.llm_score ?? match.score}%
               </div>
             </div>
             {match.llm_recommendation && match.scoring_method === "llm+hybrid" && (
-              <div style={{ marginBottom: 4 }}>
+              <div style={{ marginBottom: 3 }}>
                 <span style={{
                   fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
                   letterSpacing: "0.06em", textTransform: "uppercase",
@@ -260,62 +296,84 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
           </div>
         </div>
 
-        {/* Row 2: Skills pills */}
-        <div style={{ display: "flex", gap: 5, marginTop: 12, flexWrap: "wrap" }}>
-          {(match.matched_skills || []).slice(0, 4).map((s) => (
-            <span key={s} style={{
-              fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 20,
-              background: "rgba(52,211,153,0.1)", color: "var(--accent3)",
-            }}>
-              ✓ {s}
-            </span>
-          ))}
-          {(match.missing_skills || []).slice(0, 2).map((s) => (
-            <span key={s} style={{
-              fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 20,
-              background: "rgba(248,113,113,0.1)", color: "var(--danger)",
-            }}>
-              ✗ {s}
-            </span>
-          ))}
-          {((match.matched_skills || []).length > 4 || (match.missing_skills || []).length > 2) && (
-            <span style={{
-              fontSize: 10, fontWeight: 500, padding: "3px 9px", borderRadius: 20,
-              background: "var(--surface2)", color: "var(--text-dim)",
-            }}>
-              +{Math.max(0, (match.matched_skills || []).length - 4 + (match.missing_skills || []).length - 2)} more
-            </span>
-          )}
-        </div>
-
-        {/* Best resume label — now clickable to download */}
-        {match.resume_name && (
-          <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
-            Best match:{" "}
-            {match.resume_id ? (
-              <button
-                onClick={handleDownload}
-                disabled={downloading}
-                title={`Download ${match.resume_name}`}
-                style={{
-                  background: "none", border: "none", padding: "1px 6px",
-                  borderRadius: 6, cursor: "pointer",
-                  color: "var(--accent)", fontWeight: 600, fontSize: 11,
-                  fontFamily: "var(--font-body)",
-                  display: "inline-flex", alignItems: "center", gap: 4,
-                  opacity: downloading ? 0.5 : 1,
-                  transition: "all 0.15s",
-                  textDecoration: "underline", textDecorationStyle: "dotted",
-                  textUnderlineOffset: 2,
-                }}
-              >
-                {downloading ? "Downloading…" : `${match.resume_name} ↓`}
-              </button>
-            ) : (
-              <span style={{ color: "var(--accent)", fontWeight: 600 }}>{match.resume_name}</span>
+        {/* Row 2: Skills pills + bottom meta in one compact area */}
+        {((match.matched_skills || []).length > 0 || (match.missing_skills || []).length > 0) && (
+          <div style={{ display: "flex", gap: 4, marginTop: 8, flexWrap: "wrap" }}>
+            {(match.matched_skills || []).slice(0, 3).map((s) => (
+              <span key={s} style={{
+                fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
+                background: "rgba(52,211,153,0.1)", color: "var(--accent3)",
+              }}>
+                ✓ {s}
+              </span>
+            ))}
+            {(match.missing_skills || []).slice(0, 2).map((s) => (
+              <span key={s} style={{
+                fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
+                background: "rgba(248,113,113,0.1)", color: "var(--danger)",
+              }}>
+                ✗ {s}
+              </span>
+            ))}
+            {((match.matched_skills || []).length > 3 || (match.missing_skills || []).length > 2) && (
+              <span style={{
+                fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 20,
+                background: "var(--surface2)", color: "var(--text-dim)",
+              }}>
+                +{Math.max(0, (match.matched_skills || []).length - 3 + (match.missing_skills || []).length - 2)} more
+              </span>
             )}
           </div>
         )}
+
+        {/* Row 3: Best match + Apply — single compact line */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+          {match.resume_name && (
+            <div style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 4 }}>
+              Best match:{" "}
+              {match.resume_id ? (
+                <button
+                  onClick={handleDownload}
+                  disabled={downloading}
+                  title={`Download ${match.resume_name}`}
+                  style={{
+                    background: "none", border: "none", padding: "0 4px",
+                    borderRadius: 6, cursor: "pointer",
+                    color: "var(--accent)", fontWeight: 600, fontSize: 11,
+                    fontFamily: "var(--font-body)",
+                    display: "inline-flex", alignItems: "center", gap: 3,
+                    opacity: downloading ? 0.5 : 1, transition: "all 0.15s",
+                    textDecoration: "underline", textDecorationStyle: "dotted",
+                    textUnderlineOffset: 2,
+                  }}
+                >
+                  {downloading ? "Downloading…" : `${match.resume_name} ↓`}
+                </button>
+              ) : (
+                <span style={{ color: "var(--accent)", fontWeight: 600 }}>{match.resume_name}</span>
+              )}
+            </div>
+          )}
+          {!expanded && match.job_url && onApply && !isApplied && (
+            <a
+              href={match.job_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => { e.stopPropagation(); if (onApply) onApply(); }}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 4,
+                padding: "4px 12px", borderRadius: 20,
+                background: "rgba(232,255,107,0.12)", color: "var(--accent)",
+                border: "1px solid rgba(232,255,107,0.25)",
+                fontFamily: "var(--font-body)", fontWeight: 600, fontSize: 11,
+                textDecoration: "none", transition: "all 0.15s",
+                marginLeft: "auto",
+              }}
+            >
+              Apply ↗
+            </a>
+          )}
+        </div>
 
         {/* Expanded details */}
         {expanded && (
@@ -1300,6 +1358,10 @@ function AutoMatchesTab({ profile, isPowerUser }) {
     try { return new Set(JSON.parse(localStorage.getItem("rack_applied_jobs") || "[]")); }
     catch { return new Set(); }
   });
+  const [savedJobs, setSavedJobs]       = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("rack_saved_jobs") || "[]")); }
+    catch { return new Set(); }
+  });
   const [applyPrompt, setApplyPrompt]   = useState(null); // { job_id, job_title }
   const [dailySlots, setDailySlots]     = useState([]);
   const [slotsIsFresh, setSlotsIsFresh] = useState(false);
@@ -1343,6 +1405,15 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       }
     };
     document.addEventListener("visibilitychange", onVisible);
+  };
+
+  const toggleSaved = (job_id) => {
+    setSavedJobs(prev => {
+      const next = new Set(prev);
+      next.has(job_id) ? next.delete(job_id) : next.add(job_id);
+      localStorage.setItem("rack_saved_jobs", JSON.stringify([...next]));
+      return next;
+    });
   };
 
   const loadMeta = useCallback(async () => {
@@ -1454,6 +1525,8 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       filterBy === "65"           ? score >= 65 :
       filterBy === "strong"       ? m.llm_recommendation === "Strong Match" :
       filterBy === "exceptional"  ? m.llm_recommendation === "Exceptional Fit" :
+      filterBy === "saved"        ? savedJobs.has(m.job_id) :
+      filterBy === "applied"      ? appliedJobs.has(m.job_id) :
       true;
     return titleMatch && scoreMatch;
   });
@@ -1631,7 +1704,8 @@ function AutoMatchesTab({ profile, isPowerUser }) {
                   borderLeft: `3px solid ${isScore ? "var(--accent)" : "var(--accent3)"}`,
                   borderRadius: 14, padding: 0, marginBottom: 8, cursor: "pointer",
                   transition: "all 0.2s", overflow: "hidden",
-                  animation: `fadeUp 0.4s ease ${i * 0.05}s both`,
+                  animation: `fadeUp 0.4s ease ${Math.min(i * 0.04, 0.2)}s forwards`,
+                  opacity: 0,
                 }}
               >
                 {/* Score bar */}
@@ -1776,30 +1850,44 @@ function AutoMatchesTab({ profile, isPowerUser }) {
                 appearance: "none",
                 WebkitAppearance: "none",
                 cursor: "pointer",
-                background: filterBy !== "all"
+                background: filterBy === "saved"
+                  ? "rgba(232,255,107,0.07)"
+                  : filterBy === "applied"
+                  ? "rgba(52,211,153,0.07)"
+                  : filterBy !== "all"
                   ? "rgba(52,211,153,0.06)"
                   : "var(--surface)",
-                color: filterBy !== "all"
+                color: filterBy === "saved"
+                  ? "var(--accent)"
+                  : filterBy === "applied"
+                  ? "#34d399"
+                  : filterBy !== "all"
                   ? "#34d399"
                   : "var(--text-dim)",
-                border: filterBy !== "all"
+                border: filterBy === "saved"
+                  ? "1px solid rgba(232,255,107,0.28)"
+                  : filterBy === "applied"
+                  ? "1px solid rgba(52,211,153,0.3)"
+                  : filterBy !== "all"
                   ? "1px solid rgba(52,211,153,0.28)"
                   : "1px solid var(--border)",
                 transition: "all 0.18s",
-                minWidth: 152,
+                minWidth: 164,
               }}
             >
               <option value="all">⊙ All matches</option>
-              <option value="85">★ 85%+ · Strong only</option>
-              <option value="75">◆ 75%+ · Good & above</option>
-              <option value="65">● 65%+ · Partial & above</option>
+              <option value="saved">★ Saved</option>
+              <option value="applied">✓ Applied</option>
+              <option value="85">↑ 85%+ · Strong only</option>
+              <option value="75">↑ 75%+ · Good &amp; above</option>
+              <option value="65">↑ 65%+ · Partial &amp; above</option>
               <option value="strong">✦ Strong Match label</option>
               <option value="exceptional">⚡ Exceptional Fit label</option>
             </select>
             <span style={{
               position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)",
               pointerEvents: "none", fontSize: 10,
-              color: filterBy !== "all" ? "#34d399" : "var(--text-dim)",
+              color: filterBy === "saved" ? "var(--accent)" : filterBy !== "all" ? "#34d399" : "var(--text-dim)",
             }}>▾</span>
           </div>
 
@@ -1855,34 +1943,15 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       {!loading && paginated.map((m, i) => {
         const isNew = isSlotView && newJobIds.has(m.job_id);
         return (
-          <div key={m.job_id} style={{ position: "relative" }}>
-            {isNew && (
-              <div style={{
-                position: "absolute", top: 10, right: 10, zIndex: 2,
-                fontSize: 8, fontWeight: 800, padding: "3px 8px", borderRadius: 20,
-                letterSpacing: "0.12em", textTransform: "uppercase",
-                background: "rgba(232,255,107,0.15)", color: "var(--accent)",
-                border: "1px solid rgba(232,255,107,0.3)",
-                pointerEvents: "none",
-              }}>
-                🆕 NEW TODAY
-              </div>
-            )}
-            <div style={isNew ? {
-              border: "1px solid rgba(232,255,107,0.22)",
-              borderLeft: "3px solid var(--accent)",
-              borderRadius: 16,
-              overflow: "hidden",
-              marginBottom: 10,
-            } : {}}>
-              <MatchCard match={m} index={(page - 1) * PAGE_SIZE + i}
-                expanded={expandedId === m.job_id}
-                onToggle={() => setExpandedId(expandedId === m.job_id ? null : m.job_id)}
-                isAuto={true}
-                isApplied={appliedJobs.has(m.job_id)}
-                onApply={() => handleApplyClick(m.job_id, m.job_title)} />
-            </div>
-          </div>
+          <MatchCard key={m.job_id} match={m} index={(page - 1) * PAGE_SIZE + i}
+            expanded={expandedId === m.job_id}
+            onToggle={() => setExpandedId(expandedId === m.job_id ? null : m.job_id)}
+            isAuto={true}
+            isNew={isNew}
+            isApplied={appliedJobs.has(m.job_id)}
+            onApply={() => handleApplyClick(m.job_id, m.job_title)}
+            isSaved={savedJobs.has(m.job_id)}
+            onSave={(e) => { e.stopPropagation(); toggleSaved(m.job_id); }} />
         );
       })}
 

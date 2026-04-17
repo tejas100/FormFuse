@@ -204,3 +204,9 @@ html, body, #root {
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+
+/* ── Syne display font — vertical stretch ───────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  transform: scaleY(1.2);
+  transform-origin: left center;
+}
