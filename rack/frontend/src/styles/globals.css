@@ -79,11 +79,11 @@
   --page-padding-bottom: 40px;
 }
 
-/* Mobile: nav at bottom (~68px), top bar at top (52px) */
+/* Mobile: no bottom tab bar — just safe area */
 @media (max-width: 600px) {
   :root {
     --page-padding-top: calc(52px + 16px);
-    --page-padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    --page-padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   }
 }
 

@@ -732,7 +732,7 @@ Call exactly ONE routing tool now."""
         if selected_tool == "route_off_topic":
             return ChatResponse(
                 tool="route_off_topic", intent="OFF_TOPIC",
-                reply="I'm built to help you land your next job — paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
+                reply="I'm built to help you land your next job, paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
             )
 
         # show_matched_jobs — run the DB tool and return structured rows

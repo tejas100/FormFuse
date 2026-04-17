@@ -119,13 +119,16 @@ export default function Account() {
 /* ── Sign-in screen (anonymous users) ───────────────────────────────────── */
 function SignInScreen({ onSignIn }) {
   return (
-    <div style={{
+    <div className="account-scroll-view" style={{
       position: 'absolute', inset: 0,
       display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      padding: '20px 24px',
+      alignItems: 'center', justifyContent: 'flex-start',
+      padding: '24px 24px',
       paddingTop: 'var(--page-padding-top)',
-      paddingBottom: 'var(--page-padding-bottom)',
+      paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      WebkitOverflowScrolling: 'touch',
       animation: 'fadeUp 0.4s ease both',
     }}>
       <div style={{ width: '100%', maxWidth: 400 }}>
@@ -133,18 +136,24 @@ function SignInScreen({ onSignIn }) {
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <div style={{
-            width: 52, height: 52, borderRadius: '50%',
-            background: 'rgba(232,255,107,0.08)',
-            border: '1px solid rgba(232,255,107,0.15)',
+            width: 48, height: 48, borderRadius: 12,
+            background: 'rgba(232,255,107,0.06)',
+            border: '1px solid rgba(232,255,107,0.12)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 22, margin: '0 auto 16px',
-          }}>👤</div>
+            margin: '0 auto 20px',
+          }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2L2 7l10 5 10-5-10-5Z" stroke="rgba(232,255,107,0.8)" strokeWidth="1.5" strokeLinejoin="round"/>
+              <path d="M2 17l10 5 10-5" stroke="rgba(232,255,107,0.8)" strokeWidth="1.5" strokeLinejoin="round"/>
+              <path d="M2 12l10 5 10-5" stroke="rgba(232,255,107,0.8)" strokeWidth="1.5" strokeLinejoin="round"/>
+            </svg>
+          </div>
           <div style={{
             fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700,
-            color: 'var(--text)', letterSpacing: '-0.3px', marginBottom: 8,
+            color: 'var(--text)', letterSpacing: '-0.4px', marginBottom: 8,
           }}>Your Rack account</div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>
-            Sign in to save your resumes, get daily job matches, and track your applications.
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6, maxWidth: 300, margin: '0 auto' }}>
+            AI-powered job matching that works while you're upskilling yourself.
           </div>
         </div>
 
@@ -167,36 +176,90 @@ function SignInScreen({ onSignIn }) {
           Continue with Google
         </button>
 
-        {/* What you get */}
+        {/* What you unlock */}
         <div style={{
-          padding: '18px 20px', borderRadius: 14,
+          borderRadius: 14,
           background: 'var(--surface)', border: '1px solid var(--border)',
-          marginTop: 8,
+          marginTop: 8, overflow: 'hidden',
         }}>
           <div style={{
-            fontFamily: 'var(--font-display)', fontSize: 12, fontWeight: 700,
-            textTransform: 'uppercase', letterSpacing: '0.08em',
-            color: 'var(--text-dim)', marginBottom: 12,
+            padding: '14px 20px 10px',
+            fontFamily: 'var(--font-display)', fontSize: 11, fontWeight: 700,
+            textTransform: 'uppercase', letterSpacing: '0.1em',
+            color: 'var(--text-dim)', borderBottom: '1px solid var(--border)', transform: "scaleY(1)",   transformOrigin: "left center"
           }}>What you unlock</div>
+
           {[
-            { icon: '⚡', text: 'Daily job matches — we scan 80+ companies for you' },
-            { icon: '📋', text: 'Track applications from saved → offer' },
-            { icon: '💾', text: 'Your resumes saved across sessions' },
-            { icon: '🎯', text: 'Personalized matching based on your profile' },
-          ].map(({ icon, text }) => (
-            <div key={text} style={{
-              display: 'flex', alignItems: 'flex-start', gap: 10,
-              marginBottom: 10, fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.5,
+            {
+              svg: <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2"/><path d="M8 4.5V8l2 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
+              title: '150+ company boards, scanned every hour',
+              sub: 'Greenhouse, Ashby, and Lever, checked continuously so you see openings before most applicants.',
+            },
+            {
+              svg: <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 3h12M2 7h8M2 11h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/><circle cx="13" cy="11" r="2.5" stroke="currentColor" strokeWidth="1.2"/></svg>,
+              title: 'Two-stage AI scoring on your actual resume text',
+              sub: 'pgvector semantic search narrows the field. Rack AI then reads your resume against each JD, not keyword overlap.',
+            },
+            {
+              svg: <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="7" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="9" y="2" width="5" height="4" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="9" y="8" width="5" height="6" rx="1" stroke="currentColor" strokeWidth="1.2"/><rect x="2" y="11" width="5" height="3" rx="1" stroke="currentColor" strokeWidth="1.2"/></svg>,
+              title: 'Every resume ranked simultaneously',
+              sub: 'Upload multiple resumes, RACK surfaces which one fits each role best and explains the gap.',
+            },
+            {
+              svg: <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1.5L9.8 6h4.7l-3.8 2.8 1.5 4.7L8 10.7l-4.2 2.8 1.5-4.7L1.5 6H6.2L8 1.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>,
+              title: '15–20 role aliases so nothing slips through',
+              sub: '"ML Engineer," "Applied Scientist," "AI/ML Engineer", all checked so a title quirk doesn\'t cost you a match.',
+            },
+          ].map(({ svg, title, sub }, i) => (
+            <div key={i} style={{
+              display: 'flex', gap: 14, padding: '14px 20px',
+              borderBottom: i < 3 ? '1px solid var(--border)' : 'none',
             }}>
-              <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>{icon}</span>
-              {text}
+              <div style={{
+                width: 28, height: 28, flexShrink: 0, borderRadius: 8,
+                background: 'rgba(232,255,107,0.06)',
+                border: '1px solid rgba(232,255,107,0.12)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'rgba(232,255,107,0.7)', marginTop: 1,
+              }}>{svg}</div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 3, letterSpacing: '-0.1px' }}>{title}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.55 }}>{sub}</div>
+              </div>
             </div>
           ))}
         </div>
 
         {/* Privacy note */}
-        <div style={{ textAlign: 'center', marginTop: 16, fontSize: 11, color: 'var(--text-dim)', opacity: 0.6 }}>
-          We only store your email and resume data. Nothing is shared.
+        <div style={{ textAlign: 'center', marginTop: 14, fontSize: 11, color: 'var(--text-dim)', opacity: 0.55, lineHeight: 1.6 }}>
+          We store your email and resume data only.<br />Nothing is sold, shared, or used for advertising. 
+          
+
+          <br />
+          <br />
+
+<a href="https://tejasbk.dev"
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{ textDecoration: 'none', display: 'inline-block' }}
+  >
+  <span style={{
+    background: 'linear-gradient(90deg, #666 0%, #fff 40%, #bebebe 60%, #666666 100%)',
+    backgroundSize: '200% auto',
+    WebkitBackgroundClip: 'text',
+    WebkitTextFillColor: 'transparent',
+    backgroundClip: 'text',
+    animation: 'shimmer 2.5s linear infinite',
+    display: 'inline-block',
+    opacity: 1,
+    fontWeight: '900'
+  }}>
+    Built by a jobless AI/ML Engineer, Tejas B K
+  </span> </a>
+   <br />
+    <br />
+     <br />
+     <br />
         </div>
       </div>
     </div>
@@ -370,6 +433,14 @@ function AuthenticatedAccount({ user, onSignOut }) {
         animation: 'fadeUp 0.3s ease both',
       }}>
         <style>{`
+          @media (max-width: 600px) {
+            .account-scroll-view {
+              position: fixed !important;
+              top: 65px !important;
+              left: 0 !important; right: 0 !important; bottom: 0 !important;
+              padding-top: 24px !important;
+            }
+          }
           @keyframes rack-logout-shimmer {
             0%   { background-position: -600px 0; }
             100% { background-position:  600px 0; }
@@ -471,10 +542,11 @@ function AuthenticatedAccount({ user, onSignOut }) {
       </div>
     )}
 
-    <div style={{
-      position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+    <div className="account-scroll-view" style={{
+      position: 'absolute', inset: 0,
+      display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'flex-start',
-      padding: 20, paddingTop: 'var(--page-padding-top)', paddingBottom: 'var(--page-padding-bottom)',
+      padding: 20, paddingTop: 'var(--page-padding-top)', paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
       overflowY: 'auto', animation: 'fadeUp 0.4s ease both',
     }}>
       <div style={{ width: '100%', maxWidth: 520 }}>

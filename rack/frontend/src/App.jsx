@@ -23,7 +23,7 @@ function ThemeProvider({ children }) {
   )
 }
 import { AuthProvider, useAuth } from './context/AuthContext'
-import TabBar from './components/TabBar'
+import TabBar, { MobileMenu } from './components/TabBar'
 import Home from './pages/Home'
 import Resumes from './pages/Resumes'
 import Tracking from './pages/Tracking'
@@ -75,7 +75,7 @@ function AppInner() {
         .app {
           width: 100vw; height: 100vh;
           display: flex; flex-direction: column;
-          align-items: center; position: relative; overflow: hidden;
+          align-items: center; position: relative; overflow: clip;
         }
 
         /* ── Blobs ── */
@@ -121,7 +121,7 @@ function AppInner() {
         /* ── Mobile overrides ── */
         @media (max-width: 600px) {
           .logo { display: none; }
-          .mobile-header { display: flex !important; }
+          .mobile-header { display: grid !important; }
         }
 
         /* Mobile top bar */
@@ -131,8 +131,9 @@ function AppInner() {
           top: 0; left: 0; right: 0;
           z-index: 200;
           height: 65px;
+          grid-template-columns: 54px 1fr 54px;
           align-items: center;
-          justify-content: center;
+          padding: 0 16px;
           background: linear-gradient(
             to bottom,
             var(--mobile-header-bg-start) 0%,
@@ -140,6 +141,11 @@ function AppInner() {
             var(--mobile-header-bg-end) 80%,
             rgba(0,0,0,0.0) 130%
           );
+        }
+        .mobile-header-left {
+          display: flex;
+          align-items: center;
+          justify-content: flex-start;
         }
         .mobile-header::after {
           content: '';
@@ -162,6 +168,7 @@ function AppInner() {
           color: var(--text);
           display: flex;
           align-items: center;
+          justify-content: center;
           gap: 7px;
         }
         .mobile-header-dot {
@@ -178,10 +185,21 @@ function AppInner() {
           display: flex;
           flex-direction: column;
           align-items: center;
-          justify-content: center;
+          justify-content: flex-start;
           padding: 40px 24px;
+          padding-top: calc(var(--page-padding-top, 100px) + 16px);
+          overflow-y: auto;
+          overflow-x: hidden;
+          -webkit-overflow-scrolling: touch;
           animation: fadeUp 0.4s ease both;
           z-index: 10;
+        }
+        @media (max-width: 600px) {
+          .gate-screen {
+            padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+            padding-top: calc(65px + 16px);
+            justify-content: flex-start;
+          }
         }
         .gate-card {
           width: 100%;
@@ -262,6 +280,9 @@ function AppInner() {
       `}</style>
 
       <div className="mobile-header">
+        <div className="mobile-header-left">
+          <MobileMenu active={active} onSwitch={switchTab} />
+        </div>
         <div className="mobile-header-logo">
           <div className="mobile-header-dot" />
           Rack
@@ -272,49 +293,188 @@ function AppInner() {
 }
 
 // ── Gate screen — shown for auth-required tabs when signed out ────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// INSTRUCTIONS: In App.jsx, find `function GateScreen` and replace the
+// ENTIRE function (from `function GateScreen` through its closing `}`) with
+// the code below. Everything else in App.jsx stays exactly the same.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INSTRUCTIONS: In App.jsx, find `function GateScreen` and replace the
+// ENTIRE function (from `function GateScreen` through its closing `}`) with
+// the code below. Everything else in App.jsx stays exactly the same.
+// ─────────────────────────────────────────────────────────────────────────────
+
 function GateScreen({ tab, onSignIn }) {
+
+  const icons = {
+    scan: (
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2"/>
+        <path d="M8 4.5V8l2 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+      </svg>
+    ),
+    rank: (
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <path d="M2 3h12M2 7h8M2 11h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+        <circle cx="13" cy="11" r="2.5" stroke="currentColor" strokeWidth="1.2"/>
+      </svg>
+    ),
+    funnel: (
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <path d="M2 3h12l-4.5 5v5l-3-1.5V8L2 3Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+      </svg>
+    ),
+  }
+
   const gateContent = {
     Tracking: {
-      icon: '📋',
-      title: 'Track your applications',
-      subtitle: 'Sign in to save jobs, track your application status, and never lose track of an opportunity.',
+      title: 'Your matched jobs,\ntracked end-to-end.',
+      subtitle: 'RACK surfaces roles from 150+ company boards every hour. This is where you work them.',
       perks: [
-        'Save jobs from Auto Matches with one click',
-        'Track status: Applied → Interview → Offer',
-        'Notes and reminders per application',
+        {
+          icon: 'scan',
+          title: 'Auto-surfaced from 150+ boards',
+          sub: 'Greenhouse, Ashby, and Lever, checked hourly. New roles land here before most applicants see them.',
+        },
+        {
+          icon: 'rank',
+          title: 'AI-ranked against your actual resume',
+          sub: 'Every match is scored by Rack on your real resume text. Score reflects true fit, not keyword overlap.',
+        },
+        {
+          icon: 'funnel',
+          title: 'Full funnel in one view',
+          sub: 'Star a role, mark applied, track to offer. Nothing falls through a spreadsheet crack.',
+        },
       ],
     },
   }
 
   const content = gateContent[tab] || {
-    icon: '🔒',
     title: 'Sign in to continue',
     subtitle: 'This feature requires an account.',
     perks: [],
   }
 
+  const titleLines = content.title.split('\n')
+
   return (
-    <div className="gate-screen">
-      <div className="gate-card">
-        <div className="gate-icon">{content.icon}</div>
-        <div className="gate-title">{content.title}</div>
-        <div className="gate-subtitle">{content.subtitle}</div>
+    <div style={{
+      position: 'absolute', inset: 0,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start',
+      padding: '24px 20px',
+      paddingTop: 'calc(65px + 24px)',
+      paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      WebkitOverflowScrolling: 'touch',
+    }}>
+      <div style={{ width: '100%', maxWidth: 400, animation: 'fadeUp 0.35s ease both' }}>
 
-        <button className="gate-btn-google" onClick={onSignIn}>
-          <GoogleIcon />
-          Continue with Google
-        </button>
+        {/* ── Icon ── */}
+        <div style={{
+          width: 44, height: 44, borderRadius: 11,
+          background: 'rgba(232,255,107,0.06)',
+          border: '1px solid rgba(232,255,107,0.12)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          marginBottom: 20, margin: '0 auto 20px',
+        }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"
+              stroke="rgba(232,255,107,0.75)" strokeWidth="1.5" strokeLinecap="round"/>
+            <rect x="9" y="3" width="6" height="4" rx="1"
+              stroke="rgba(232,255,107,0.75)" strokeWidth="1.5"/>
+            <path d="M9 12h6M9 16h4"
+              stroke="rgba(232,255,107,0.75)" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </div>
 
+        {/* ── Title + subtitle ── */}
+        <div style={{
+          fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700,
+          color: 'var(--text)', letterSpacing: '-0.5px', lineHeight: 1.2,
+          marginBottom: 10, textAlign: 'center',
+        }}>
+          {titleLines.map((line, i) => (
+            <span key={i}>{line}{i < titleLines.length - 1 && <br />}</span>
+          ))}
+        </div>
+        <div style={{
+          fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.65, marginBottom: 24, textAlign: 'center',
+        }}>
+          {content.subtitle}
+        </div>
+
+        {/* ── Feature rows ── */}
         {content.perks.length > 0 && (
-          <div className="gate-perks">
-            {content.perks.map(p => (
-              <div key={p} className="gate-perk">
-                <div className="gate-perk-dot" />
-                {p}
+          <div style={{
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 14, overflow: 'hidden', marginBottom: 20,
+          }}>
+            {content.perks.map(({ icon, title, sub }, i) => (
+              <div key={i} style={{
+                display: 'flex', gap: 14, padding: '14px 18px',
+                borderBottom: i < content.perks.length - 1
+                  ? '1px solid var(--border)' : 'none',
+              }}>
+                {/* Icon pill */}
+                <div style={{
+                  width: 28, height: 28, flexShrink: 0, borderRadius: 8,
+                  background: 'rgba(232,255,107,0.06)',
+                  border: '1px solid rgba(232,255,107,0.12)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'rgba(232,255,107,0.7)', marginTop: 1,
+                }}>
+                  {icons[icon]}
+                </div>
+                {/* Text */}
+                <div>
+                  <div style={{
+                    fontSize: 13, fontWeight: 600, color: 'var(--text)',
+                    marginBottom: 3, letterSpacing: '-0.1px',
+                  }}>
+                    {title}
+                  </div>
+                  <div style={{
+                    fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.55,
+                  }}>
+                    {sub}
+                  </div>
+                </div>
               </div>
             ))}
           </div>
         )}
+
+        {/* ── Google sign-in button ── */}
+        <button
+          onClick={onSignIn}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+            width: '100%', padding: '14px 24px', borderRadius: 30,
+            border: '1px solid var(--border-bright)',
+            background: 'var(--surface)',
+            color: 'var(--text)', fontFamily: 'var(--font-body)',
+            fontSize: 14, fontWeight: 600, cursor: 'pointer',
+            transition: 'background 0.18s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
+          onMouseLeave={e => e.currentTarget.style.background = 'var(--surface)'}
+        >
+          <GoogleIcon size={18} />
+          Continue with Google
+        </button>
+
+        {/* ── Privacy note ── */}
+        <div style={{
+          textAlign: 'center', marginTop: 14,
+          fontSize: 11, color: 'var(--text-dim)', opacity: 0.5, lineHeight: 1.6,
+        }}>
+          We store your email and resume data only.<br />
+          Nothing is sold, shared, or used for advertising.
+        </div>
+
       </div>
     </div>
   )

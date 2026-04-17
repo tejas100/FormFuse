@@ -272,11 +272,11 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
                   fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 20,
                   background: "rgba(232,255,107,0.12)", color: "var(--accent)",
                   border: "1px solid rgba(232,255,107,0.25)", letterSpacing: "0.08em", textTransform: "uppercase",
-                }}>AI</span>
+                }}>Rack AI</span>
               )}
               <div style={{
                 fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800,
-                color: sc, letterSpacing: "-1px", lineHeight: 1,
+                color: sc, letterSpacing: "-1px", lineHeight: 1, transform: "scaleY(1.4)",   transformOrigin: "left center"
               }}>
                 {match.llm_score ?? match.score}%
               </div>
@@ -1342,6 +1342,7 @@ const PAGE_SIZE = 10;
 function AutoMatchesTab({ profile, isPowerUser }) {
   const [matches, setMatches]           = useState([]);
   const [loading, setLoading]           = useState(false);
+  const [initializing, setInitializing] = useState(true); // true until first data fetch completes
   const [meta, setMeta]                 = useState(null);
   const [stats, setStats]               = useState(null);
   const [error, setError]               = useState(null);
@@ -1424,14 +1425,19 @@ function AutoMatchesTab({ profile, isPowerUser }) {
     } catch {}
   }, []);
 
-  // Initial load — wait until hasProfile is true before firing.
-  // Profile arrives async from the parent: on first render it is null so
-  // hasProfile is false. useEffect re-fires when hasProfile changes.
+  // Initial load — fires once profile is known (whether or not target roles are set).
   // hasRun.current ensures we only fire once even if profile re-renders.
   useEffect(() => {
-    if (!hasProfile) return;
+    if (profile === null) return; // still loading profile from parent
     if (hasRun.current) return;
     hasRun.current = true;
+
+    if (!hasProfile) {
+      // Profile loaded but no roles set — nothing to fetch, stop initializing
+      setInitializing(false);
+      return;
+    }
+
     (async () => {
       await loadMeta();
 
@@ -1451,6 +1457,9 @@ function AutoMatchesTab({ profile, isPowerUser }) {
           }
         }
       } catch {}
+
+      // Done initializing — show content now regardless of match count
+      setInitializing(false);
 
       // For free users: trigger daily slot generation (picks today's batch if not yet done)
       // For admin/pro: fetch daily slots for the banner only
@@ -1480,10 +1489,13 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       // Silently run pipeline refresh in background (force=false uses cache)
       handleRefresh(false);
     })();
-  }, [hasProfile]);
+  }, [profile]);
 
   const handleRefresh = async (force = true) => {
-    setLoading(true); setError(null); setStats(null); setPage(1);
+    // Silent background refresh (force=false) never shows the loading animation —
+    // it just quietly updates matches in the background after initial data is shown.
+    const showSpinner = force;
+    if (showSpinner) { setLoading(true); setError(null); setStats(null); setPage(1); }
     try {
       const headers = await getAuthHeaders();
       const r = await fetch(`${API}/auto/refresh`, {
@@ -1511,8 +1523,8 @@ function AutoMatchesTab({ profile, isPowerUser }) {
 
       if (d.stats) setStats(d.stats);
       await loadMeta();
-    } catch (e) { setError("Auto pipeline failed: " + e.message); }
-    setLoading(false);
+    } catch (e) { if (showSpinner) setError("Auto pipeline failed: " + e.message); }
+    if (showSpinner) setLoading(false);
   };
 
   const filtered = matches.filter(m => {
@@ -1553,6 +1565,24 @@ function AutoMatchesTab({ profile, isPowerUser }) {
     color: "var(--text)", fontFamily: "var(--font-body)", fontSize: 12, outline: "none",
   };
 
+  // While we're still waiting for the first data fetch, show a single
+  // clean loading state. This prevents the flash sequence:
+  // "set target roles" → "finding matches" → jobs → loading animation.
+  if (initializing) {
+    return (
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ fontSize: 36, marginBottom: 14 }}>🎯</div>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>
+          RACK is finding your matches
+        </div>
+        <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
+          We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
+        </div>
+      </div>
+    );
+  }
+
+  // Profile not set — only shown after initializing completes (so no flash)
   if (!hasProfile) {
     return (
       <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
@@ -1919,11 +1949,11 @@ function AutoMatchesTab({ profile, isPowerUser }) {
               <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 24, marginBottom: 14, color: "var(--accent)", opacity: 0.4 }}>[ no matches ]</div>
               <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>No matches yet</div>
               <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto 20px", lineHeight: 1.6 }}>
-                Hit "Refresh Auto" to scan ~80 top tech companies and surface your best-matched {profile.target_roles?.[0] || "role"} openings.
+                Hit "Refresh" to scan top tech companies and surface your best-matched {profile?.target_roles?.[0] || "role"} openings.
               </div>
               <button onClick={() => handleRefresh(true)} disabled={loading}
                 style={{ padding: "10px 24px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                ⟳ Refresh Auto
+                ⟳ Refresh
               </button>
             </>
           ) : (
@@ -2434,7 +2464,7 @@ export default function Tracking() {
 
         {/* ── Header ─────────────────────────────────────────── */}
         <div style={{ marginBottom: 8 }}>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 32, fontWeight: 800, letterSpacing: "-1px", marginBottom: 4 }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 32, fontWeight: 800, letterSpacing: "-1px", marginBottom: 4, transform: "scaleY(1.3)",   transformOrigin: "left center"}}>
             Job Matches
           </div>
         </div>
@@ -2452,8 +2482,19 @@ export default function Tracking() {
         )}
 
         {/* ── Tab content ─────────────────────────────────────── */}
-        {activeTab === "auto" && (
+        {activeTab === "auto" && userRole !== null && (
           <AutoMatchesTab profile={profile} isPowerUser={isPowerUser} />
+        )}
+        {activeTab === "auto" && userRole === null && (
+          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center" }}>
+            <div style={{ fontSize: 36, marginBottom: 14 }}>🎯</div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6 }}>
+              RACK is finding your matches
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
+              We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
+            </div>
+          </div>
         )}
         {activeTab === "fresh" && isPowerUser && (
           <FreshJobsTab />

@@ -1,7 +1,169 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 
 const TABS = ['Home', 'Resumes', 'Tracking', 'Account']
 const TAB_ICONS = { Home: '⌂', Resumes: '📋', Tracking: '📍', Account: '◎' }
+
+// ── Mobile hamburger dropdown ─────────────────────────────────────────────────
+export function MobileMenu({ active, onSwitch }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    document.addEventListener('touchstart', handler)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('touchstart', handler)
+    }
+  }, [open])
+
+  return (
+    <>
+      <style>{`
+        .mob-menu-wrap {
+          position: relative;
+          z-index: 300;
+        }
+        .mob-hamburger {
+          width: 38px; height: 38px;
+          border-radius: 12px;
+          border: 1px solid var(--border-bright);
+          background: rgba(255,255,255,0.06);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 5px;
+          cursor: pointer;
+          -webkit-tap-highlight-color: transparent;
+          transition: background 0.2s, border-color 0.2s;
+        }
+        .mob-hamburger.is-open {
+          background: rgba(232,255,107,0.1);
+          border-color: rgba(232,255,107,0.3);
+        }
+        .mob-hamburger span {
+          display: block;
+          width: 16px;
+          height: 1.5px;
+          background: var(--text);
+          border-radius: 2px;
+          transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+          transform-origin: center;
+        }
+        .mob-hamburger.is-open span:nth-child(1) {
+          transform: translateY(6.5px) rotate(45deg);
+        }
+        .mob-hamburger.is-open span:nth-child(2) {
+          opacity: 0; transform: scaleX(0);
+        }
+        .mob-hamburger.is-open span:nth-child(3) {
+          transform: translateY(-6.5px) rotate(-45deg);
+        }
+
+        .mob-dropdown {
+          position: absolute;
+          top: calc(100% + 10px);
+          left: 0;
+          min-width: 180px;
+          background: rgba(18,18,18,0.96);
+          border: 1px solid var(--border-bright);
+          border-radius: 16px;
+          padding: 6px;
+          backdrop-filter: blur(28px);
+          -webkit-backdrop-filter: blur(28px);
+          box-shadow: 0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+          animation: dropdownIn 0.18s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+          transform-origin: top left;
+        }
+        @keyframes dropdownIn {
+          from { opacity: 0; transform: scale(0.92) translateY(-6px); }
+          to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        .mob-dropdown-item {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          width: 100%;
+          padding: 11px 14px;
+          border-radius: 10px;
+          border: none;
+          background: transparent;
+          color: var(--text-mid);
+          font-family: var(--font-body);
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          text-align: left;
+          transition: background 0.15s, color 0.15s;
+          -webkit-tap-highlight-color: transparent;
+          letter-spacing: 0.01em;
+        }
+        .mob-dropdown-item:hover,
+        .mob-dropdown-item:active {
+          background: rgba(255,255,255,0.07);
+          color: var(--text);
+        }
+        .mob-dropdown-item.active {
+          background: rgba(232,255,107,0.1);
+          color: var(--accent);
+        }
+        .mob-dropdown-item.active .mob-dd-icon {
+          color: var(--accent);
+        }
+        .mob-dd-icon {
+          font-size: 16px;
+          width: 20px;
+          text-align: center;
+          color: var(--text-dim);
+          transition: color 0.15s;
+        }
+        .mob-dropdown-divider {
+          height: 1px;
+          background: var(--border);
+          margin: 4px 6px;
+        }
+      `}</style>
+
+      <div className="mob-menu-wrap" ref={ref}>
+        <button
+          className={`mob-hamburger ${open ? 'is-open' : ''}`}
+          onClick={() => setOpen(o => !o)}
+          aria-label="Open navigation menu"
+        >
+          <span /><span /><span />
+        </button>
+
+        {open && (
+          <div className="mob-dropdown">
+            {TABS.map((tab, i) => (
+              <>
+                {i === TABS.length - 1 && <div key="divider" className="mob-dropdown-divider" />}
+                <button
+                  key={tab}
+                  className={`mob-dropdown-item ${active === tab ? 'active' : ''}`}
+                  onClick={() => { onSwitch(tab); setOpen(false) }}
+                >
+                  <span className="mob-dd-icon">{TAB_ICONS[tab]}</span>
+                  {tab}
+                  {active === tab && <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.6 }}>●</span>}
+                </button>
+              </>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
 
 export default function TabBar({ active, onSwitch }) {
   const [settled, setSettled] = useState(false)
@@ -66,16 +228,13 @@ export default function TabBar({ active, onSwitch }) {
           box-shadow: var(--tab-active-shadow);
         }
 
-        /* ── Mobile: bottom tab bar ── */
+        /* ── Mobile: hide both bars — hamburger menu handles nav ── */
         @media (max-width: 600px) {
-          /* Hide the floating pill entirely */
           .tabbar-wrap {
             display: none;
           }
-
-          /* Bottom bar container */
           .tabbar-mobile {
-            display: flex !important;
+            display: none !important;
           }
         }
 

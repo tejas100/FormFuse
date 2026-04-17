@@ -165,6 +165,11 @@ const mobileCardStyles = `
   }
 
   /* Message bubbles */
+  .rack-msg-container {
+    width: min(55%, 900px);
+    max-width: 900px;
+    margin: 0 auto;
+  }
   .rack-msg-row {
     display: flex;
     margin-bottom: 18px;
@@ -362,7 +367,8 @@ const mobileCardStyles = `
     .rack-greeting-sub { font-size: 14px; }
     .rack-bubble-user { max-width: 85%; font-size: 13px; }
     .rack-bubble-rack { max-width: 100%; }
-    .rack-chat-input-bar { padding: 10px 16px 14px; padding-bottom: calc(75px + env(safe-area-inset-bottom, 0px)); }
+    .rack-msg-container { width: 100% !important; max-width: 100% !important; }
+    .rack-chat-input-bar { padding: 10px 16px 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
     .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 16px; }
     .rack-chat-textarea { font-size: 16px; /* prevent iOS zoom */ }
     .rack-suggestion-chips { gap: 6px; }
@@ -1678,7 +1684,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         id: msgId,
         jd: capturedJd,
         isAssistantReply: true,
-        replyText: triage.reply || "I'm built to help you land your next job — paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
+        replyText: triage.reply || "I'm built to help you land your next job, paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
         loading: false,
         error: null,
       }])
@@ -2380,7 +2386,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           if (msg.isOnboarding) {
             if (msg.isThinking) {
               return (
-                <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+                <div key={msg.id} className='rack-msg-container' style={{ margin: '0 auto' }}>
                   <div className="rack-msg-row rack" style={{ marginBottom: 16 }}>
                     <div className="rack-bubble-rack">
                       <div className="rack-bubble-rack-label">
@@ -2404,7 +2410,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             }
             if (msg.isUserBubble) {
               return (
-                <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+                <div key={msg.id} className='rack-msg-container' style={{ margin: '0 auto' }}>
                   <div className="rack-msg-row user" style={{ marginBottom: 8 }}>
                     <div className="rack-bubble-user">
                       <div className="rack-bubble-user-label">You</div>
@@ -2417,7 +2423,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             // Upload status chip — shown inline during auth resume upload
             if (msg.isUploadStatus) {
               return (
-                <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+                <div key={msg.id} className='rack-msg-container' style={{ margin: '0 auto' }}>
                   <div className="rack-msg-row rack" style={{ marginBottom: 12 }}>
                     <div className="rack-bubble-rack">
                       <div style={{
@@ -2461,7 +2467,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             const displayText = typewriterMsgId === msg.id ? typewriterText : msg.text
             const isActivelyTyping = typewriterMsgId === msg.id
             return (
-              <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+              <div key={msg.id} className='rack-msg-container' style={{ margin: '0 auto' }}>
                 <div className="rack-msg-row rack" style={{ marginBottom: 16 }}>
                   <div className="rack-bubble-rack" style={{ lineHeight: 1.65, fontSize: 14 }}>
                     <div className="rack-bubble-rack-label">
@@ -2486,7 +2492,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           // ── Apply warning — early return before msg.jd access ──────────────
           if (msg.isApplyWarning) {
             return (
-              <div key={msg.id} style={{ width: '55%', maxWidth: '900px', margin: '0 auto', paddingBottom: 8 }}>
+              <div key={msg.id} className='rack-msg-container' style={{ margin: '0 auto', paddingBottom: 8 }}>
                 <div style={{
                   padding: '13px 17px', borderRadius: '12px',
                   background: 'rgba(232,255,107,0.04)',
@@ -2504,7 +2510,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           const msgJdPreview = msg.jd.length > 220 ? msg.jd.slice(0, 220).trimEnd() + '…' : msg.jd
 
           return (
-            <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', gap: 0, width: '55%', maxWidth: '900px', margin: '0 auto' }}>
+            <div key={msg.id} className='rack-msg-container' style={{ display: 'flex', flexDirection: 'column', gap: 0, margin: '0 auto' }}>
 
               {/* User bubble — the JD they sent */}
               <div className="rack-msg-row user">
