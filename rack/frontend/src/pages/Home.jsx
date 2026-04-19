@@ -113,55 +113,65 @@ const mobileCardStyles = `
     text-align: center;
   }
   .rack-greeting-eyebrow {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.16em;
+    font-family: var(--font-display);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 12px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
   }
   .rack-greeting-title {
-    font-family: var(--font-display);
-    font-size: clamp(30px, 4.5vw, 52px);
-    font-weight: 800;
-    letter-spacing: -2px;
-    line-height: 1.05;
+    font-family: var(--font-body);
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.08;
     color: var(--text);
-    margin: 0 0 12px;
+    margin: 0 0 14px;
+  }
+  .rack-suggestion-sub {
+    font-size: 14px;
+    color: var(--text-mid);
+    font-weight: 400;
+    line-height: 1.55;
+    margin: 0 0 28px;
   }
   .rack-greeting-sub {
-    font-size: 15px;
-    color: var(--text-dim);
-    font-weight: 300;
+    font-size: 14px;
+    color: var(--text-mid);
+    font-weight: 400;
     margin: 0;
+    line-height: 1.55;
   }
   .rack-suggestion-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
     justify-content: center;
     max-width: 560px;
   }
   .rack-suggestion-chip {
-    padding: 8px 16px;
-    background: var(--surface);
-    border: 1px solid var(--border-bright);
-    border-radius: 20px;
-    font-size: 13px;
+    padding: 7px 14px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--text-mid);
     cursor: pointer;
-    transition: all 0.18s ease;
-    font-family: var(--font-body);
+    transition: all 0.15s ease;
+    font-family: var(--font-display);
+    letter-spacing: 0.02em;
   }
   .rack-suggestion-chip:hover {
-    background: rgba(232,255,107,0.06);
-    border-color: rgba(232,255,107,0.3);
-    color: var(--accent);
+    border-color: var(--border-bright);
+    color: var(--text);
+    background: var(--surface2);
   }
 
   /* Message bubbles */
@@ -2324,13 +2334,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           <div className="rack-greeting">
             <div className="rack-greeting-hero">
               <div className="rack-greeting-eyebrow">
-                <span style={{width:'24px',height:'1px',background:'var(--accent)',opacity:0.5,display:'inline-block'}}/>
-                AI-Powered Matching
-                <span style={{width:'24px',height:'1px',background:'var(--accent)',opacity:0.5,display:'inline-block'}}/>
+                <span style={{width:4,height:4,borderRadius:'50%',background:'var(--accent)',display:'inline-block',boxShadow:'0 0 6px var(--accent)'}}/>
+                scanning 152 boards
               </div>
               <h1 className="rack-greeting-title">
                 Drop the JD.<br />
-                <span style={{ background:'linear-gradient(135deg,#e8ff6b,#b8ff3a)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
+                <span style={{ color: 'var(--accent)', fontStyle: 'italic', fontWeight: 400 }}>
                   We'll find your fit.
                 </span>
               </h1>
@@ -2345,10 +2354,10 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                 {isAuthed ? (
                   // Auth'd users: quick-filters into their auto-match results
                   [
-                    { label: '⚡ View all matched jobs',        action: 'filter:all' },
-                    { label: '🏆 85%+ match jobs',              action: 'filter:85'  },
-                    { label: '✅ 75%+ match jobs',              action: 'filter:75'  },
-                    { label: '🆕 View newly matched jobs',      action: 'filter:new' },
+                    { label: 'view all matched jobs',   action: 'filter:all' },
+                    { label: '85%+ match jobs',         action: 'filter:85'  },
+                    { label: '75%+ match jobs',         action: 'filter:75'  },
+                    { label: 'newly matched jobs',      action: 'filter:new' },
                   ].map(chip => (
                     <button
                       key={chip.action}
@@ -2361,15 +2370,15 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                 ) : (
                   // Anon users: sample JD starters
                   [
-                    '🔍 Paste a job description',
-                    '🤖 Try an ML Engineer role',
-                    '💼 Software Engineer — Senior',
-                    '📊 Data Scientist position',
+                    'paste a job description',
+                    'try an ML Engineer role',
+                    'Software Engineer — Senior',
+                    'Data Scientist position',
                   ].map(chip => (
                     <button
                       key={chip}
                       className="rack-suggestion-chip"
-                      onClick={() => handleSuggestion(chip.replace(/^[\p{Emoji}\s]+/u, ''))}
+                      onClick={() => handleSuggestion(chip)}
                     >
                       {chip}
                     </button>

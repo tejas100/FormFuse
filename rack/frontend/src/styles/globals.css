@@ -1,22 +1,22 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  --bg: #080808;
-  --surface: #111111;
-  --surface2: #161616;
-  --border: rgba(255,255,255,0.07);
-  --border-bright: rgba(255,255,255,0.14);
-  --text: #f0f0f0;
-  --text-dim: rgba(255,255,255,0.4);
-  --text-mid: rgba(255,255,255,0.65);
+  --bg: #0b0b0d;
+  --surface: #131316;
+  --surface2: #191a1e;
+  --border: rgba(255,255,255,0.06);
+  --border-bright: rgba(255,255,255,0.12);
+  --text: #ededef;
+  --text-dim: rgba(255,255,255,0.38);
+  --text-mid: rgba(255,255,255,0.62);
   --accent: #e8ff6b;
   --accent-contrast: #000000;
   --accent2: #a78bfa;
   --accent3: #34d399;
   --danger: #f87171;
-  --radius: 18px;
-  --tab-radius: 40px;
-  --font-display: 'Syne', sans-serif;
+  --radius: 10px;
+  --tab-radius: 10px;
+  --font-display: "Fira Code", "Fira Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   --font-body: 'DM Sans', sans-serif;
 
   /* Theme-specific extras */
@@ -113,18 +113,9 @@ html, body, #root {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
-@keyframes matchReveal {
-  from { opacity: 0; transform: translateY(16px) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
 @keyframes scoreFill {
   from { width: 0%; }
   to   { width: var(--score-width); }
-}
-@keyframes noiseDrift {
-  0%   { transform: translate(0,0); }
-  50%  { transform: translate(-10px,-10px); }
-  100% { transform: translate(0,0); }
 }
 
 /* ── Light theme ─────────────────────────────────────────────────────────── */
@@ -205,8 +196,4 @@ html, body, #root {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
 
-/* ── Syne display font — vertical stretch ───────────────────────────────── */
-h1, h2, h3, h4, h5, h6 {
-  transform: scaleY(1.2);
-  transform-origin: left center;
-}
+/* Fira Code is now --font-display; no scaleY distortion on headings */

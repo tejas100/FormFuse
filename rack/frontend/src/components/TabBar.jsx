@@ -1,7 +1,35 @@
 import { useEffect, useState, useRef } from 'react'
 
 const TABS = ['Home', 'Resumes', 'Tracking', 'Account']
-const TAB_ICONS = { Home: '⌂', Resumes: '📋', Tracking: '📍', Account: '◎' }
+
+// Monochrome SVG icons — stroke-based, consistent weight
+const TAB_ICONS = {
+  Home: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 6.5L8 2l6 4.5V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6.5z"/>
+      <path d="M6 15v-5h4v5"/>
+    </svg>
+  ),
+  Resumes: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="1" width="10" height="14" rx="1.5"/>
+      <path d="M6 5h4M6 8h4M6 11h2"/>
+    </svg>
+  ),
+  Tracking: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 4h12M2 8h8M2 12h5"/>
+      <circle cx="12.5" cy="11.5" r="2.5"/>
+      <path d="M14.5 13.5L16 15" strokeWidth="1.5"/>
+    </svg>
+  ),
+  Account: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="5" r="3"/>
+      <path d="M2 14c0-3.314 2.686-5 6-5s6 1.686 6 5"/>
+    </svg>
+  ),
+}
 
 // ── Mobile hamburger dropdown ─────────────────────────────────────────────────
 export function MobileMenu({ active, onSwitch }) {
@@ -152,7 +180,7 @@ export function MobileMenu({ active, onSwitch }) {
                   className={`mob-dropdown-item ${active === tab ? 'active' : ''}`}
                   onClick={() => { onSwitch(tab); setOpen(false) }}
                 >
-                  <span className="mob-dd-icon">{TAB_ICONS[tab]}</span>
+                  <span className="mob-dd-icon" style={{ display: 'flex', alignItems: 'center' }}>{TAB_ICONS[tab]}</span>
                   {tab}
                   {active === tab && <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.6 }}>●</span>}
                 </button>

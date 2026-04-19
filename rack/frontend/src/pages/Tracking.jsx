@@ -108,7 +108,7 @@ async function downloadResume(resumeId, resumeName, fileExt) {
 function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, isPowerUser }) {
   const allTabs = [
     { id: "auto",   label: "Auto Matches", icon: "✦", count: autoCount,   power: false },
-    { id: "fresh",  label: "Fresh Jobs",   icon: "🆕", count: freshCount,  power: true  },
+    { id: "fresh",  label: "Fresh Jobs",   icon: "◈", count: freshCount,  power: true  },
     { id: "custom", label: "Custom Search", icon: "⚙", count: customCount, power: true  },
   ];
   const tabs = allTabs.filter(t => !t.power || isPowerUser);
@@ -199,181 +199,179 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
         width: `${pct}%`, transition: "width 0.8s cubic-bezier(0.22,1,0.36,1)",
       }} />
 
-      <div style={{ padding: "12px 16px" }}>
-        {/* Row 1: Title + Score + Source */}
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-          <div style={{
-            width: 30, height: 30, borderRadius: 8, flexShrink: 0,
-            background: `${sc}12`, border: `1px solid ${sc}25`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontFamily: "var(--font-display)", fontSize: 12, fontWeight: 800,
-            color: sc,
-          }}>
-            {index + 1}
+      <div style={{ padding: "14px 18px" }}>
+        {/* Row 1: Score | divider | title+meta | actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+
+          {/* Score — primary focal point, no index badge, no scaleY */}
+          <div style={{ flexShrink: 0, width: 52, textAlign: "left" }}>
+            <div style={{
+              fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 500,
+              color: "var(--text)", letterSpacing: "-0.02em", lineHeight: 1,
+            }}>
+              {match.llm_score ?? match.score}<span style={{ color: "var(--text-dim)", fontSize: 13, fontWeight: 400 }}>%</span>
+            </div>
+            {match.llm_recommendation === "Strong Match" && (
+              <div style={{
+                fontFamily: "var(--font-display)", fontSize: 9, fontWeight: 500, marginTop: 4,
+                color: "var(--accent3)", letterSpacing: "0.1em", textTransform: "uppercase",
+              }}>● strong</div>
+            )}
           </div>
 
+          {/* Vertical divider */}
+          <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
+
+          {/* Title + meta */}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{
-              fontFamily: "var(--font-display)", fontSize: 14, fontWeight: 700,
-              color: "var(--text)", letterSpacing: "-0.2px",
-              wordBreak: "break-word", overflowWrap: "break-word",
-              display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
+              fontFamily: "var(--font-body)", fontSize: 15, fontWeight: 500,
+              color: "var(--text)", letterSpacing: "-0.01em",
+              display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
             }}>
-              <span>{match.job_title}</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {match.job_title}
+              </span>
               {isNew && (
                 <span style={{
-                  fontSize: 8, fontWeight: 800, padding: "2px 7px", borderRadius: 20,
-                  letterSpacing: "0.12em", textTransform: "uppercase",
-                  background: "rgba(232,255,107,0.15)", color: "var(--accent)",
-                  border: "1px solid rgba(232,255,107,0.3)",
+                  fontFamily: "var(--font-display)", fontSize: 9, fontWeight: 500,
+                  color: "var(--accent)", letterSpacing: "0.12em", textTransform: "uppercase",
                   flexShrink: 0,
-                }}>🆕 NEW TODAY</span>
-              )}
-              {onSave && (
-                <button
-                  onClick={onSave}
-                  title={isSaved ? "Saved" : "Save job"}
-                  style={{
-                    background: "none", border: "none", padding: "1px 2px",
-                    cursor: "pointer", lineHeight: 1, flexShrink: 0,
-                    color: isSaved ? "var(--accent)" : "var(--text-dim)",
-                    fontSize: 13, transition: "color 0.15s",
-                    opacity: isSaved ? 1 : 0.5,
-                  }}
-                >
-                  {isSaved ? "★" : "☆"}
-                </button>
+                }}>new</span>
               )}
               {isApplied && (
                 <span style={{
-                  fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20,
-                  background: "rgba(52,211,153,0.12)", color: "#34d399",
-                  border: "1px solid rgba(52,211,153,0.28)", flexShrink: 0,
-                }}>✓ Applied</span>
+                  fontFamily: "var(--font-display)", fontSize: 9, fontWeight: 500,
+                  color: "var(--accent3)", letterSpacing: "0.12em", textTransform: "uppercase",
+                  flexShrink: 0,
+                }}>applied</span>
               )}
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-              <span style={{ fontWeight: 500 }}>
-                {match.company ? match.company.charAt(0).toUpperCase() + match.company.slice(1) : ""}
-              </span>
+            <div style={{
+              fontFamily: "var(--font-display)", fontSize: 11, color: "var(--text-dim)",
+              marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+            }}>
+              {match.company && (
+                <span style={{ color: "var(--text-mid)" }}>
+                  {match.company.charAt(0).toUpperCase() + match.company.slice(1)}
+                </span>
+              )}
               {match.location && match.location !== "Not specified" && (
-                <span>· {match.location.length > 40 ? match.location.slice(0, 40) + "…" : match.location}</span>
+                <><span>·</span><span>{match.location.length > 35 ? match.location.slice(0, 35) + "…" : match.location}</span></>
               )}
               {match.posted_at && (
-                <span>· {timeAgo(match.posted_at)}</span>
+                <><span>·</span><span>{timeAgo(match.posted_at)}</span></>
+              )}
+              {match.source && (
+                <span style={{ marginLeft: "auto", opacity: 0.6, textTransform: "lowercase" }}>
+                  via {match.source}
+                </span>
               )}
             </div>
           </div>
 
-          <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end", marginBottom: 3 }}>
-              {match.scoring_method === "llm+hybrid" && (
-                <span style={{
-                  fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 20,
-                  background: "rgba(232,255,107,0.12)", color: "var(--accent)",
-                  border: "1px solid rgba(232,255,107,0.25)", letterSpacing: "0.08em", textTransform: "uppercase",
-                }}>Rack AI</span>
-              )}
-              <div style={{
-                fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800,
-                color: sc, letterSpacing: "-1px", lineHeight: 1, transform: "scaleY(1.4)",   transformOrigin: "left center"
-              }}>
-                {match.llm_score ?? match.score}%
-              </div>
-            </div>
-            {match.llm_recommendation && match.scoring_method === "llm+hybrid" && (
-              <div style={{ marginBottom: 3 }}>
-                <span style={{
-                  fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
-                  letterSpacing: "0.06em", textTransform: "uppercase",
-                  ...recommendationStyle(match.llm_recommendation),
-                }}>
-                  {match.llm_recommendation}
-                </span>
-              </div>
+          {/* Actions — star + apply, no lime on apply button */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+            {onSave && (
+              <button
+                onClick={onSave}
+                title={isSaved ? "Saved" : "Save job"}
+                style={{
+                  width: 30, height: 30, borderRadius: 8, border: "none",
+                  background: "transparent", cursor: "pointer",
+                  color: isSaved ? "var(--accent)" : "var(--text-dim)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 14, transition: "color 0.15s",
+                }}
+              >
+                {isSaved ? "★" : "☆"}
+              </button>
             )}
-            <div>{sourceBadge(match.source)}</div>
+            {!expanded && match.job_url && onApply && !isApplied && (
+              <a
+                href={match.job_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => { e.stopPropagation(); if (onApply) onApply(); }}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  height: 30, padding: "0 12px", borderRadius: 8,
+                  border: "1px solid var(--border-bright)",
+                  background: "var(--surface2)",
+                  color: "var(--text)",
+                  fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 11,
+                  textDecoration: "none", transition: "all 0.15s",
+                  letterSpacing: "0.02em",
+                }}
+              >
+                apply
+                <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M3 1h6v6M9 1L1 9" strokeLinecap="round"/>
+                </svg>
+              </a>
+            )}
+            {isApplied && (
+              <span style={{
+                height: 30, padding: "0 12px", borderRadius: 8,
+                border: "1px solid var(--border)",
+                display: "inline-flex", alignItems: "center",
+                fontFamily: "var(--font-display)", fontSize: 11,
+                color: "var(--text-dim)", letterSpacing: "0.02em",
+              }}>applied</span>
+            )}
           </div>
         </div>
 
-        {/* Row 2: Skills pills + bottom meta in one compact area */}
+        {/* Row 2: Skills pills — only when there's something meaningful */}
         {((match.matched_skills || []).length > 0 || (match.missing_skills || []).length > 0) && (
-          <div style={{ display: "flex", gap: 4, marginTop: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 4, marginTop: 10, paddingLeft: 68, flexWrap: "wrap" }}>
             {(match.matched_skills || []).slice(0, 3).map((s) => (
               <span key={s} style={{
-                fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
-                background: "rgba(52,211,153,0.1)", color: "var(--accent3)",
+                fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 6,
+                background: "rgba(52,211,153,0.08)", color: "var(--accent3)",
+                fontFamily: "var(--font-display)",
               }}>
-                ✓ {s}
+                {s}
               </span>
             ))}
             {(match.missing_skills || []).slice(0, 2).map((s) => (
               <span key={s} style={{
-                fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
-                background: "rgba(248,113,113,0.1)", color: "var(--danger)",
+                fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 6,
+                background: "rgba(248,113,113,0.08)", color: "var(--danger)",
+                fontFamily: "var(--font-display)",
               }}>
-                ✗ {s}
+                − {s}
               </span>
             ))}
-            {((match.matched_skills || []).length > 3 || (match.missing_skills || []).length > 2) && (
-              <span style={{
-                fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 20,
-                background: "var(--surface2)", color: "var(--text-dim)",
-              }}>
-                +{Math.max(0, (match.matched_skills || []).length - 3 + (match.missing_skills || []).length - 2)} more
-              </span>
-            )}
           </div>
         )}
 
-        {/* Row 3: Best match + Apply — single compact line */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
-          {match.resume_name && (
-            <div style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 4 }}>
-              Best match:{" "}
-              {match.resume_id ? (
-                <button
-                  onClick={handleDownload}
-                  disabled={downloading}
-                  title={`Download ${match.resume_name}`}
-                  style={{
-                    background: "none", border: "none", padding: "0 4px",
-                    borderRadius: 6, cursor: "pointer",
-                    color: "var(--accent)", fontWeight: 600, fontSize: 11,
-                    fontFamily: "var(--font-body)",
-                    display: "inline-flex", alignItems: "center", gap: 3,
-                    opacity: downloading ? 0.5 : 1, transition: "all 0.15s",
-                    textDecoration: "underline", textDecorationStyle: "dotted",
-                    textUnderlineOffset: 2,
-                  }}
-                >
-                  {downloading ? "Downloading…" : `${match.resume_name} ↓`}
-                </button>
-              ) : (
-                <span style={{ color: "var(--accent)", fontWeight: 600 }}>{match.resume_name}</span>
-              )}
-            </div>
-          )}
-          {!expanded && match.job_url && onApply && !isApplied && (
-            <a
-              href={match.job_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => { e.stopPropagation(); if (onApply) onApply(); }}
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 4,
-                padding: "4px 12px", borderRadius: 20,
-                background: "rgba(232,255,107,0.12)", color: "var(--accent)",
-                border: "1px solid rgba(232,255,107,0.25)",
-                fontFamily: "var(--font-body)", fontWeight: 600, fontSize: 11,
-                textDecoration: "none", transition: "all 0.15s",
-                marginLeft: "auto",
-              }}
-            >
-              Apply ↗
-            </a>
-          )}
-        </div>
+        {/* Row 3: Best match resume download link */}
+        {match.resume_name && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, paddingLeft: 68 }}>
+            <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-display)" }}>best:</span>
+            {match.resume_id ? (
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                style={{
+                  background: "none", border: "none", padding: 0,
+                  cursor: "pointer",
+                  fontFamily: "var(--font-display)",
+                  fontSize: 11, color: "var(--accent)",
+                  display: "inline-flex", alignItems: "center", gap: 3,
+                  opacity: downloading ? 0.5 : 1,
+                  textDecoration: "underline", textDecorationStyle: "dotted",
+                  textUnderlineOffset: 2,
+                }}
+              >
+                {downloading ? "Downloading…" : `${match.resume_name} ↓`}
+              </button>
+            ) : (
+              <span style={{ fontFamily: "var(--font-display)", fontSize: 11, color: "var(--text-mid)" }}>{match.resume_name}</span>
+            )}
+          </div>
+        )}
 
         {/* Expanded details */}
         {expanded && (
@@ -555,16 +553,16 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
                   onClick={(e) => { e.stopPropagation(); if (onApply) onApply(); }}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 6,
-                    padding: "10px 24px", borderRadius: 30,
-                    background: isApplied ? "rgba(52,211,153,0.15)" : "var(--accent)",
-                    color: isApplied ? "#34d399" : "#000",
-                    border: isApplied ? "1px solid rgba(52,211,153,0.35)" : "none",
-                    fontFamily: "var(--font-display)", fontWeight: 700,
-                    fontSize: 13, textDecoration: "none", letterSpacing: "-0.01em",
+                    padding: "10px 24px", borderRadius: 8,
+                    background: isApplied ? "rgba(52,211,153,0.1)" : "var(--text)",
+                    color: isApplied ? "#34d399" : "var(--bg)",
+                    border: isApplied ? "1px solid rgba(52,211,153,0.3)" : "none",
+                    fontFamily: "var(--font-display)", fontWeight: 500,
+                    fontSize: 12, textDecoration: "none", letterSpacing: "0.02em",
                     transition: "all 0.2s",
                   }}
                 >
-                  {isApplied ? "✓ Applied" : "Apply →"}
+                  {isApplied ? "applied" : "apply →"}
                 </a>
               )}
               {match.resume_id && (
@@ -573,14 +571,15 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
                   disabled={downloading}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 6,
-                    padding: "10px 20px", borderRadius: 30,
+                    padding: "10px 20px", borderRadius: 8,
                     border: "1px solid var(--border)", background: "transparent",
-                    color: "var(--text-dim)", fontFamily: "var(--font-display)", fontWeight: 600,
-                    fontSize: 12, cursor: "pointer", transition: "all 0.2s",
+                    color: "var(--text-dim)", fontFamily: "var(--font-display)", fontWeight: 500,
+                    fontSize: 11, cursor: "pointer", transition: "all 0.2s",
+                    letterSpacing: "0.02em",
                     opacity: downloading ? 0.5 : 1,
                   }}
                 >
-                  {downloading ? "Downloading…" : `↓ Download Resume`}
+                  {downloading ? "Downloading…" : `↓ download resume`}
                 </button>
               )}
             </div>
@@ -1058,8 +1057,8 @@ function ArchiveModal({ onClose }) {
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {job.job_url && (
                         <a href={job.job_url} target="_blank" rel="noopener noreferrer"
-                          style={{ fontSize: 11, padding: "6px 14px", borderRadius: 20, background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, textDecoration: "none" }}>
-                          Apply →
+                          style={{ fontSize: 11, padding: "6px 14px", borderRadius: 8, background: "var(--text)", color: "var(--bg)", fontFamily: "var(--font-display)", fontWeight: 500, textDecoration: "none", letterSpacing: "0.02em" }}>
+                          apply →
                         </a>
                       )}
                       <button onClick={() => deleteOne(job.job_id)} style={{
@@ -1226,7 +1225,7 @@ function FreshJobsTab() {
         <button
           onClick={() => loadFresh(window)}
           disabled={loading}
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, transition: "all 0.2s" }}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", borderRadius: 8, border: "1px solid var(--border-bright)", background: "transparent", color: "var(--text)", fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 11, cursor: loading ? "default" : "pointer", opacity: loading ? 0.5 : 1, transition: "all 0.2s", letterSpacing: "0.02em" }}
         >
           {loading ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span> Loading…</> : "⟳ Refresh"}
         </button>
@@ -1570,10 +1569,10 @@ function AutoMatchesTab({ profile, isPowerUser }) {
   // "set target roles" → "finding matches" → jobs → loading animation.
   if (initializing) {
     return (
-      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
-        <div style={{ fontSize: 36, marginBottom: 14 }}>🎯</div>
-        <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>
-          RACK is finding your matches
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
+          finding your matches
         </div>
         <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
           We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
@@ -1585,15 +1584,15 @@ function AutoMatchesTab({ profile, isPowerUser }) {
   // Profile not set — only shown after initializing completes (so no flash)
   if (!hasProfile) {
     return (
-      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
-        <div style={{ fontSize: 36, marginBottom: 14 }}>✦</div>
-        <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>Set your target roles first</div>
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 16 }}>◇ setup needed</div>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>Set your target roles first</div>
         <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
           Auto Matches uses your target roles from your Account profile to automatically find and score the best job postings.
         </div>
         <a href="#" onClick={e => { e.preventDefault(); document.querySelector('[data-tab="account"]')?.click(); }}
-          style={{ display: "inline-block", marginTop: 20, padding: "10px 24px", borderRadius: 30, background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
-          Go to Account →
+          style={{ display: "inline-block", marginTop: 20, padding: "9px 22px", borderRadius: 8, background: "var(--text)", color: "var(--bg)", fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 12, textDecoration: "none", letterSpacing: "0.02em" }}>
+          go to account →
         </a>
       </div>
     );
@@ -1620,7 +1619,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
             boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
             animation: "fadeUp 0.22s cubic-bezier(0.22,1,0.36,1) both",
           }}>
-            <div style={{ fontSize: 20, marginBottom: 10, textAlign: "center" }}>📋</div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 14, textAlign: "center", opacity: 0.6 }}>confirm</div>
             <div style={{ fontSize: 16, fontFamily: "var(--font-display)", fontWeight: 800, marginBottom: 6, letterSpacing: "-0.3px", textAlign: "center" }}>
               Did you apply to this role?
             </div>
@@ -1634,22 +1633,22 @@ function AutoMatchesTab({ profile, isPowerUser }) {
               <button
                 onClick={() => markApplied(applyPrompt.job_id)}
                 style={{
-                  flex: 1, padding: "11px 0", borderRadius: 30, border: "none",
-                  background: "var(--accent)", color: "#000",
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13,
-                  cursor: "pointer", transition: "opacity 0.15s",
+                  flex: 1, padding: "11px 0", borderRadius: 8, border: "none",
+                  background: "var(--text)", color: "var(--bg)",
+                  fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 12,
+                  cursor: "pointer", transition: "opacity 0.15s", letterSpacing: "0.02em",
                 }}
-              >✓ Yes, I applied</button>
+              >confirmed applied</button>
               <button
                 onClick={() => { setApplyPrompt(null); pendingApplyRef.current = null; }}
                 style={{
-                  flex: 1, padding: "11px 0", borderRadius: 30,
+                  flex: 1, padding: "11px 0", borderRadius: 8,
                   border: "1px solid var(--border)", background: "transparent",
                   color: "var(--text-dim)",
-                  fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 13,
-                  cursor: "pointer",
+                  fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 12,
+                  cursor: "pointer", letterSpacing: "0.02em",
                 }}
-              >Not yet</button>
+              >not yet</button>
             </div>
             <button
               onClick={() => { setApplyPrompt(null); pendingApplyRef.current = null; }}
@@ -1691,7 +1690,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
           {isPowerUser && (
             <button onClick={() => handleRefresh(true)} disabled={loading}
               title="Scan for new jobs"
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1, transition: "all 0.2s" }}>
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", borderRadius: 8, border: "1px solid var(--border-bright)", background: "transparent", color: "var(--text)", fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 11, cursor: loading ? "default" : "pointer", opacity: loading ? 0.5 : 1, transition: "all 0.2s", letterSpacing: "0.02em" }}>
               {loading ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⟳</span> Scanning…</> : "⟳ Refresh"}
             </button>
           )}
@@ -1708,8 +1707,8 @@ function AutoMatchesTab({ profile, isPowerUser }) {
             border: "1px solid rgba(232,255,107,0.18)",
             borderRadius: 12,
           }}>
-            <span style={{ fontSize: 14 }}>🎯</span>
-            <span style={{ fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700, color: "var(--accent)" }}>
+            <span style={{ fontFamily: "var(--font-display)", fontSize: 10, color: "var(--accent)", letterSpacing: "0.12em" }}>●</span>
+            <span style={{ fontFamily: "var(--font-display)", fontSize: 12, fontWeight: 500, color: "var(--text)", letterSpacing: "-0.01em" }}>
               RACK found {dailySlots.length} new roles for you today
             </span>
             <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-dim)", ...mono }}>
@@ -1752,7 +1751,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
                       color: isScore ? "var(--accent)" : "var(--accent3)",
                       border: `1px solid ${isScore ? "rgba(232,255,107,0.25)" : "rgba(52,211,153,0.25)"}`,
                     }}>
-                      {isScore ? "⭐ TOP" : "🆕 NEW"}
+                      {isScore ? "top" : "new"}
                     </div>
 
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -1792,7 +1791,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
                       <a
                         href={m.url} target="_blank" rel="noopener noreferrer"
                         onClick={e => { e.stopPropagation(); handleApplyClick(slot.job_id, m.job_title); }}
-                        style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "8px 18px", borderRadius: 30, background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, textDecoration: "none" }}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "7px 16px", borderRadius: 8, background: "var(--text)", color: "var(--bg)", fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 11, textDecoration: "none", letterSpacing: "0.02em" }}
                       >
                         Apply ↗
                       </a>
@@ -1930,37 +1929,37 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       {loading && <AutoMatchLoadingAnimation />}
 
       {!loading && matches.length > 0 && sorted.length === 0 && (
-        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "36px 24px", textAlign: "center", animation: "fadeUp 0.25s ease both" }}>
-          <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 18, marginBottom: 10, color: "var(--accent)", opacity: 0.4 }}>[ no results ]</div>
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "36px 24px", textAlign: "center", animation: "fadeUp 0.25s ease both" }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", color: "var(--text-dim)", marginBottom: 10, opacity: 0.5 }}>[ no results ]</div>
           <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 14 }}>No matches for the current filters.</div>
           <button
             onClick={() => { setFilterBy("all"); setTitleFilter(""); }}
-            style={{ padding: "8px 20px", borderRadius: 30, border: "1px solid rgba(232,255,107,0.3)", background: "transparent", color: "var(--accent)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+            style={{ padding: "7px 18px", borderRadius: 8, border: "1px solid var(--border-bright)", background: "transparent", color: "var(--text)", fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 11, cursor: "pointer", letterSpacing: "0.02em" }}
           >
-            Clear filters
+            clear filters
           </button>
         </div>
       )}
 
       {!loading && matches.length === 0 && (
-        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
           {isPowerUser ? (
             <>
-              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 24, marginBottom: 14, color: "var(--accent)", opacity: 0.4 }}>[ no matches ]</div>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>No matches yet</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 16, opacity: 0.6 }}>[ no matches ]</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>No matches yet</div>
               <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto 20px", lineHeight: 1.6 }}>
                 Hit "Refresh" to scan top tech companies and surface your best-matched {profile?.target_roles?.[0] || "role"} openings.
               </div>
               <button onClick={() => handleRefresh(true)} disabled={loading}
-                style={{ padding: "10px 24px", borderRadius: 30, border: "none", background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                ⟳ Refresh
+                style={{ padding: "9px 22px", borderRadius: 8, border: "1px solid var(--border-bright)", background: "transparent", color: "var(--text)", fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 11, cursor: "pointer", letterSpacing: "0.02em" }}>
+                ⟳ refresh
               </button>
             </>
           ) : (
             <>
-              <div style={{ fontSize: 36, marginBottom: 14 }}>🎯</div>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>
-                RACK is finding your matches
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
+                finding your matches
               </div>
               <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
                 We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
@@ -2336,8 +2335,8 @@ function CustomSearchTab({ profile }) {
           borderRadius: 16, padding: "48px 24px", textAlign: "center",
           animation: "fadeUp 0.35s ease both",
         }}>
-          <div style={{ fontSize: 36, marginBottom: 14 }}>📡</div>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 16, opacity: 0.6 }}>◇ no companies</div>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
             Start tracking companies
           </div>
           <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
@@ -2346,12 +2345,12 @@ function CustomSearchTab({ profile }) {
           <button
             onClick={() => setShowSettings(true)}
             style={{
-              marginTop: 20, padding: "10px 24px", borderRadius: 30, border: "none",
-              background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)",
-              fontWeight: 700, fontSize: 13, cursor: "pointer",
+              marginTop: 20, padding: "9px 22px", borderRadius: 8, border: "1px solid var(--border-bright)",
+              background: "transparent", color: "var(--text)", fontFamily: "var(--font-display)",
+              fontWeight: 500, fontSize: 11, cursor: "pointer", letterSpacing: "0.02em",
             }}
           >
-            + Add Companies
+            + add companies
           </button>
         </div>
       )}
@@ -2359,11 +2358,11 @@ function CustomSearchTab({ profile }) {
       {!refreshing && matches.length === 0 && hasCompanies && (
         <div style={{
           background: "var(--surface)", border: "1px solid var(--border)",
-          borderRadius: 16, padding: "48px 24px", textAlign: "center",
+          borderRadius: 10, padding: "48px 24px", textAlign: "center",
           animation: "fadeUp 0.35s ease both",
         }}>
-          <div style={{ fontSize: 36, marginBottom: 14 }}>🎯</div>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6, letterSpacing: "-0.3px" }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 16, opacity: 0.6 }}>◇ ready</div>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
             Ready to scan
           </div>
           <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6, marginBottom: 20 }}>
@@ -2372,12 +2371,12 @@ function CustomSearchTab({ profile }) {
           <button
             onClick={() => handleRefresh(true)}
             style={{
-              padding: "10px 24px", borderRadius: 30, border: "none",
-              background: "var(--accent)", color: "#000", fontFamily: "var(--font-display)",
-              fontWeight: 700, fontSize: 13, cursor: "pointer",
+              padding: "9px 22px", borderRadius: 8, border: "1px solid var(--border-bright)",
+              background: "transparent", color: "var(--text)", fontFamily: "var(--font-display)",
+              fontWeight: 500, fontSize: 11, cursor: "pointer", letterSpacing: "0.02em",
             }}
           >
-            ⟳ Refresh Now
+            ⟳ refresh now
           </button>
         </div>
       )}
@@ -2388,7 +2387,7 @@ function CustomSearchTab({ profile }) {
           borderRadius: 14, padding: "36px 20px", textAlign: "center",
           color: "var(--text-dim)", animation: "fadeUp 0.35s ease both",
         }}>
-          <div style={{ fontSize: 24, marginBottom: 8 }}>🔍</div>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", color: "var(--text-dim)", marginBottom: 8, opacity: 0.5 }}>[ no results ]</div>
           <div style={{ fontSize: 13 }}>No matches for this filter. Try broadening your search.</div>
         </div>
       )}
@@ -2464,8 +2463,8 @@ export default function Tracking() {
 
         {/* ── Header ─────────────────────────────────────────── */}
         <div style={{ marginBottom: 8 }}>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 32, fontWeight: 800, letterSpacing: "-1px", marginBottom: 4, transform: "scaleY(1.3)",   transformOrigin: "left center"}}>
-            Job Matches
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em", marginBottom: 4 }}>
+            matches
           </div>
         </div>
 
@@ -2486,10 +2485,10 @@ export default function Tracking() {
           <AutoMatchesTab profile={profile} isPowerUser={isPowerUser} />
         )}
         {activeTab === "auto" && userRole === null && (
-          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 16, padding: "48px 24px", textAlign: "center" }}>
-            <div style={{ fontSize: 36, marginBottom: 14 }}>🎯</div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 700, marginBottom: 6 }}>
-              RACK is finding your matches
+          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center" }}>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
+              finding your matches
             </div>
             <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
               We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
