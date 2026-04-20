@@ -27,6 +27,10 @@ const mobileCardStyles = `
     0%, 100% { opacity: 0.3; transform: scale(0.85); }
     50%       { opacity: 1;   transform: scale(1.15); }
   }
+  @keyframes cursorBlink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
   @keyframes toastIn {
     from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.97); }
     to   { opacity: 1; transform: translateX(-50%) translateY(0)    scale(1);    }
@@ -867,12 +871,15 @@ export default function Home() {
       if (i < fullText.length) {
         typewriterRef.current = setTimeout(tick, 16)
       } else {
-        // Persist the full text into the message so it survives after
-        // typewriterMsgId is cleared — otherwise displayText falls back
-        // to msg.text which is still '' and the message disappears.
-        setMessages(prev => prev.map(m =>
-          m.id === msgId ? { ...m, text: fullText } : m
-        ))
+        // Persist into the correct field depending on message type.
+        // isAssistantReply messages render from msg.replyText;
+        // onboarding/chat messages render from msg.text.
+        setMessages(prev => prev.map(m => {
+          if (m.id !== msgId) return m
+          return m.isAssistantReply
+            ? { ...m, replyText: fullText }
+            : { ...m, text: fullText }
+        }))
         setTypewriterMsgId(null)
         setTypewriterText('')
       }
@@ -1633,11 +1640,19 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     const capturedJd  = jd.trim()
     const msgId       = Date.now()
+    const thinkingId  = msgId + 1   // unique id for the ephemeral thinking bubble
     const modeHint    = activeMode   // pass slash command as soft hint to router
 
     setLoading(true)
     setJd('')
     if (activeMode) setActiveMode(null)
+
+    // ── Push combined user+thinking message immediately so UI feels live ──
+    // Single message with jd=capturedJd renders the user bubble (via msg.jd)
+    // AND the thinking dots (via isThinkingPlaceholder) in one block.
+    setMessages(prev => [...prev,
+      { id: thinkingId, jd: capturedJd, isAssistantReply: true, replyText: '', loading: true, isThinkingPlaceholder: true },
+    ])
 
     // ── Single triage call — backend LLM routes ─────────────────────────────
     const triage = await triageInput(capturedJd, messages, modeHint)
@@ -1647,6 +1662,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     // May include jd_text from a previous rank result (rank→tailor handoff).
     if (tool === 'route_to_tailor') {
       setLoading(false)
+      setMessages(prev => prev.filter(m => m.id !== thinkingId))
       const jdInput = triage.params?.jd_text?.trim() || capturedJd
       handleTailorWithText(jdInput)
       return
@@ -1655,6 +1671,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     // ── route_to_refine — LLM detected refinement after a tailor result ─────
     if (tool === 'route_to_refine') {
       setLoading(false)
+      setMessages(prev => prev.filter(m => m.id !== thinkingId))
       const lastTailorMsg = (() => {
         for (let i = messages.length - 1; i >= 0; i--) {
           const m = messages[i]
@@ -1690,28 +1707,22 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     // ── route_off_topic — warm redirect ────────────────────────────────────
     if (tool === 'route_off_topic') {
-      setMessages(prev => [...prev, {
-        id: msgId,
-        jd: capturedJd,
-        isAssistantReply: true,
-        replyText: triage.reply || "I'm built to help you land your next job, paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
-        loading: false,
-        error: null,
-      }])
+      const replyFull = triage.reply || "I'm built to help you land your next job, paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep."
+      setMessages(prev => prev.map(m =>
+        m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
+      ))
+      startTypewriter(thinkingId, replyFull)
       setLoading(false)
       return
     }
 
     // ── answer_career_question — backend already answered ──────────────────
     if (tool === 'answer_career_question') {
-      setMessages(prev => [...prev, {
-        id: msgId,
-        jd: capturedJd,
-        isAssistantReply: true,
-        replyText: triage.reply || "Ask me anything about your job search, resume strategy, or interview prep.",
-        loading: false,
-        error: null,
-      }])
+      const replyFull = triage.reply || "Ask me anything about your job search, resume strategy, or interview prep."
+      setMessages(prev => prev.map(m =>
+        m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
+      ))
+      startTypewriter(thinkingId, replyFull)
       setLoading(false)
       return
     }
@@ -1720,7 +1731,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     if (tool === 'show_matched_jobs') {
       const jobs  = triage.jobs || []
       const label = triage.filter_label || 'Matched jobs'
-      setMessages(prev => [...prev, {
+      setMessages(prev => prev.filter(m => m.id !== thinkingId).concat([{
         id: msgId,
         jd: capturedJd,
         filterLabel: label,
@@ -1731,7 +1742,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         error: jobs.length === 0
           ? 'No jobs matched that filter. Try running Auto Matches in the Tracking tab first.'
           : null,
-      }])
+      }]))
       setLoading(false)
       return
     }
@@ -1741,17 +1752,15 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       setLoading(false)
       const applyJobs = triage.apply_jobs || []
       if (!applyJobs.length) {
-        setMessages(prev => [...prev, {
-          id: msgId,
-          jd: capturedJd,
-          isAssistantReply: true,
-          replyText: triage.reply || 'No matched jobs found to apply to. Run Auto Matches in the Tracking tab first.',
-          loading: false,
-          error: null,
-        }])
+        const replyFull = triage.reply || 'No matched jobs found to apply to. Run Auto Matches in the Tracking tab first.'
+        setMessages(prev => prev.map(m =>
+          m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
+        ))
+        startTypewriter(thinkingId, replyFull)
         return
       }
-      // Fire the apply agent — each job gets its own card via handleApply
+      // Remove thinking bubble then fire the apply agent
+      setMessages(prev => prev.filter(m => m.id !== thinkingId))
       handleApply(applyJobs)
       return
     }
@@ -1761,17 +1770,17 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     const hasQueuedFiles     = fileQueue.length > 0
 
     if (!hasExistingResumes && !hasQueuedFiles) {
-      setMessages(prev => [...prev, {
-        id: msgId,
-        jd: capturedJd,
-        isAssistantReply: true,
-        replyText: "You'll need at least one resume uploaded to match against. Head to the Resumes tab to add yours — it only takes a moment.",
-        loading: false,
-        error: null,
-      }])
+      const replyFull = "You'll need at least one resume uploaded to match against. Head to the Resumes tab to add yours — it only takes a moment."
+      setMessages(prev => prev.map(m =>
+        m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
+      ))
+      startTypewriter(thinkingId, replyFull)
       setLoading(false)
       return
     }
+
+    // Remove thinking bubble — the match loading card takes over
+    setMessages(prev => prev.filter(m => m.id !== thinkingId))
 
     // Append loading placeholder
     setMessages(prev => [...prev, {
@@ -2082,16 +2091,21 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     // Auth guard — tailor requires stored resumes with full_text
     if (!isAuthed) {
-      const msgId = Date.now()
-      setMessages(prev => [...prev, {
-        id: msgId,
-        jd: jd.trim(),
-        isAssistantReply: true,
-        replyText: "Tailoring requires a signed-in account so I can access your saved resumes. Sign in and I'll generate a custom PDF for you in seconds.",
-        loading: false,
-        error: null,
-      }])
+      const msgId      = Date.now()
+      const thinkId    = msgId + 1
+      const replyFull  = "Tailoring requires a signed-in account so I can access your saved resumes. Sign in and I'll generate a custom PDF for you in seconds."
+      setMessages(prev => [...prev,
+        { id: msgId - 1, isUserBubble: true, text: jd.trim() },
+        { id: thinkId, isAssistantReply: true, replyText: '', loading: true, isThinkingPlaceholder: true, jd: jd.trim(), error: null },
+      ])
       setJd('')
+      // brief pause so the thinking dots are visible before typewriter fires
+      setTimeout(() => {
+        setMessages(prev => prev.map(m =>
+          m.id === thinkId ? { ...m, isThinkingPlaceholder: false, loading: false } : m
+        ))
+        startTypewriter(thinkId, replyFull)
+      }, 400)
       return
     }
 
@@ -2193,15 +2207,18 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     if (!jdInput?.trim() || tailorLoading) return
 
     if (!isAuthed) {
-      const msgId = Date.now()
-      setMessages(prev => [...prev, {
-        id: msgId,
-        jd: jdInput.slice(0, 120) + (jdInput.length > 120 ? '…' : ''),
-        isAssistantReply: true,
-        replyText: "Tailoring requires a signed-in account so I can access your saved resumes. Sign in and I'll generate a custom PDF for you in seconds.",
-        loading: false,
-        error: null,
-      }])
+      const msgId     = Date.now()
+      const thinkId   = msgId + 1
+      const replyFull = "Tailoring requires a signed-in account so I can access your saved resumes. Sign in and I'll generate a custom PDF for you in seconds."
+      setMessages(prev => [...prev,
+        { id: thinkId, isAssistantReply: true, replyText: '', loading: true, isThinkingPlaceholder: true, jd: jdInput.slice(0, 120), error: null },
+      ])
+      setTimeout(() => {
+        setMessages(prev => prev.map(m =>
+          m.id === thinkId ? { ...m, isThinkingPlaceholder: false, loading: false } : m
+        ))
+        startTypewriter(thinkId, replyFull)
+      }, 400)
       return
     }
 
@@ -2829,10 +2846,13 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                   })()}
 
                   {/* ── Assistant reply bubble (career question or off-topic redirect) ── */}
-                  {msg.isAssistantReply && (
-                    <div style={{ animation: 'bubbleIn 0.35s ease both' }}>
+                  {msg.isAssistantReply && (() => {
+                    const isTyping      = typewriterMsgId === msg.id
+                    const displayReply  = isTyping ? typewriterText : msg.replyText
+                    return (
+                    <div style={{ animation: 'bubbleIn 0.25s ease both' }}>
                       {msg.loading ? (
-                        // Thinking indicator
+                        // Thinking indicator — shown while triage LLM is running
                         <div style={{
                           display: 'flex', alignItems: 'center', gap: '10px',
                           padding: '16px 20px', borderRadius: '14px',
@@ -2856,9 +2876,18 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                           fontSize: '14px', lineHeight: '1.65', color: 'var(--text)',
                           fontWeight: 300, whiteSpace: 'pre-wrap',
                         }}>
-                          {msg.replyText}
-                          {/* Soft nudge to paste a JD — only shown for career questions, not off-topic */}
-                          {msg.replyText && msg.replyText.length > 60 && (
+                          {displayReply}
+                          {/* Blinking cursor while typewriter is active */}
+                          {isTyping && (
+                            <span style={{
+                              display: 'inline-block', width: '2px', height: '1em',
+                              background: 'var(--accent)', marginLeft: '2px',
+                              verticalAlign: 'text-bottom', borderRadius: '1px',
+                              animation: 'cursorBlink 0.7s step-end infinite',
+                            }} />
+                          )}
+                          {/* Soft nudge to paste a JD — only shown once typing is complete */}
+                          {!isTyping && displayReply && displayReply.length > 60 && (
                             <div style={{
                               marginTop: '14px', paddingTop: '12px',
                               borderTop: '1px solid var(--border)',
@@ -2885,7 +2914,8 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                         </div>
                       )}
                     </div>
-                  )}
+                    )
+                  })()}
 
                   {/* ── Tailor result card ── */}
                   {/* ── Apply agent live feed card ── */}
