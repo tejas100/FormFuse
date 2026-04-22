@@ -62,7 +62,9 @@ async def match_resume(
     # ── Phase 2: LLM deep scoring (if enabled and resumes exist) ──
     if request.use_llm and result.get("results"):
         # Deferred import — avoids circular import at module load time
-        from services.llm_scorer import llm_score_batch, rerank_by_llm_score
+        from services.llm_scorer import _score_job_multi_resume, rerank_by_llm_score
+        import asyncio as _asyncio
+        import httpx as _httpx_match
 
         parsed_jd = result.get("jd_parsed", {})
 
@@ -74,20 +76,23 @@ async def match_resume(
             "description_text": request.job_description,
         }
 
-        # Build pairs — ALL results go to LLM (no threshold: small set, every resume counts)
-        pairs = []
+        # Build one entry per resume — ALL go to the grouped scorer in a single LLM call.
+        # Using _score_job_multi_resume (the grouped Auto Matches scorer) instead of
+        # llm_score_batch (individual single-pair calls) because:
+        #   1. The grouped prompt has explicit anti-anchoring rules ("use the full score range")
+        #   2. The model sees all resumes simultaneously, forcing genuine differentiation
+        #   3. Single-pair calls in isolation converge to the same score when resumes
+        #      look similarly strong in their individual bubbles (the 72-for-all bug).
+        resume_entries = []
         for match in result["results"]:
             hybrid_score = match.get("score", 0)
-            # score from matcher is already 0-100 int
             if isinstance(hybrid_score, float) and hybrid_score <= 1.0:
                 hybrid_score = round(hybrid_score * 100)
             else:
                 hybrid_score = int(hybrid_score)
 
-            # Session 19: build resume dict directly from match result.
-            # match already contains full_text + structured (from matcher.py/_load_resumes_from_db).
-            # _get_full_resume() reads local JSON only — returns None for DB-backed (auth) resumes,
-            # which previously caused all authenticated pairs to be silently dropped.
+            # Build resume dict from match result (already contains full_text + structured
+            # from matcher.py/_load_resumes_from_db — no extra DB call needed).
             resume_dict = {
                 "id":        match["resume_id"],
                 "name":      match.get("name", ""),
@@ -96,7 +101,7 @@ async def match_resume(
                 "years_exp": match.get("years_exp"),
                 "titles":    match.get("titles", []),
                 "domains":   match.get("domains", []),
-                "full_text": match.get("full_text"),   # populated for resumes uploaded post-Session-19
+                "full_text": match.get("full_text"),
                 "structured": {
                     "years_exp": match.get("years_exp"),
                     "titles":    match.get("titles", []),
@@ -112,7 +117,7 @@ async def match_resume(
                     resume_dict["full_text"] = local.get("full_text")
                     resume_dict["structured"] = local.get("structured", resume_dict["structured"])
 
-            pairs.append({
+            resume_entries.append({
                 **match,
                 "hybrid_score":      hybrid_score,
                 "hybrid_components": match.get("components", {}),
@@ -121,9 +126,19 @@ async def match_resume(
                 "parsed_jd":         parsed_jd,
             })
 
-        if pairs:
-            # Run LLM scoring concurrently
-            enriched = await llm_score_batch(pairs)
+        if resume_entries:
+            # Single grouped LLM call — all resumes scored together in one prompt.
+            # max_tokens scales with resume count to avoid truncation.
+            from services.llm_scorer import LLM_CONCURRENCY
+            semaphore = _asyncio.Semaphore(LLM_CONCURRENCY)
+            async with _httpx_match.AsyncClient() as _client:
+                enriched = await _score_job_multi_resume(
+                    job_id="home",
+                    job=job_ctx,
+                    resume_entries=resume_entries,
+                    client=_client,
+                    semaphore=semaphore,
+                )
 
             # Re-rank by llm_score (primary) then hybrid_score (tiebreaker)
             enriched = rerank_by_llm_score(enriched)
