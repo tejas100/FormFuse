@@ -94,7 +94,12 @@ app = FastAPI(
 # Admin dashboard is server-rendered at /admin — no CORS needed for it
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://rackx.app",
+        "https://www.rackx.app",
+        "https://rack-frontend.vercel.app",
+        ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
