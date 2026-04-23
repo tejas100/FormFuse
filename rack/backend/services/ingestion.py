@@ -329,11 +329,30 @@ def delete_resume(resume_id: str, session_id: str = "default") -> bool:
     return True
 
 
+ANON_RESUME_CAP = 5  # must match MAX_RESUMES_ANON in resumes.py
+
+
 def ingest_resume_bytes(content: bytes, original_filename: str, session_id: str = "default") -> dict:
     """
     Wrapper around ingest_resume() that accepts raw bytes instead of a file path.
     session_id scopes the FAISS index and metadata to a specific user/session.
+
+    For anonymous sessions: enforces ANON_RESUME_CAP. Raises ValueError if at cap.
+    Auth users are never capped here — resumes.py enforces MAX_RESUMES_AUTH via DB.
     """
+    import re as _re
+    _UUID_RE = _re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        _re.IGNORECASE,
+    )
+    if not _UUID_RE.match(session_id):
+        existing = get_all_resumes(session_id=session_id)
+        if len(existing) >= ANON_RESUME_CAP:
+            raise ValueError(
+                f"Cap reached: this session already has {len(existing)} resumes "
+                f"(max {ANON_RESUME_CAP}). Delete a resume before uploading another."
+            )
+
     ext = Path(original_filename).suffix.lower()
 
     with tempfile.NamedTemporaryFile(

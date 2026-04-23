@@ -15,7 +15,7 @@ Endpoints:
   POST   /api/resumes/upload          → upload + ingest (anon or auth)
   GET    /api/resumes                 → list resumes (auth only)
   GET    /api/resumes/{id}            → single resume detail (auth only)
-  DELETE /api/resumes/{id}            → delete resume + storage file (auth only)
+  DELETE /api/resumes/{id}            → delete resume + storage file (auth or anon via X-Session-ID)
   GET    /api/resumes/{id}/file       → serve file (auth only, signed URL)
   POST   /api/resumes/migrate         → bulk migrate localStorage resumes on sign-in
 """
@@ -36,7 +36,7 @@ from supabase import create_client, Client
 from db.database import get_db
 from models.orm import Resume, ResumeChunk
 from routers.auth import get_current_user
-from services.ingestion import ingest_resume_bytes
+from services.ingestion import ingest_resume_bytes, delete_resume as ingestion_delete_resume
 from fastapi import Request
 
 logger = logging.getLogger(__name__)
@@ -355,39 +355,79 @@ async def get_resume(
     }
 
 
-# ── Delete resume (auth only) ─────────────────────────────────────────────────
+# ── Delete resume (dual-mode: auth via Bearer, anon via X-Session-ID) ───────────
 
 @router.delete("/{resume_id}")
 async def delete_resume(
     resume_id: str,
-    current_user=Depends(get_current_user),
+    http_request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a resume, its chunks, and its storage file."""
-    try:
-        rid = uuid.UUID(resume_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid resume ID.")
+    """
+    Delete a resume, its chunks, and its storage file.
 
-    result = await db.execute(
-        select(Resume).where(Resume.id == rid, Resume.user_id == current_user.id)
-    )
-    resume = result.scalar_one_or_none()
-    if not resume:
+    - Authenticated: requires Bearer JWT, deletes from Supabase Storage + DB.
+    - Anonymous: requires X-Session-ID header, deletes from resumes_metadata.json
+      and FAISS index. Enforces session scoping so users can't delete each other's
+      resumes.
+    """
+    # ── Try to resolve authenticated user ────────────────────────────────
+    current_user = None
+    if credentials and credentials.credentials:
+        try:
+            from routers.auth import get_current_user as _get_user
+            current_user = await _get_user(credentials=credentials, db=db)
+        except HTTPException:
+            current_user = None
+
+    # ── Authenticated path ───────────────────────────────────────────────
+    if current_user is not None:
+        try:
+            rid = uuid.UUID(resume_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid resume ID.")
+
+        result = await db.execute(
+            select(Resume).where(Resume.id == rid, Resume.user_id == current_user.id)
+        )
+        resume = result.scalar_one_or_none()
+        if not resume:
+            raise HTTPException(status_code=404, detail="Resume not found.")
+
+        if resume.storage_path:
+            try:
+                await _delete_from_storage(resume.storage_path)
+            except Exception as e:
+                logger.warning(f"Storage delete failed for {resume.storage_path}: {e}")
+
+        await db.delete(resume)
+        await db.flush()
+
+        logger.info(f"[delete] Auth resume {rid} deleted for user {current_user.id}")
+        return {"status": "success", "message": "Resume deleted."}
+
+    # ── Anonymous path ───────────────────────────────────────────────────
+    session_id = http_request.headers.get("X-Session-ID", "").strip()
+    if not session_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Provide a Bearer token or X-Session-ID header.",
+        )
+
+    # Verify the resume belongs to this session before deleting
+    from services.ingestion import get_resume_by_id as ingestion_get_by_id
+    resume_record = ingestion_get_by_id(resume_id)
+    if not resume_record:
+        raise HTTPException(status_code=404, detail="Resume not found.")
+    if resume_record.get("session_id") != session_id:
+        raise HTTPException(status_code=403, detail="Resume does not belong to this session.")
+
+    deleted = ingestion_delete_resume(resume_id, session_id=session_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Resume not found.")
 
-    # Delete from Supabase Storage (best-effort, don't fail if missing)
-    if resume.storage_path:
-        try:
-            await _delete_from_storage(resume.storage_path)
-        except Exception as e:
-            logger.warning(f"Storage delete failed for {resume.storage_path}: {e}")
-
-    # Delete DB row (cascades to resume_chunks)
-    await db.delete(resume)
-    await db.flush()
-
-    logger.info(f"Resume {rid} deleted for user {current_user.id}")
+    logger.info(f"[delete] Anon resume {resume_id} deleted for session {session_id}")
     return {"status": "success", "message": "Resume deleted."}
 
 

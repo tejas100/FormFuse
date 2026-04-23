@@ -25,6 +25,15 @@ function lsDelete(id) {
   return arr
 }
 
+function getSessionId() {
+  let sid = localStorage.getItem('rack_session_id')
+  if (!sid) {
+    sid = 'anon_' + Math.random().toString(36).slice(2, 10) + '_' + Math.random().toString(36).slice(2, 10)
+    localStorage.setItem('rack_session_id', sid)
+  }
+  return sid
+}
+
 // ── File → base64 ─────────────────────────────────────────────────────────────
 
 function fileToBase64(file) {
@@ -190,6 +199,14 @@ export default function Resumes() {
         if (!res.ok) throw new Error('Delete failed')
         setResumes(prev => prev.filter(r => r.id !== id))
       } else {
+        // Anonymous: call backend to remove from resumes_metadata.json + FAISS,
+        // then remove from localStorage. Both must succeed for a clean delete.
+        const sid = getSessionId()
+        const res = await fetch(`${API_BASE}/api/resumes/${id}`, {
+          method: 'DELETE',
+          headers: { 'X-Session-ID': sid },
+        })
+        if (!res.ok) throw new Error('Delete failed')
         const updated = lsDelete(id)
         setResumes(updated)
         // Revoke cached blob URL if any

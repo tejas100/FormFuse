@@ -61,28 +61,26 @@ async def match_resume(
 
     # ── Phase 2: LLM deep scoring (if enabled and resumes exist) ──
     if request.use_llm and result.get("results"):
-        # Deferred import — avoids circular import at module load time
-        from services.llm_scorer import _score_job_multi_resume, rerank_by_llm_score
+        # Deferred imports — avoids circular import at module load time
+        from services.llm_scorer import _score_job_multi_resume, rerank_by_llm_score, LLM_CONCURRENCY
         import asyncio as _asyncio
         import httpx as _httpx_match
 
         parsed_jd = result.get("jd_parsed", {})
 
-        # Build a job-like dict for the LLM context builder
-        # _build_jd_summary() reads job.get("job_title") and job.get("description_text")
         job_ctx = {
             "job_title":        parsed_jd.get("title", ""),
-            "company":          "",              # not available on Home page (no company)
+            "company":          "",
             "description_text": request.job_description,
         }
 
-        # Build one entry per resume — ALL go to the grouped scorer in a single LLM call.
-        # Using _score_job_multi_resume (the grouped Auto Matches scorer) instead of
-        # llm_score_batch (individual single-pair calls) because:
-        #   1. The grouped prompt has explicit anti-anchoring rules ("use the full score range")
-        #   2. The model sees all resumes simultaneously, forcing genuine differentiation
-        #   3. Single-pair calls in isolation converge to the same score when resumes
-        #      look similarly strong in their individual bubbles (the 72-for-all bug).
+        # Cap full_text per resume for the grouped Home call.
+        # llm_scorer._build_resume_summary() caps at 6000 chars (fine for single-pair calls),
+        # but with 5 resumes in one prompt that's ~30k chars → ReadTimeout.
+        # 2500 chars (~625 tokens) covers a full single-page resume and keeps the
+        # grouped prompt under ~15k chars total — well within gpt-4o-mini's window.
+        _HOME_FULL_TEXT_CAP = 2500
+
         resume_entries = []
         for match in result["results"]:
             hybrid_score = match.get("score", 0)
@@ -91,8 +89,18 @@ async def match_resume(
             else:
                 hybrid_score = int(hybrid_score)
 
-            # Build resume dict from match result (already contains full_text + structured
-            # from matcher.py/_load_resumes_from_db — no extra DB call needed).
+            full_text = match.get("full_text")
+
+            # Fallback for anonymous users
+            if not full_text:
+                local = _get_full_resume(match["resume_id"])
+                if local:
+                    full_text = local.get("full_text")
+
+            # Cap per-resume full_text so the grouped prompt doesn't timeout
+            if full_text and len(full_text) > _HOME_FULL_TEXT_CAP:
+                full_text = full_text[:_HOME_FULL_TEXT_CAP]
+
             resume_dict = {
                 "id":        match["resume_id"],
                 "name":      match.get("name", ""),
@@ -101,7 +109,7 @@ async def match_resume(
                 "years_exp": match.get("years_exp"),
                 "titles":    match.get("titles", []),
                 "domains":   match.get("domains", []),
-                "full_text": match.get("full_text"),
+                "full_text": full_text,
                 "structured": {
                     "years_exp": match.get("years_exp"),
                     "titles":    match.get("titles", []),
@@ -109,13 +117,6 @@ async def match_resume(
                     "skills":    match.get("skills", []),
                 },
             }
-
-            # Fallback for anonymous users: if full_text not present, try local JSON
-            if not resume_dict["full_text"]:
-                local = _get_full_resume(match["resume_id"])
-                if local:
-                    resume_dict["full_text"] = local.get("full_text")
-                    resume_dict["structured"] = local.get("structured", resume_dict["structured"])
 
             resume_entries.append({
                 **match,
@@ -128,22 +129,35 @@ async def match_resume(
 
         if resume_entries:
             # Single grouped LLM call — all resumes scored together in one prompt.
-            # max_tokens scales with resume count to avoid truncation.
-            from services.llm_scorer import LLM_CONCURRENCY
+            # Grouped scoring forces the model to differentiate rather than anchor
+            # to the same score for every resume (the flat-72 / flat-51 bug).
+            # Timeout bumped to 45s — single call replacing N concurrent calls,
+            # gpt-4o-mini needs more time to process the larger combined prompt.
             semaphore = _asyncio.Semaphore(LLM_CONCURRENCY)
-            async with _httpx_match.AsyncClient() as _client:
-                enriched = await _score_job_multi_resume(
-                    job_id="home",
-                    job=job_ctx,
-                    resume_entries=resume_entries,
-                    client=_client,
-                    semaphore=semaphore,
-                )
+            import logging as _logging_match
+            _match_log = _logging_match.getLogger(__name__)
+            enriched = None
+            for _attempt in range(2):
+                try:
+                    async with _httpx_match.AsyncClient(timeout=60.0) as _client:
+                        enriched = await _score_job_multi_resume(
+                            job_id="home",
+                            job=job_ctx,
+                            resume_entries=resume_entries,
+                            client=_client,
+                            semaphore=semaphore,
+                        )
+                    break
+                except Exception as _llm_err:
+                    if _attempt == 0:
+                        _match_log.warning(f"[match] LLM scorer attempt 1 failed ({_llm_err}), retrying…")
+                    else:
+                        _match_log.warning(f"[match] LLM scorer attempt 2 failed ({_llm_err}), falling back to hybrid scores")
+            if enriched is None:
+                enriched = resume_entries
 
-            # Re-rank by llm_score (primary) then hybrid_score (tiebreaker)
             enriched = rerank_by_llm_score(enriched)
 
-            # Set score = llm_score so existing frontend code using r.score still works
             for entry in enriched:
                 entry["score"] = entry.get("llm_score", entry.get("hybrid_score", 0))
 
@@ -701,9 +715,47 @@ Call exactly ONE routing tool now."""
             return ChatResponse(tool="route_to_rank", intent="JD")
 
         if selected_tool == "route_to_tailor":
+            # Generate a short, intent-confirming reply so the user sees RACK
+            # understood them before the tailor pipeline starts.
+            # One extra LLM call (~100ms) is worth the UX clarity.
+            _tailor_reply = "On it — generating your tailored resume now."
+            try:
+                _reply_res = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are RACK's job search assistant. The user just asked you to tailor their resume. "
+                                    "Write a single short sentence (max 15 words) confirming you understood their request. "
+                                    "Be specific — if they mentioned a target score, reference it. "
+                                    "If they mentioned a specific role or company, reference it. "
+                                    "Sound like a sharp, friendly recruiter, not a bot. "
+                                    "Examples: "
+                                    "'On it — I'll tailor your resume to push past 90 for this role.' "
+                                    "'Got it — generating a version targeted at the Meta Research Engineer role.' "
+                                    "'Sure — I'll optimize your resume for a stronger match on this one.' "
+                                    "Return ONLY the sentence. No quotes, no preamble."
+                                ),
+                            },
+                            {"role": "user", "content": text[:300]},
+                        ],
+                        "temperature": 0.4,
+                        "max_tokens": 40,
+                    },
+                    timeout=6.0,
+                )
+                _tailor_reply = _reply_res.json()["choices"][0]["message"]["content"].strip().strip('"')
+            except Exception:
+                pass  # fallback reply already set above
+
             return ChatResponse(
                 tool="route_to_tailor", intent="JD",
                 params={"jd_text": tool_params.get("jd_text") or None},
+                reply=_tailor_reply,
             )
 
         if selected_tool == "route_to_refine":

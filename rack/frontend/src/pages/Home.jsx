@@ -861,7 +861,7 @@ export default function Home() {
   const [typewriterMsgId, setTypewriterMsgId] = useState(null)
   const typewriterRef = useRef(null)
 
-  const startTypewriter = (msgId, fullText) => {
+  const startTypewriter = (msgId, fullText, onComplete) => {
     setTypewriterMsgId(msgId)
     setTypewriterText('')
     let i = 0
@@ -882,6 +882,7 @@ export default function Home() {
         }))
         setTypewriterMsgId(null)
         setTypewriterText('')
+        if (onComplete) onComplete()
       }
     }
     typewriterRef.current = setTimeout(tick, 16)
@@ -1627,6 +1628,13 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     }
   }
 
+  // ── JD fingerprint — deterministic duplicate detection, no LLM needed ──────
+  // Normalizes whitespace and lowercases, then takes the first 300 chars.
+  // Two JDs are "the same" if their fingerprints match — catches copy-paste repeats
+  // even if the user adds/removes a trailing newline or leading space.
+  const _jdFingerprint = (text) =>
+    text.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 300)
+
   // ── Match handler — LLM router is the single truth, flat switch executes ───
   // No heuristics. No regex. No refs. The backend LLM picks the tool; we execute.
   const handleMatch = async () => {
@@ -1642,6 +1650,35 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     const msgId       = Date.now()
     const thinkingId  = msgId + 1   // unique id for the ephemeral thinking bubble
     const modeHint    = activeMode   // pass slash command as soft hint to router
+
+    // ── Duplicate JD intercept — deterministic, zero LLM cost ──────────────
+    // If this exact JD was already ranked in this conversation thread, RACK asks
+    // what the user wants instead of guessing (which risks mis-routing to tailor).
+    // Only fires when there's no active slash command (mode_hint bypasses this —
+    // if the user explicitly typed /tailor or /rank they know what they want).
+    if (!modeHint) {
+      const fingerprint = _jdFingerprint(capturedJd)
+      const alreadyRanked = messages.some(
+        m => m.results?.length > 0 && _jdFingerprint(m.jd || '') === fingerprint
+      )
+
+      if (alreadyRanked) {
+        setJd('')
+        // Show user bubble + typewriter clarification — no triage call, no loading state
+        const clarifyId = Date.now()
+        const clarifyText = "Looks like you've already ranked your resumes against this role in our conversation.\n\nDid you want me to **re-rank** them (handy if you've uploaded a new resume since then), or would you rather I **tailor your top resume** for this position?"
+        setMessages(prev => [...prev, {
+          id: clarifyId,
+          jd: capturedJd,
+          isAssistantReply: true,
+          replyText: '',            // typewriter fills this in
+          loading: false,
+          isClarification: true,   // suppresses the "Ready to match?" nudge below
+        }])
+        startTypewriter(clarifyId, clarifyText)
+        return
+      }
+    }
 
     setLoading(true)
     setJd('')
@@ -1662,9 +1699,18 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     // May include jd_text from a previous rank result (rank→tailor handoff).
     if (tool === 'route_to_tailor') {
       setLoading(false)
-      setMessages(prev => prev.filter(m => m.id !== thinkingId))
       const jdInput = triage.params?.jd_text?.trim() || capturedJd
-      handleTailorWithText(jdInput)
+      const replyFull = triage.reply || 'On it — generating your tailored resume now.'
+
+      // Show the acknowledgment reply through the existing thinking placeholder,
+      // then kick off the tailor pipeline after the typewriter finishes.
+      setMessages(prev => prev.map(m =>
+        m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
+      ))
+      startTypewriter(thinkingId, replyFull, () => {
+        // Small gap so the user can read the reply before the tailor card appears
+        setTimeout(() => handleTailorWithText(jdInput), 600)
+      })
       return
     }
 
@@ -1782,10 +1828,21 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     // Remove thinking bubble — the match loading card takes over
     setMessages(prev => prev.filter(m => m.id !== thinkingId))
 
+    // ── Resolve post-clarification context early (needed for loading placeholder label) ──
+    const _lastRankMsg = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].results?.length > 0 && messages[i].jdText) return messages[i]
+      }
+      return null
+    })()
+    const _priorClarification = messages.some(m => m.isClarification)
+    const _isPostClarificationRerank =
+      _priorClarification && _lastRankMsg && capturedJd.length < 80
+
     // Append loading placeholder
     setMessages(prev => [...prev, {
       id: msgId,
-      jd: capturedJd,
+      jd: _isPostClarificationRerank ? (_lastRankMsg.jd || capturedJd) : capturedJd,
       results: null,
       jdParsed: null,
       meta: null,
@@ -1832,7 +1889,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     }
 
     // ── Act 2: Resolve JD text — fetch URL if needed ────────────────
-    let jdText       = capturedJd
+    // If the prior turn was a clarification (user replied "yes re rank" / "tailor it"),
+    // capturedJd is just the user's conversational reply — not a real JD.
+    // Recover the original full JD from the most recent rank result in the thread.
+    // (_lastRankMsg / _priorClarification / _isPostClarificationRerank declared above)
+
+    let jdText = _isPostClarificationRerank ? _lastRankMsg.jdText : capturedJd
     const isJdUrl    = /^https?:\/\//i.test(capturedJd)
     if (isJdUrl) {
       try {
@@ -1880,7 +1942,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       setMessages(prev => prev.map(m => m.id === msgId
         ? {
             ...m,
-            jd: (isJdUrl && parsedTitle) ? parsedTitle : capturedJd,
+            jd: (isJdUrl && parsedTitle) ? parsedTitle
+              : _isPostClarificationRerank ? (_lastRankMsg.jd || capturedJd)
+              : capturedJd,
             jdText,           // stored so triage context can include it for rank→tailor handoff
             results: data.results || [],
             jdParsed: data.jd_parsed || null,
@@ -2849,6 +2913,17 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                   {msg.isAssistantReply && (() => {
                     const isTyping      = typewriterMsgId === msg.id
                     const displayReply  = isTyping ? typewriterText : msg.replyText
+                    const renderReply = (text) => {
+                      if (!text) return null
+                      const parts = text.split(/(\*\*[^*]+\*\*)/g)
+                      return parts.map((part, i) =>
+                        part.startsWith("**") && part.endsWith("**")
+                          ? <strong key={i} style={{ color: "var(--accent)", fontWeight: 600 }}>{part.slice(2, -2)}</strong>
+                          : part.split('\n').map((line, j, arr) => (
+                              <span key={i+"-"+j}>{line}{j < arr.length - 1 ? <br /> : null}</span>
+                            ))
+                      )
+                    }
                     return (
                     <div style={{ animation: 'bubbleIn 0.25s ease both' }}>
                       {msg.loading ? (
@@ -2874,9 +2949,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                           padding: '16px 20px', borderRadius: '14px',
                           background: 'var(--surface)', border: '1px solid var(--border-bright)',
                           fontSize: '14px', lineHeight: '1.65', color: 'var(--text)',
-                          fontWeight: 300, whiteSpace: 'pre-wrap',
+                          fontWeight: 300,
                         }}>
-                          {displayReply}
+                          {renderReply(displayReply)}
                           {/* Blinking cursor while typewriter is active */}
                           {isTyping && (
                             <span style={{
@@ -2886,8 +2961,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                               animation: 'cursorBlink 0.7s step-end infinite',
                             }} />
                           )}
-                          {/* Soft nudge to paste a JD — only shown once typing is complete */}
-                          {!isTyping && displayReply && displayReply.length > 60 && (
+                          {/* Soft nudge to paste a JD — only shown once typing is complete.
+                              Suppressed for clarification messages — user is mid-dialogue. */}
+                          {!isTyping && displayReply && displayReply.length > 60 && !msg.isClarification && (
                             <div style={{
                               marginTop: '14px', paddingTop: '12px',
                               borderTop: '1px solid var(--border)',
