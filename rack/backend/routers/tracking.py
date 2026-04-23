@@ -189,7 +189,7 @@ async def auto_refresh(
         logger.info(f"[auto_refresh] Pool stale — serving DB results for user={user_id} (scheduler will refresh)")
         matches = await _load_results_from_db(user_id=user_id, db=db, limit=DISPLAY_CAP)
         return {
-            "matches":    matches.get("matches", []),
+            "matches":    matches if isinstance(matches, list) else matches.get("matches", []),
             "stats":      {"from_cache": True, "pool_stale": True},
             "from_cache": True,
         }
