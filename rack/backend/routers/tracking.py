@@ -35,8 +35,6 @@ from services.auto_match import (
     _load_results_from_db,
     _is_pool_cache_fresh,
     _load_pool_from_disk,
-    _save_pool_to_disk,
-    MAX_CONCURRENT,
     DISPLAY_CAP,
 )
 
@@ -169,33 +167,32 @@ async def auto_refresh(
             "is_slot_view": True,
         }
 
-    # Admin/Pro — run the full pipeline
+    # Admin/Pro — run scoring pipeline against cached pool only.
+    # NEVER fetch from job boards here — that is exclusively the scheduler's job.
+    # If the pool is stale (e.g. after Render restart), serve DB results immediately.
+    # The scheduler will replenish the pool and score new jobs within 60 minutes.
     result = await db.execute(select(User).where(User.id == current_user.id))
     user   = result.scalar_one_or_none()
     profile = {**DEFAULT_PREFS, **(user.preferences or {})} if user else DEFAULT_PREFS
 
-    # Load cached pool if fresh — skip job board fetch entirely.
-    # force=True (admin manual trigger) still uses cached pool unless it's stale;
-    # the pool freshness is independent of the results staleness that force bypasses.
-    import asyncio as _asyncio
     if _is_pool_cache_fresh():
         job_pool = _load_pool_from_disk()
         logger.info(f"[auto_refresh] Using cached pool: {len(job_pool)} jobs")
+        return await run_auto_pipeline(
+            user_id=user_id,
+            profile=profile,
+            job_pool=job_pool,
+            force=req.force,
+            db=db,
+        )
     else:
-        logger.info("[auto_refresh] Pool stale — fetching from job boards…")
-        from services.job_fetcher import fetch_all_auto_match
-        semaphore = _asyncio.Semaphore(MAX_CONCURRENT)
-        job_pool = await fetch_all_auto_match(semaphore)
-        _save_pool_to_disk(job_pool)
-        logger.info(f"[auto_refresh] Pool fetched and cached: {len(job_pool)} jobs")
-
-    return await run_auto_pipeline(
-        user_id=user_id,
-        profile=profile,
-        job_pool=job_pool,
-        force=req.force,
-        db=db,
-    )
+        logger.info(f"[auto_refresh] Pool stale — serving DB results for user={user_id} (scheduler will refresh)")
+        matches = await _load_results_from_db(user_id=user_id, db=db, limit=DISPLAY_CAP)
+        return {
+            "matches":    matches.get("matches", []),
+            "stats":      {"from_cache": True, "pool_stale": True},
+            "from_cache": True,
+        }
 
 
 @router.get("/auto/matches")

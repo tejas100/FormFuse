@@ -80,36 +80,103 @@ POOL_MAX_AGE_MINUTES = 90   # Pool older than 90 min is considered stale for new
 
 
 def _save_pool_to_disk(pool: list) -> None:
-    """Write the fetched job pool to disk with a timestamp."""
-    os.makedirs(WATCHLIST_DIR, exist_ok=True)
+    """
+    Write the fetched job pool to Supabase Storage (job-pool/job_pool.json).
+    Falls back to local disk write if Supabase upload fails, so the scheduler
+    never aborts due to a storage hiccup.
+    """
     payload = {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "job_count":  len(pool),
         "jobs":       pool,
     }
-    with open(POOL_CACHE_PATH, "w") as f:
-        json.dump(payload, f)
-    logger.info(f"[AutoMatch] Pool written to disk: {len(pool)} jobs → {POOL_CACHE_PATH}")
+    payload_bytes = json.dumps(payload).encode("utf-8")
+
+    # ── Primary: Supabase Storage ─────────────────────────────────────
+    try:
+        from supabase import create_client
+        sb = create_client(
+            os.environ["SUPABASE_URL"],
+            os.environ["SUPABASE_SERVICE_KEY"],
+        )
+        sb.storage.from_("job-pool").upload(
+            path="job_pool.json",
+            file=payload_bytes,
+            file_options={"content-type": "application/json", "upsert": "true"},
+        )
+        logger.info(f"[AutoMatch] Pool written to Supabase Storage: {len(pool)} jobs")
+        return
+    except Exception as e:
+        logger.warning(f"[AutoMatch] Supabase pool upload failed ({e}) — falling back to disk")
+
+    # ── Fallback: local disk (ephemeral on Render, but better than nothing) ──
+    try:
+        os.makedirs(WATCHLIST_DIR, exist_ok=True)
+        with open(POOL_CACHE_PATH, "w") as f:
+            f.write(json.dumps(payload))
+        logger.info(f"[AutoMatch] Pool written to disk (fallback): {len(pool)} jobs")
+    except Exception as e2:
+        logger.error(f"[AutoMatch] Disk fallback also failed: {e2}")
 
 
 def _load_pool_from_disk() -> list:
     """
-    Load the cached job pool from disk.
-    Returns empty list if file missing or unreadable — caller handles fallback.
+    Load the cached job pool — tries Supabase Storage first, then local disk.
+    Returns empty list if both fail — caller handles the fresh-fetch fallback.
     """
+    # ── Primary: Supabase Storage ─────────────────────────────────────
+    try:
+        from supabase import create_client
+        sb = create_client(
+            os.environ["SUPABASE_URL"],
+            os.environ["SUPABASE_SERVICE_KEY"],
+        )
+        raw = sb.storage.from_("job-pool").download("job_pool.json")
+        payload = json.loads(raw.decode("utf-8"))
+        jobs = payload.get("jobs", [])
+        logger.info(f"[AutoMatch] Pool loaded from Supabase Storage: {len(jobs)} jobs")
+        return jobs
+    except Exception as e:
+        logger.warning(f"[AutoMatch] Supabase pool download failed ({e}) — trying disk")
+
+    # ── Fallback: local disk ──────────────────────────────────────────
     try:
         with open(POOL_CACHE_PATH) as f:
             payload = json.load(f)
-        return payload.get("jobs", [])
+        jobs = payload.get("jobs", [])
+        logger.info(f"[AutoMatch] Pool loaded from disk (fallback): {len(jobs)} jobs")
+        return jobs
     except Exception:
         return []
 
 
 def _is_pool_cache_fresh() -> bool:
     """
-    Returns True if job_pool.json exists and was written within POOL_MAX_AGE_MINUTES.
-    Used by run_pipeline_for_new_user() to decide whether to re-fetch.
+    Returns True if the cached pool (Supabase Storage or disk) was written
+    within POOL_MAX_AGE_MINUTES. Used by run_pipeline_for_new_user() to decide
+    whether to re-fetch from job boards.
     """
+    # ── Primary: Supabase Storage ─────────────────────────────────────
+    try:
+        from supabase import create_client
+        sb = create_client(
+            os.environ["SUPABASE_URL"],
+            os.environ["SUPABASE_SERVICE_KEY"],
+        )
+        raw = sb.storage.from_("job-pool").download("job_pool.json")
+        payload = json.loads(raw.decode("utf-8"))
+        fetched_at_str = payload.get("fetched_at")
+        if not fetched_at_str:
+            return False
+        fetched_at = datetime.fromisoformat(fetched_at_str)
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age_minutes = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 60
+        return age_minutes < POOL_MAX_AGE_MINUTES
+    except Exception:
+        pass
+
+    # ── Fallback: local disk ──────────────────────────────────────────
     try:
         with open(POOL_CACHE_PATH) as f:
             payload = json.load(f)
