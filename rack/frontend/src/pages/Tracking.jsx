@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { getAuthHeaders } from "../utils/api";
 
-const API = "http://localhost:8000/api/tracking";
-const RESUMES_API = "http://localhost:8000/api/resumes";
-const PROFILE_API = "http://localhost:8000/api/account";
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API = `${API_BASE}/api/tracking`;
+const RESUMES_API = `${API_BASE}/api/resumes`;
+const PROFILE_API = `${API_BASE}/api/account`;
 
 /* ── helpers ───────────────────────────────────────────────────── */
 function scoreColor(s) {
@@ -2427,7 +2428,7 @@ export default function Tracking() {
         const headers = await getAuthHeaders();
         const [pr, me, am, fr, cm] = await Promise.all([
           fetch(`${PROFILE_API}/profile`, { headers }),
-          fetch(`http://localhost:8000/api/auth/me`, { headers }),
+          fetch(`${API_BASE}/api/auth/me`, { headers }),
           fetch(`${API}/auto/matches`, { headers }),
           fetch(`${API}/auto/fresh?hours=1`, { headers }),
           fetch(`${API}/matches?limit=50`),

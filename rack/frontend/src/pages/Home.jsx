@@ -5,6 +5,8 @@ import { getAuthHeaders } from '../utils/api'
 import RackCreature from '../components/RackCreature'
 import ApplyAgentCard from '../components/ApplyAgentCard'
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
 const mobileCardStyles = `
   /* ── Keyframes ── */
   @keyframes smoothExpand {
@@ -1006,8 +1008,8 @@ export default function Home() {
     // Authenticated user — fetch prefs + resume count in parallel
     getAuthHeaders().then(async headers => {
       const [resumeRes, profileRes] = await Promise.all([
-        fetch('http://localhost:8000/api/resumes', { headers }),
-        fetch('http://localhost:8000/api/account/profile', { headers }),
+        fetch(`${API_BASE}/api/resumes`, { headers }),
+        fetch(`${API_BASE}/api/account/profile`, { headers }),
       ])
       const resumeData  = resumeRes.ok  ? await resumeRes.json()  : { resumes: [] }
       const profileData = profileRes.ok ? await profileRes.json() : {}
@@ -1143,7 +1145,7 @@ export default function Home() {
           try {
             const formData = new FormData()
             formData.append('file', file)
-            const res = await fetch('http://localhost:8000/api/resumes/upload', {
+            const res = await fetch(`${API_BASE}/api/resumes/upload`, {
               method: 'POST',
               headers,   // Authorization header only — browser sets multipart boundary
               body: formData,
@@ -1156,7 +1158,7 @@ export default function Home() {
         }
 
         // Refresh the resume count
-        const countRes = await fetch('http://localhost:8000/api/resumes', { headers })
+        const countRes = await fetch(`${API_BASE}/api/resumes`, { headers })
         const finalCount = countRes.ok
           ? ((await countRes.json()).resumes || []).length
           : uploadedCount
@@ -1271,7 +1273,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
       if (onboardingStep === 'roles') {
         // ── Extract roles via LLM + save to DB ─────────────────────
-        const extractRes = await fetch('http://localhost:8000/api/account/onboarding/extract-roles', {
+        const extractRes = await fetch(`${API_BASE}/api/account/onboarding/extract-roles`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
           body: JSON.stringify({ text: userText }),
@@ -1281,7 +1283,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
         // Save preferences
         if (roles.length > 0) {
-          await fetch('http://localhost:8000/api/account/preferences', {
+          await fetch(`${API_BASE}/api/account/preferences`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json', ...headers },
             body: JSON.stringify({ target_roles: roles }),
@@ -1304,7 +1306,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         // ── Extract + save location via LLM ────────────────────────
         // Raw text goes to backend for LLM extraction — never store the
         // raw sentence directly (e.g. "I am open to SF, NYC, or remote")
-        const locRes = await fetch('http://localhost:8000/api/account/onboarding/extract-location', {
+        const locRes = await fetch(`${API_BASE}/api/account/onboarding/extract-location`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
           body: JSON.stringify({ text: userText }),
@@ -1328,7 +1330,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       } else if (onboardingStep === 'yoe') {
         // ── Extract YOE via LLM — handles written numbers + ranges ──
         // Replaces the old digit-only regex which broke on "three to four years"
-        const yoeRes = await fetch('http://localhost:8000/api/account/onboarding/extract-yoe', {
+        const yoeRes = await fetch(`${API_BASE}/api/account/onboarding/extract-yoe`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
           body: JSON.stringify({ text: userText }),
@@ -1374,7 +1376,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     const checkResumes = async () => {
       try {
         const headers = await getAuthHeaders()
-        const res = await fetch('http://localhost:8000/api/resumes', { headers })
+        const res = await fetch(`${API_BASE}/api/resumes`, { headers })
         if (!res.ok) return
         const data = await res.json()
         const count = (data.resumes || []).length
@@ -1398,7 +1400,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     try {
       const headers = await getAuthHeaders()
       // Correct endpoint — same one Tracking.jsx uses
-      const res = await fetch('http://localhost:8000/api/tracking/auto/refresh', {
+      const res = await fetch(`${API_BASE}/api/tracking/auto/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ force: false }),
@@ -1462,7 +1464,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     try {
       const headers = isAuthed ? await getAuthHeaders() : { 'X-Session-ID': sessionId }
       // Step 1: get the signed URL from the backend
-      const res = await fetch(`http://localhost:8000/api/resumes/${resumeId}/file`, { headers })
+      const res = await fetch(`${API_BASE}/api/resumes/${resumeId}/file`, { headers })
       if (!res.ok) throw new Error('Failed to fetch download URL')
       const data = await res.json()
 
@@ -1524,7 +1526,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         return null
       }).filter(Boolean)
 
-      const res = await fetch('http://localhost:8000/api/match/chat', {
+      const res = await fetch(`${API_BASE}/api/match/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ text, context, mode_hint: modeHint }),
@@ -1565,7 +1567,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     try {
       const headers = await getAuthHeaders()
-      const res = await fetch('http://localhost:8000/api/chat/tailor', {
+      const res = await fetch(`${API_BASE}/api/chat/tailor`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({
@@ -1866,7 +1868,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         try {
           const formData = new FormData()
           formData.append('file', file)
-          const res = await fetch('http://localhost:8000/api/resumes/upload', {
+          const res = await fetch(`${API_BASE}/api/resumes/upload`, {
             method: 'POST',
             headers: { 'X-Session-ID': sessionId },
             body: formData,
@@ -1898,7 +1900,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     const isJdUrl    = /^https?:\/\//i.test(capturedJd)
     if (isJdUrl) {
       try {
-        const fetchRes = await fetch('http://localhost:8000/api/chat/fetch-jd', {
+        const fetchRes = await fetch(`${API_BASE}/api/chat/fetch-jd`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: capturedJd }),
@@ -1923,7 +1925,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     // ── Act 3: Run match ─────────────────────────────────────────
     try {
-      const res = await fetch('http://localhost:8000/api/match', {
+      const res = await fetch(`${API_BASE}/api/match`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2019,7 +2021,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
       try {
         const headers = await getAuthHeaders()
-        const res = await fetch('http://localhost:8000/api/apply/stream', {
+        const res = await fetch(`${API_BASE}/api/apply/stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...headers },
           body: JSON.stringify({
@@ -2192,7 +2194,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     try {
       const headers = await getAuthHeaders()
-      const res = await fetch('http://localhost:8000/api/chat/tailor', {
+      const res = await fetch(`${API_BASE}/api/chat/tailor`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ text: capturedJd }),
@@ -2308,7 +2310,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
     try {
       const headers = await getAuthHeaders()
-      const res = await fetch('http://localhost:8000/api/chat/tailor', {
+      const res = await fetch(`${API_BASE}/api/chat/tailor`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ text: capturedJd }),
