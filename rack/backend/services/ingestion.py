@@ -26,7 +26,6 @@ from services.section_parser import parse_sections
 from services.chunker import chunk_sections
 from services.structured_extractor import extract_structured_data
 from services.embedder import embed_texts
-from services.faiss_store import add_resume_vectors, remove_resume_vectors
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # rack/
@@ -172,7 +171,7 @@ def ingest_resume(file_path: str, original_filename: str, session_id: str = "def
       4. chunker               → 50-token chunks with 15 overlap, section-aware
       5. structured_extractor  → skills, years_exp, titles, companies, education, domains
       6. embedder              → 384-dim vectors for each chunk (all-MiniLM-L6-v2)
-      7. faiss_store           → index vectors for similarity search
+      7. persist metadata      → JSON file (anonymous users only)
       8. persist metadata      → JSON file (anonymous users only)
 
     Args:
@@ -204,15 +203,7 @@ def ingest_resume(file_path: str, original_filename: str, session_id: str = "def
     chunk_texts = [c["text"] for c in chunks]
     embeddings = embed_texts(chunk_texts, normalize=True)
 
-    # Step 7: Index vectors in FAISS — scoped to session_id
-    index_result = add_resume_vectors(
-        resume_id=resume_id,
-        chunks=chunks,
-        embeddings=embeddings,
-        user_id=session_id,
-    )
-
-    # Step 8: Build metadata record
+    # Step 7: Build metadata record
     name = Path(original_filename).stem
     ext = Path(original_filename).suffix.lower()
 
@@ -230,9 +221,8 @@ def ingest_resume(file_path: str, original_filename: str, session_id: str = "def
         "full_text": full_text,           # ← NEW: cleaned full text for LLM scoring
         "section_count": len(sections),
         "chunk_count": len(chunks),
-        "embedding_dim": embeddings.shape[1] if embeddings.size > 0 else 384,
+        "embedding_dim": embeddings.shape[1] if embeddings.size > 0 else 1536,
         "indexed": True,
-        "index_stats": index_result,
         # Structured data — used for hybrid scoring (skill_overlap, experience_overlap)
         "structured": structured,
         # Flat skills list for the frontend cards
@@ -320,9 +310,6 @@ def delete_resume(resume_id: str, session_id: str = "default") -> bool:
     file_path = resume.get("file_path")
     if file_path and os.path.exists(file_path):
         os.remove(file_path)
-
-    effective_session = resume.get("session_id", session_id)
-    remove_resume_vectors(resume_id, user_id=effective_session)
 
     metadata["resumes"] = [r for r in metadata["resumes"] if r["id"] != resume_id]
     _save_metadata(metadata)

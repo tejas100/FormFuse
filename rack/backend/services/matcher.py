@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.jd_parser import parse_jd, _split_jd_sections
-from services.embedder import embed_single
+from services.embedder import embed_single_async
 from services.vector_store import vector_search
 from services.hybrid_scorer import score_resume
 from services.gap_analyzer import analyze_gaps
@@ -157,7 +157,7 @@ async def match_resumes(
 
     # ── Step 3: Build focused semantic query and embed ──
     semantic_query = _build_semantic_query(parsed_jd, jd_text)
-    jd_embedding = embed_single(semantic_query)
+    jd_embedding = await embed_single_async(semantic_query)
     print(f"[matcher] Semantic query: {len(semantic_query.split())} words")
 
     # ── Step 4: pgvector search — scoped to this user ──
