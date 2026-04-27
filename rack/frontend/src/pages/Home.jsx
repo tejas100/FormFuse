@@ -906,7 +906,30 @@ export default function Home() {
   })()
 
   const [jd, setJd]               = useState('')
-  const [messages, setMessages]   = useState([])        // multi-turn conversation thread
+  // ── Persistent chat history — survives page reloads ─────────────
+  // Key is scoped to the user (auth'd: user UUID, anon: session ID)
+  // so different users on the same device don't share history.
+  const _chatHistoryKey = isAuthed
+    ? `rack_chat_${user?.id || 'auth'}`
+    : `rack_chat_${sessionId}`
+
+  const [messages, setMessages]   = useState(() => {
+    // Rehydrate from localStorage on first mount
+    try {
+      const stored = localStorage.getItem(_chatHistoryKey)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        // Strip transient fields that shouldn't survive a reload:
+        // loading spinners, thinking placeholders, upload status chips
+        return parsed.filter(m =>
+          !m.isThinkingPlaceholder &&
+          !m.isUploadStatus &&
+          !m.loading
+        ).map(m => ({ ...m, loading: false }))
+      }
+    } catch { /* storage unavailable or corrupted — start fresh */ }
+    return []
+  })
   const [loading, setLoading]     = useState(false)
   const [filterLoading, setFilterLoading] = useState(false)
   const [expandedIds, setExpandedIds] = useState(new Set()) // per-card key: `${msg.id}-${resume_id}`
@@ -1096,6 +1119,29 @@ export default function Home() {
     r.onerror = () => reject(new Error('Read failed'))
     r.readAsDataURL(file)
   })
+
+  // ── Sync chat history to localStorage on every messages change ──
+  // Debounced 300ms so rapid typewriter updates don't hammer storage.
+  // Only persist when there's something worth keeping.
+  useEffect(() => {
+    if (messages.length === 0) return
+    const t = setTimeout(() => {
+      try {
+        // Only persist stable, completed messages — skip transient states
+        const toStore = messages.filter(m =>
+          !m.isThinkingPlaceholder &&
+          !m.isUploadStatus &&
+          !m.loading
+        )
+        if (toStore.length > 0) {
+          // Cap at last 40 messages to keep storage size reasonable
+          const capped = toStore.slice(-40)
+          localStorage.setItem(_chatHistoryKey, JSON.stringify(capped))
+        }
+      } catch { /* storage quota exceeded or unavailable — fail silently */ }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [messages, _chatHistoryKey])
 
   // ── Auto-scroll chat area to bottom when new messages arrive ──
   // typewriterText included so scroll tracks content growing during typewriter animation
@@ -1783,7 +1829,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     if (tool === 'show_matched_jobs') {
       const jobs  = triage.jobs || []
       const label = triage.filter_label || 'Matched jobs'
-      setMessages(prev => prev.filter(m => m.id !== thinkingId).concat([{
+      const introReply = triage.reply || null   // personalized intro from backend LLM
+
+      // If the backend generated a personal intro message, show it first as a RACK reply,
+      // then immediately append the job table as a second message so they feel connected.
+      const tableMsg = {
         id: msgId,
         jd: capturedJd,
         filterLabel: label,
@@ -1794,26 +1844,32 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         error: jobs.length === 0
           ? 'No jobs matched that filter. Try running Auto Matches in the Tracking tab first.'
           : null,
-      }]))
+      }
+
+      // Single bubble: attach intro text to the table message so renderer shows both together
+      const finalMsg = (introReply && jobs.length > 0)
+        ? { ...tableMsg, filterIntro: introReply }
+        : tableMsg
+      setMessages(prev => prev.filter(m => m.id !== thinkingId).concat([finalMsg]))
       setLoading(false)
       return
     }
 
-    // ── route_to_apply — auto-fill application forms ────────────────────────
+    // ── route_to_apply — redirect to Tracking tab ──────────────────────────
+    // The auto-apply agent is experimental. For now, any apply intent gets
+    // a warm redirect to Tracking where the user can review and apply manually.
+    // This also catches "how do I apply?" questions that slip past the router.
     if (tool === 'route_to_apply') {
       setLoading(false)
-      const applyJobs = triage.apply_jobs || []
-      if (!applyJobs.length) {
-        const replyFull = triage.reply || 'No matched jobs found to apply to. Run Auto Matches in the Tracking tab first.'
-        setMessages(prev => prev.map(m =>
-          m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
-        ))
-        startTypewriter(thinkingId, replyFull)
-        return
+      const redirectMsg = {
+        id: msgId,
+        jd: capturedJd,
+        isApplyRedirect: true,   // renders a special Tracking CTA card
+        results: null,
+        loading: false,
+        error: null,
       }
-      // Remove thinking bubble then fire the apply agent
-      setMessages(prev => prev.filter(m => m.id !== thinkingId))
-      handleApply(applyJobs)
+      setMessages(prev => prev.filter(m => m.id !== thinkingId).concat([redirectMsg]))
       return
     }
 
@@ -2683,6 +2739,57 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             )
           }
 
+          // ── Apply redirect — send user to Tracking tab ──────────────────────
+          if (msg.isApplyRedirect) {
+            return (
+              <div key={msg.id} className='rack-msg-container' style={{ margin: '0 auto', paddingBottom: 8 }}>
+                <div className="rack-msg-row rack">
+                  <div className="rack-bubble-rack">
+                    <div className="rack-bubble-rack-label">
+                      <span className="rack-bubble-rack-label-dot" />
+                      Rack
+                    </div>
+                    <div style={{
+                      padding: '18px 20px', borderRadius: '14px',
+                      background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                      animation: 'bubbleIn 0.35s ease both',
+                      display: 'flex', flexDirection: 'column', gap: '14px',
+                    }}>
+                      <p style={{ margin: 0, fontSize: '14px', color: 'var(--text)', lineHeight: 1.65 }}>
+                        The best way to apply is through the <strong style={{ color: 'var(--accent)' }}>Tracking tab</strong> — all your matched jobs are there with one-click Apply buttons. You can review each role, see your match score, and apply with your tailored resume.
+                      </p>
+                      <button
+                        onClick={() => {
+                          // Find the TabBar setTab function — navigate to Tracking
+                          // We fire a custom event that App.jsx listens for
+                          window.dispatchEvent(new CustomEvent('rack:navigate', { detail: { tab: 'Tracking' } }))
+                        }}
+                        style={{
+                          alignSelf: 'flex-start',
+                          padding: '10px 20px',
+                          background: 'rgba(232,255,107,0.1)',
+                          border: '1px solid rgba(232,255,107,0.35)',
+                          borderRadius: '10px',
+                          cursor: 'pointer',
+                          fontSize: '13px', fontWeight: 700,
+                          color: 'var(--accent)',
+                          fontFamily: 'var(--font-display)',
+                          transition: 'all 0.15s ease',
+                          display: 'flex', alignItems: 'center', gap: '8px',
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.18)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.55)' }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.1)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.35)' }}
+                      >
+                        <span>Open Tracking</span>
+                        <span style={{ fontSize: '15px' }}>✦</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )
+          }
+
           const msgJdPreview = msg.jd.length > 220 ? msg.jd.slice(0, 220).trimEnd() + '…' : msg.jd
 
           return (
@@ -2757,6 +2864,19 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
                     return (
                       <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
+
+                        {/* ── Personal intro text (above the table) ── */}
+                        {msg.filterIntro && (
+                          <p style={{
+                            margin: '0 0 16px',
+                            fontSize: '14px',
+                            color: 'var(--text)',
+                            lineHeight: 1.65,
+                            fontWeight: 400,
+                          }}>
+                            {msg.filterIntro}
+                          </p>
+                        )}
 
                         {/* ── Header bar ── */}
                         <div style={{

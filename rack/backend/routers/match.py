@@ -244,9 +244,9 @@ answer_career_question: User asked a career-related question (about their resume
 
 show_matched_jobs: User wants to SEE their matched jobs as a list/table. Triggers on "show me my matches", "what jobs did you find", "top jobs for me", "85%+ matches". Distinct from answer_career_question which gives a text answer.
 
-route_off_topic: Anything not related to jobs, careers, resumes, or professional development. Greetings alone ("hi", "hello") should be route_off_topic unless combined with a career request.
+route_off_topic: Anything not related to jobs, careers, resumes, or professional development. This includes pure greetings ("hi", "hello", "hey", "what's up", "how are you"), small talk, and genuinely off-topic topics. Route greetings here — the LLM will generate a warm, natural response.
 
-route_to_apply: User wants to auto-fill and submit job applications. Triggers on: "apply", "fill the form", "start applying", "apply to all", "apply to these jobs", "submit my application". Only use when jobs have already been shown in the conversation. Extract apply_all and job_indices from context.
+route_to_apply: User explicitly wants to auto-fill and submit job applications RIGHT NOW. Triggers on: "apply to this", "fill the form", "start applying", "apply to all of them", "submit my application". CRITICAL: Questions like "how do I apply?", "how can I apply?", "how should I apply?", "what's the process to apply?", "how do these apply buttons work?" are CAREER QUESTIONS — route those to answer_career_question, NOT route_to_apply. Only use route_to_apply for clear imperative commands to take action, not informational questions about applying.
 
 MODE HINT: If a mode_hint is provided ("tailor" or "rank"), treat it as a strong signal toward that routing tool but the message content still matters."""
 
@@ -256,6 +256,9 @@ _CAREER_SYSTEM = """You are RACK's personal job search assistant — sharp, dire
 RACK is an AI-powered resume matching platform. You have access to the user's real resume data and matched jobs via tools.
 
 When answering questions about the user's resumes, skills, or matched jobs — ALWAYS call the relevant tool first to get their actual data. Never guess or give generic answers when you can fetch real data.
+
+CRITICAL RULE — Apply questions: If the user asks HOW to apply, WHERE to apply, or anything about the process of applying ("how do I apply", "how can I apply for these", "how do I submit", "where do I apply", "what's the process to apply", "how do I apply for these jobs") — do NOT write generic step-by-step advice. Instead respond with EXACTLY this token and nothing else:
+REDIRECT_TO_TRACKING
 
 Rules:
 - Only answer questions related to careers, job searching, resumes, and professional development
@@ -710,6 +713,20 @@ Call exactly ONE routing tool now."""
 
         # ── Step 2: Execute routing decision ──────────────────────────────────
 
+        # Deterministic apply-intent intercept — runs BEFORE any tool handler.
+        # Any message asking HOW/WHERE to apply always gets the Tracking redirect.
+        # This fires regardless of which tool the router picked, because "how do i apply"
+        # can slip through as route_to_apply, answer_career_question, or show_matched_jobs.
+        _apply_kws = [
+            'how do i apply', 'how can i apply', 'how should i apply',
+            'how to apply', 'where do i apply', 'where can i apply',
+            'how do i submit', 'process to apply', 'steps to apply',
+            'apply for these', 'apply to these', 'how do i apply for',
+            'how do you apply', 'how would i apply', 'how do we apply',
+        ]
+        if any(kw in text.lower() for kw in _apply_kws):
+            return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
+
         # Pure routing — no extra work needed
         if selected_tool == "route_to_rank":
             return ChatResponse(tool="route_to_rank", intent="JD")
@@ -768,38 +785,51 @@ Call exactly ONE routing tool now."""
             )
 
         if selected_tool == "route_to_apply":
-            apply_all   = bool(tool_params.get("apply_all", False))
-            job_indices = tool_params.get("job_indices", [])
-
-            jobs_data = await _execute_tool(
-                "get_matched_jobs",
-                {"min_score": 0, "limit": 20, "sort_by": "score"},
-                user_id, db,
-            )
-            all_jobs = _json.loads(jobs_data).get("jobs", [])
-
-            if apply_all:
-                apply_jobs = all_jobs[:5]
-            elif job_indices:
-                apply_jobs = [all_jobs[i] for i in job_indices if i < len(all_jobs)]
-            else:
-                apply_jobs = all_jobs[:1]
-
-            if not apply_jobs:
-                return ChatResponse(
-                    tool="route_to_apply", intent="APPLY",
-                    reply="No matched jobs found to apply to. Run Auto Matches in the Tracking tab first.",
-                )
-
-            return ChatResponse(
-                tool="route_to_apply", intent="APPLY",
-                apply_jobs=apply_jobs,
-            )
+            # Always redirect to Tracking — the auto-apply agent is not active.
+            # apply_jobs=[] signals the frontend to show the Tracking CTA card.
+            return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
 
         if selected_tool == "route_off_topic":
+            # Generate a warm, natural reply using the LLM instead of a hardcoded string.
+            # This lets casual greetings ("hey", "what's up") get a personal response
+            # and redirects off-topic questions conversationally, not robotically.
+            _off_topic_reply = "Hey! I'm RACK — here to help you land your next job. Paste a job description and I'll rank your resumes against it, or ask me anything about your job search."
+            try:
+                _ot_res = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are RACK, an AI-powered resume matching and job search assistant. "
+                                    "The user sent you a casual message or something off-topic. "
+                                    "Respond naturally and warmly in 1-2 sentences. "
+                                    "If it's a greeting, greet them back and briefly mention what you can do for them. "
+                                    "If it's genuinely off-topic (weather, cooking, etc.), gently redirect to how you can help with their job search. "
+                                    "Sound like a friendly, sharp recruiter — not a bot reciting a script. "
+                                    "Never start with 'Certainly!', 'Great!', or similar filler. "
+                                    "Return ONLY the response text, no quotes, no preamble."
+                                ),
+                            },
+                            {"role": "user", "content": text[:300]},
+                        ],
+                        "temperature": 0.6,
+                        "max_tokens": 80,
+                    },
+                    timeout=8.0,
+                )
+                _ot_text = _ot_res.json()["choices"][0]["message"]["content"].strip().strip('"')
+                if _ot_text:
+                    _off_topic_reply = _ot_text
+            except Exception:
+                pass  # fallback reply already set above
+
             return ChatResponse(
                 tool="route_off_topic", intent="OFF_TOPIC",
-                reply="I'm built to help you land your next job, paste a job description and I'll instantly rank your resumes against it, or ask me anything about your job search, resume, or interview prep.",
+                reply=_off_topic_reply,
             )
 
         # show_matched_jobs — run the DB tool and return structured rows
@@ -815,6 +845,20 @@ Call exactly ONE routing tool now."""
             )
             jobs_parsed = _json.loads(jobs_data)
             jobs_list   = jobs_parsed.get("jobs", [])
+
+            # Fetch user's display_name for personalized greeting
+            _display_name = None
+            if user_id:
+                try:
+                    from models.orm import User as _User
+                    import uuid as _uuid_m
+                    _u = await db.execute(_select(_User).where(_User.id == _uuid_m.UUID(user_id)))
+                    _user_row = _u.scalar_one_or_none()
+                    if _user_row:
+                        _display_name = (_user_row.display_name or "").split()[0] or None
+                except Exception:
+                    pass
+
             if jobs_list:
                 # Build label the same way the old FILTER_RESULT path did
                 if hours > 0:
@@ -831,12 +875,47 @@ Call exactly ONE routing tool now."""
                     label = f"{min_score}%+ match jobs"
                 else:
                     label = f"Top {limit} matched jobs" if limit < 20 else "All matched jobs"
-                return ChatResponse(tool="show_matched_jobs", intent="FILTER_RESULT", jobs=jobs_list, filter_label=label)
+
+                # Build a personalized LLM intro message for above the job table
+                _intro_reply = None
+                top_job = jobs_list[0] if jobs_list else None
+                try:
+                    _name_part = f"{_display_name}, " if _display_name else ""
+                    _top_part = f" The top pick is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — it lines up really well with your profile." if top_job else ""
+                    _intro_prompt = (
+                        f"You are RACK's job search assistant. The user asked to see their matched jobs. "
+                        f"I found {len(jobs_list)} job{'s' if len(jobs_list) != 1 else ''} for them. "
+                        f"{_top_part} "
+                        f"Write 1-2 warm, personal sentences to introduce these results. "
+                        f"Address them by first name if available: {_display_name or 'not available'}. "
+                        f"Mention the top match briefly and express genuine enthusiasm. "
+                        f"Sound like a recruiter friend, not a bot. "
+                        f"Return ONLY the sentences, no preamble."
+                    )
+                    _intro_res = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "gpt-4o-mini",
+                            "messages": [{"role": "user", "content": _intro_prompt}],
+                            "temperature": 0.6,
+                            "max_tokens": 80,
+                        },
+                        timeout=6.0,
+                    )
+                    _intro_reply = _intro_res.json()["choices"][0]["message"]["content"].strip().strip('"')
+                except Exception:
+                    pass
+
+                return ChatResponse(
+                    tool="show_matched_jobs", intent="FILTER_RESULT",
+                    jobs=jobs_list, filter_label=label,
+                    reply=_intro_reply,  # personal intro shown above the job table
+                )
             # No rows — fall through to career question answering so LLM can explain
             selected_tool = "answer_career_question"
 
         # answer_career_question — tool-calling loop with DB tools
-        # (same logic as before, now reached only for genuine career questions)
         career_messages = [
             {"role": "system", "content": _CAREER_SYSTEM},
             {"role": "user",   "content": text},
@@ -908,5 +987,9 @@ Call exactly ONE routing tool now."""
             reply = assistant_msg.get("content", "").strip()
             if not reply:
                 reply = "Ask me anything about your job search, resume strategy, or interview prep."
+
+        # If the career LLM returned the apply-redirect token, surface the Tracking CTA
+        if reply.strip().startswith("REDIRECT_TO_TRACKING"):
+            return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
 
         return ChatResponse(tool="answer_career_question", intent="CAREER_QUESTION", reply=reply)
