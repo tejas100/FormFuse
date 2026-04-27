@@ -62,6 +62,14 @@ function AppInner() {
         <div className="logo-dot" />
         Rack
       </div>
+      <a
+        href="https://tejasbk.dev"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="byline-link"
+      >
+         / by Tejas BK
+      </a>
 
       <TabBar active={active} onSwitch={switchTab} />
 
@@ -94,6 +102,54 @@ function AppInner() {
           position:fixed;inset:0;pointer-events:none;opacity:0.04;
           background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
           background-size:128px;
+        }
+
+        /* ── Byline ── */
+        @keyframes byline-shimmer {
+          0%   { background-position: -200px 0; }
+          100% { background-position:  200px 0; }
+        }
+        .byline-link {
+          position: fixed;
+          top: 58px;
+          left: 45px;
+          font-size: 10px;
+          font-weight: 500;
+          letter-spacing: 0.3px;
+          text-decoration: none;
+          z-index: 100;
+          background: linear-gradient(
+            90deg,
+            rgba(232,255,107,0.25) 0%,
+            rgba(232,255,107,0.9) 40%,
+            rgba(232,255,107,0.25) 80%
+          );
+          background-size: 200px 100%;
+          -webkit-background-clip: text;
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+          animation: byline-shimmer 8.0s ease-in-out infinite;
+          cursor: pointer;
+        }
+        .byline-link:hover {
+          animation-play-state: paused;
+          background: linear-gradient(
+            90deg,
+            rgba(232,255,107,0.9) 0%,
+            rgba(232,255,107,0.9) 100%
+          );
+          -webkit-background-clip: text;
+          background-clip: text;
+        }
+        @media (max-width: 600px) {
+          .byline-link {
+            position: fixed;
+            top: 48px;
+            left: 54%;
+            transform: translateX(-50%);
+            z-index: 201;
+            font-size: 9px;
+          }
         }
 
         /* ── Logo ── */
@@ -287,6 +343,7 @@ function AppInner() {
           <div className="mobile-header-dot" />
           Rack
         </div>
+        <div style={{ width: 54 }} />
       </div>
     </div>
   )
