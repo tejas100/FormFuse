@@ -160,7 +160,7 @@ def _save_metadata(data: Dict):
 # MAIN INGESTION PIPELINE
 # ═══════════════════════════════════════════════════════════════════
 
-def ingest_resume(file_path: str, original_filename: str, session_id: str = "default") -> Dict:
+def ingest_resume(file_path: str, original_filename: str, session_id: str = "default", persist: bool = True) -> Dict:
     """
     Full ingestion pipeline for a single resume file.
 
@@ -247,10 +247,11 @@ def ingest_resume(file_path: str, original_filename: str, session_id: str = "def
         ],
     }
 
-    # Step 9: Persist metadata (anonymous path only)
-    metadata = _load_metadata()
-    metadata["resumes"].append(resume_record)
-    _save_metadata(metadata)
+    # Step 9: Persist metadata (anonymous path only — auth users store in Supabase DB)
+    if persist:
+        metadata = _load_metadata()
+        metadata["resumes"].append(resume_record)
+        _save_metadata(metadata)
 
     return resume_record
 
@@ -351,7 +352,7 @@ def ingest_resume_bytes(content: bytes, original_filename: str, session_id: str 
         tmp_path = tmp.name
 
     try:
-        result = ingest_resume(tmp_path, original_filename, session_id=session_id)
+        result = ingest_resume(tmp_path, original_filename, session_id=session_id, persist=not _UUID_RE.match(session_id))
         return result
     finally:
         try:

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
 import RackCreature from '../components/RackCreature'
+import VoiceOnboarding from '../components/VoiceOnboarding'
 import ApplyAgentCard from '../components/ApplyAgentCard'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -919,6 +920,8 @@ export default function Home() {
   const [onboardingStep, setOnboardingStep]       = useState(null)
   const [userPreferences, setUserPreferences]     = useState(null)  // fetched from /api/account/profile
   const [onboardingLoading, setOnboardingLoading] = useState(false) // LLM extracting answer
+  // voice onboarding mode: null = choice screen not shown yet, "voice" = Nova active, "text" = text fallback chosen
+  const [voiceMode, setVoiceMode]                 = useState(null)
 
   // ── Slash command / tool mode ────────────────────────────────────
   const [activeMode, setActiveMode]       = useState(null)   // null | 'tailor'
@@ -1223,9 +1226,10 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'
   }, [jd])
 
-  // ── Onboarding: auto-inject Turn 1 when step resolves to 'roles' ──
+  // ── Onboarding: auto-inject Turn 1 when step resolves to 'roles' (text mode only) ──
   useEffect(() => {
     if (!isAuthed || !authChecked || onboardingStep !== 'roles') return
+    if (voiceMode !== 'text') return   // voice mode handles its own onboarding
     if (messages.length > 0) return
 
     const firstName = user?.user_metadata?.full_name?.split(' ')[0]
@@ -1243,7 +1247,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       startTypewriter(msgId, fullText)
     }, 900)
     return () => clearTimeout(t)
-  }, [isAuthed, authChecked, onboardingStep])  // eslint-disable-line
+  }, [isAuthed, authChecked, onboardingStep, voiceMode])  // eslint-disable-line
 
     // ── Onboarding reply handler ────────────────────────────────────
   // Intercepts user sends during active onboarding steps.
@@ -2413,8 +2417,88 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             Once resolved: 'done' shows hero + chips; 'roles'/'resume' auto-injects
             a message via the Turn 1 effect so hasConversation becomes true and
             this block is hidden anyway. */}
-        {!hasConversation && !loading && onboardingStep !== null && (
-          <div className="rack-greeting">
+        {/* ── Voice onboarding — full-screen Nova session ── */}
+        {onboardingStep === 'roles' && voiceMode === 'voice' && (
+          <VoiceOnboarding
+            user={user}
+            apiBase={API_BASE}
+            getAuthHeaders={getAuthHeaders}
+            onComplete={(prefs) => {
+              // Voice collected all prefs — advance to resume upload step (text)
+              setVoiceMode('text')
+              setOnboardingStep('resume')
+              // Inject Turn 5 resume upload message into text thread
+              const resId   = Date.now()
+              const resText = `Okay, last thing I need from you — drop your resume below. Even one version works, you can always add more later in the **Resumes tab**!`
+              const resMsg  = { id: resId, isRackMessage: true, isOnboarding: true, onboardingTurn: 'resume', isThinking: false, text: '' }
+              setMessages([resMsg])
+              startTypewriter(resId, resText)
+            }}
+            onSwitchToText={() => {
+              setVoiceMode('text')
+              // Turn 1 useEffect will fire now that voiceMode === 'text'
+            }}
+          />
+        )}
+
+        {/* ── Voice/text choice screen — shown when onboarding starts ── */}
+        {onboardingStep === 'roles' && voiceMode === null && (
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            justifyContent: 'center', minHeight: '60vh', gap: '32px',
+            animation: 'greetingFade 0.5s ease both',
+          }}>
+            <div style={{ textAlign: 'center', maxWidth: '400px' }}>
+              <h2 style={{
+                fontSize: 'clamp(22px, 5vw, 28px)', fontWeight: 600,
+                color: 'var(--text)', lineHeight: 1.3, marginBottom: '12px',
+                fontFamily: 'var(--font-display)',
+              }}>
+                {user?.user_metadata?.full_name?.split(' ')[0]
+                  ? `Hey ${user.user_metadata.full_name.split(' ')[0]}, let's get you set up.`
+                  : `Let's get you set up.`}
+              </h2>
+              <p style={{
+                fontSize: '15px', color: 'rgba(255,255,255,0.45)',
+                fontFamily: 'var(--font-body)', lineHeight: 1.6,
+              }}>
+                RACK will ask you a few quick questions to find your best-fit roles.
+              </p>
+            </div>
+            <button
+              onClick={() => setVoiceMode('voice')}
+              style={{
+                padding: '14px 40px', borderRadius: '40px',
+                border: '1px solid var(--accent)', background: 'transparent',
+                color: 'var(--accent)', fontSize: '15px', fontWeight: 500,
+                fontFamily: 'var(--font-body)', letterSpacing: '0.04em',
+                cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.color = '#000' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--accent)' }}
+            >
+              talk to rack →
+            </button>
+            <button
+              onClick={() => setVoiceMode('text')}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: 'rgba(255,255,255,0.25)', fontSize: '13px',
+                fontFamily: 'var(--font-body)', textDecoration: 'underline',
+                textUnderlineOffset: '3px', textDecorationColor: 'rgba(255,255,255,0.12)',
+                padding: '4px 8px', transition: 'color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.5)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.25)' }}
+            >
+              I can't talk right now — let me text instead
+            </button>
+          </div>
+        )}
+
+        {/* ── Normal greeting (done state) + text-mode onboarding conversation ── */}
+        {!hasConversation && !loading && onboardingStep !== null && onboardingStep !== 'roles' || (onboardingStep === 'roles' && voiceMode === 'text' && !hasConversation && !loading) ? (
+          <div className="rack-greeting" style={{ display: (onboardingStep === 'roles' && voiceMode === null) || (onboardingStep === 'roles' && voiceMode === 'voice') ? 'none' : undefined }}>
             <div className="rack-greeting-hero">
               <div className="rack-greeting-eyebrow">
                 <span style={{width:4,height:4,borderRadius:'50%',background:'var(--accent)',display:'inline-block',boxShadow:'0 0 6px var(--accent)'}}/>
@@ -2470,7 +2554,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
               </div>
             )}
           </div>
-        )}
+        ) : null}
 
         {/* ── Conversation thread — multi-turn, one entry per submitted JD ── */}
         {messages.map((msg) => {

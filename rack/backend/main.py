@@ -37,7 +37,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from routers import resumes, match, tracking, account, auth, chat, admin, apply
+from routers import resumes, match, tracking, account, auth, chat, admin, apply, voice
 
 
 # ── Scheduler setup ───────────────────────────────────────────────────────────
@@ -113,6 +113,7 @@ app.include_router(account.router)
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(apply.router)
+app.include_router(voice.router)
 
 # ── Admin dashboard — localhost only, HTTP Basic Auth ─────────────────────────
 # Accessible at: http://localhost:8000/admin

@@ -2,6 +2,7 @@
 models/orm.py — SQLAlchemy ORM models for RACK
 
 Session 16: ResumeChunk.embedding changed from JSONB to pgvector Vector(384).
+Session 55: ResumeChunk.embedding updated to Vector(1536) — OpenAI text-embedding-3-small.
 Session 19: Resume.full_text added — cleaned full resume text for LLM scoring.
 Session 20: AutoMatchResult restructured — one snapshot per user per run_date (DATE).
             ArchivedJobId table added — global archive scoped per user.
@@ -139,7 +140,7 @@ class ResumeChunk(Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list | None] = mapped_column(Vector(384), nullable=True)
+    embedding: Mapped[list | None] = mapped_column(Vector(1536), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("resume_id", "chunk_index", name="uq_resume_chunk_index"),

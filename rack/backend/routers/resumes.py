@@ -154,10 +154,12 @@ async def upload_resume(
             current_user = None  # Token invalid — treat as anonymous
 
     # ── Run ingestion pipeline ────────────────────────────────────────────
-    # ingest_resume_bytes() is the same pipeline as before but takes bytes
-    # instead of a file path. See services/ingestion.py for the signature.
+    # For authenticated users, pass their UUID as session_id so ingest_resume_bytes()
+    # recognises it as a UUID and skips the anon 5-resume cap entirely.
+    # (The DB-level cap check above already enforces MAX_RESUMES_AUTH for auth users.)
+    ingest_session_id = str(current_user.id) if current_user else session_id
     try:
-        resume_data = ingest_resume_bytes(content, file.filename, session_id=session_id)
+        resume_data = ingest_resume_bytes(content, file.filename, session_id=ingest_session_id)
     except Exception as e:
         logger.error(f"Ingestion failed for {file.filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
@@ -251,7 +253,7 @@ async def upload_resume(
         )
         db.add(db_chunk)
 
-    await db.flush()
+    await db.commit()
 
     logger.info(
         f"Resume '{file.filename}' uploaded for user {current_user.id} "
@@ -402,7 +404,7 @@ async def delete_resume(
                 logger.warning(f"Storage delete failed for {resume.storage_path}: {e}")
 
         await db.delete(resume)
-        await db.flush()
+        await db.commit()
 
         logger.info(f"[delete] Auth resume {rid} deleted for user {current_user.id}")
         return {"status": "success", "message": "Resume deleted."}
@@ -512,7 +514,7 @@ async def upload_tex(
     # tex_storage_path column must exist — add via Supabase dashboard:
     # ALTER TABLE resumes ADD COLUMN tex_storage_path text;
     resume.tex_storage_path = tex_storage_path
-    await db.flush()
+    await db.commit()
 
     logger.info(f"LaTeX source attached to resume {rid} for user {current_user.id}")
     return {
