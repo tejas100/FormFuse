@@ -86,9 +86,40 @@ const mobileCardStyles = `
     position: fixed;
     inset: 0;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;   /* changed: row so steel panel sits alongside chat */
     height: 100dvh;
     overflow: hidden;
+  }
+
+  /* Chat column — narrows when steel panel is open */
+  .rack-chat-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    transition: flex 0.3s cubic-bezier(0.22,1,0.36,1);
+  }
+
+  /* Steel live panel — slides in from right */
+  .rack-steel-panel {
+    width: 0;
+    flex-shrink: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #0a0a0a;
+    border-left: 1px solid rgba(255,255,255,0.07);
+    transition: width 0.3s cubic-bezier(0.22,1,0.36,1);
+  }
+  .rack-steel-panel.open {
+    width: min(55vw, 780px);
+  }
+  @media (max-width: 900px) {
+    .rack-steel-panel.open { width: 100vw; }
+    .rack-chat-col.panel-open { display: none; }
   }
 
   /* Scrollable message area — goes full bleed, flows under the floating nav */
@@ -2126,11 +2157,10 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             catch { continue }
 
             if (event.type === 'steel_session') {
-              // Steel remote browser is ready — open the live viewer modal
+              // Steel remote browser is ready — slide in the live panel
               setSteelViewer({
                 liveViewUrl: event.live_view_url,
                 sessionId:   event.session_id,
-                isOpen:      true,
               })
             } else if (event.type === 'step') {
               setMessages(prev => prev.map(m => m.id === msgId
@@ -2168,6 +2198,8 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       if (applyJobs.length > 1) await new Promise(r => setTimeout(r, 800))
     }
 
+    // Dismiss the Steel viewer pill/modal — agent is done
+    setSteelViewer(null)
     setApplyLoading(false)
   }
 
@@ -2455,8 +2487,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
     <>
     <style>{mobileCardStyles}</style>
 
-    {/* ══ Chat root — full-viewport flex column ══ */}
+    {/* ══ Chat root — full-viewport flex row ══ */}
     <div className="rack-chat-root">
+
+    {/* ── Chat column — shrinks when steel panel is open ── */}
+    <div className={`rack-chat-col${steelViewer ? ' panel-open' : ''}`}>
 
       {/* ── Scrollable chat area — full bleed, content flows under floating nav ── */}
       <div className="rack-chat-scroll" ref={chatScrollRef}>
@@ -3782,6 +3817,155 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         style={{ display:'none' }}
         onChange={handleFileSelect}
       />
+    </div>{/* end rack-chat-col */}
+
+    {/* ── Steel live panel — slides in alongside chat, no modal/overlay ── */}
+    {(() => {
+      const applyMsg = messages.find(m => m.isApplyResult && (m.loading || (m.applySteps && m.applySteps.length > 0)))
+      const steps = applyMsg?.applySteps || []
+      const hasLiveView = !!steelViewer?.liveViewUrl
+      return (
+        <div className={`rack-steel-panel${steelViewer ? ' open' : ''}`}>
+          {steelViewer && (<>
+
+            {/* Panel header */}
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '10px 14px',
+              borderBottom: '1px solid rgba(255,255,255,0.07)',
+              background: '#080808',
+              flexShrink: 0,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: '#e8ff6b', boxShadow: '0 0 7px #e8ff6b',
+                  animation: 'pulse 2s ease-in-out infinite', flexShrink: 0,
+                }} />
+                <span style={{
+                  fontSize: 11, fontWeight: 600,
+                  color: 'rgba(232,255,107,0.85)',
+                  fontFamily: 'var(--font-display)',
+                  letterSpacing: '0.08em', textTransform: 'uppercase',
+                }}>Live Application</span>
+                <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>
+                  — watching form fill in real time
+                </span>
+              </div>
+              <button
+                onClick={() => setSteelViewer(null)}
+                style={{
+                  background: 'none', border: 'none',
+                  color: 'rgba(255,255,255,0.3)', fontSize: 18,
+                  cursor: 'pointer', lineHeight: 1, padding: '2px 4px',
+                  display: 'flex', alignItems: 'center',
+                }}
+                title="Close"
+              >×</button>
+            </div>
+
+            {/* Panel body — iframe + step sidebar */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minHeight: 0 }}>
+
+              {/* Live browser iframe */}
+              <div style={{ flex: 1, position: 'relative', background: '#000', borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+                {hasLiveView ? (
+                  <iframe
+                    src={`${steelViewer.liveViewUrl}?interactive=false`}
+                    style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+                    title="Live browser session"
+                    allow="autoplay"
+                  />
+                ) : (
+                  <div style={{
+                    width: '100%', height: '100%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexDirection: 'column', gap: 12,
+                    color: 'rgba(255,255,255,0.15)', fontSize: 13, fontFamily: 'var(--font-body)',
+                  }}>
+                    <div style={{
+                      width: 28, height: 28,
+                      border: '2px solid rgba(232,255,107,0.15)',
+                      borderTopColor: '#e8ff6b', borderRadius: '50%',
+                      animation: 'spin 0.8s linear infinite',
+                    }} />
+                    Connecting to browser…
+                  </div>
+                )}
+              </div>
+
+              {/* Step feed sidebar */}
+              <div style={{
+                width: 220, flexShrink: 0,
+                display: 'flex', flexDirection: 'column',
+                overflowY: 'auto', padding: '12px 10px', gap: 3,
+                background: '#0a0a0a',
+              }}>
+                {/* Status line */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 7,
+                  marginBottom: 8, paddingBottom: 8,
+                  borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0,
+                }}>
+                  <div style={{
+                    width: 16, height: 16, flexShrink: 0,
+                    border: '2px solid rgba(232,255,107,0.2)',
+                    borderTopColor: steps.length === 0 ? '#e8ff6b' : 'transparent',
+                    borderRadius: '50%',
+                    animation: steps.length === 0 ? 'spin 0.8s linear infinite' : 'none',
+                  }} />
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>
+                    {steps.length === 0
+                      ? 'Connecting…'
+                      : `${steps.filter(s => s.status === 'ok').length} field${steps.filter(s => s.status === 'ok').length !== 1 ? 's' : ''} filled`
+                    }
+                  </span>
+                </div>
+                {/* Steps */}
+                {steps.map((step, i) => {
+                  const icon  = step.status === 'ok' ? '✓' : step.status === 'skip' ? '–' : step.status === 'error' ? '✕' : step.status === 'writing' ? '✎' : '·'
+                  const color = step.status === 'ok' ? '#a3e635' : step.status === 'skip' ? 'rgba(255,255,255,0.2)' : step.status === 'error' ? '#f87171' : step.status === 'writing' ? '#e8ff6b' : 'var(--text-dim)'
+                  return (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 6,
+                      padding: '4px 6px', borderRadius: 5,
+                      background: i === steps.length - 1 ? 'rgba(232,255,107,0.04)' : 'transparent',
+                    }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color, flexShrink: 0, width: 11, textAlign: 'center', marginTop: 2, fontFamily: 'monospace' }}>{icon}</span>
+                      <span style={{ fontSize: 11, color: step.status === 'skip' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.7)', fontFamily: 'var(--font-body)', lineHeight: 1.4, wordBreak: 'break-word' }}>{step.text}</span>
+                    </div>
+                  )
+                })}
+                {applyMsg?.loading && steps.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px' }}>
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#e8ff6b', animation: 'pulse 1.2s ease-in-out infinite', flexShrink: 0, marginLeft: 3 }} />
+                    <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-body)' }}>working…</span>
+                  </div>
+                )}
+                {steps.length === 0 && (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.12)', fontSize: 11, fontFamily: 'var(--font-body)', textAlign: 'center', padding: '16px 6px' }}>
+                    Steps appear here as the agent works
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Panel footer */}
+            <div style={{
+              padding: '7px 14px',
+              borderTop: '1px solid rgba(255,255,255,0.05)',
+              background: '#080808', flexShrink: 0,
+            }}>
+              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', fontFamily: 'var(--font-body)' }}>
+                Close this panel anytime — the agent keeps running in the background.
+              </span>
+            </div>
+
+          </>)}
+        </div>
+      )
+    })()}
+
     </div>{/* end chat-root */}
 
     {/* Value preview overlay — portal, always above everything */}
@@ -3795,199 +3979,6 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         <span className="rack-toast-dot" />
         {toast.msg}
       </div>
-    )}
-
-    {/* ── Steel Live Browser Viewer Modal ── */}
-    {steelViewer?.isOpen && createPortal(
-      <div
-        onClick={() => setSteelViewer(v => ({ ...v, isOpen: false }))}
-        style={{
-          position: 'fixed', inset: 0, zIndex: 9999,
-          background: 'rgba(0,0,0,0.78)', backdropFilter: 'blur(6px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}
-      >
-        <div
-          onClick={e => e.stopPropagation()}
-          style={{
-            width: 'min(92vw, 1100px)',
-            height: '88vh',
-            background: '#0d0d0d',
-            borderRadius: 14,
-            border: '1px solid rgba(232,255,107,0.22)',
-            display: 'flex', flexDirection: 'column',
-            overflow: 'hidden',
-            boxShadow: '0 0 80px rgba(232,255,107,0.07), 0 24px 64px rgba(0,0,0,0.6)',
-          }}
-        >
-          {/* Header */}
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '10px 16px',
-            borderBottom: '1px solid rgba(255,255,255,0.07)',
-            background: '#080808',
-            flexShrink: 0,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              {/* Live pulse dot */}
-              <span style={{
-                width: 8, height: 8, borderRadius: '50%',
-                background: '#e8ff6b',
-                display: 'inline-block',
-                boxShadow: '0 0 8px #e8ff6b',
-                animation: 'pulse 2s ease-in-out infinite',
-              }} />
-              <span style={{
-                fontSize: 12, fontWeight: 600,
-                color: 'rgba(232,255,107,0.85)',
-                fontFamily: 'var(--font-display)',
-                letterSpacing: '0.06em',
-                textTransform: 'uppercase',
-              }}>
-                RACK · Live Application
-              </span>
-              <span style={{
-                fontSize: 11, color: 'var(--text-dim)',
-                fontFamily: 'var(--font-body)',
-              }}>
-                — watching form fill in real time
-              </span>
-            </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button
-                onClick={() => setSteelViewer(v => ({ ...v, isOpen: false }))}
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: 8, color: 'var(--text-muted)',
-                  padding: '4px 12px', cursor: 'pointer',
-                  fontSize: 12, fontFamily: 'var(--font-body)',
-                  color: 'rgba(255,255,255,0.45)',
-                }}
-              >
-                Minimize
-              </button>
-              <button
-                onClick={() => setSteelViewer(null)}
-                style={{
-                  background: 'none', border: 'none',
-                  color: 'rgba(255,255,255,0.3)',
-                  fontSize: 20, cursor: 'pointer',
-                  lineHeight: 1, padding: '2px 4px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-                title="Close viewer"
-              >×</button>
-            </div>
-          </div>
-
-          {/* Live step feed — free tier has no embeddable iframe viewer */}
-          {(() => {
-            const applyMsg = messages.find(m => m.isApplyResult && (m.loading || (m.applySteps && m.applySteps.length > 0)))
-            const steps = applyMsg?.applySteps || []
-            return (
-              <div style={{
-                flex: 1, display: 'flex', flexDirection: 'column',
-                padding: '20px 24px', gap: 0,
-                overflowY: 'auto',
-              }}>
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  marginBottom: 20, paddingBottom: 16,
-                  borderBottom: '1px solid rgba(255,255,255,0.06)',
-                }}>
-                  <div style={{
-                    width: 28, height: 28,
-                    border: '2px solid rgba(232,255,107,0.2)',
-                    borderTopColor: '#e8ff6b',
-                    borderRadius: '50%',
-                    animation: steps.length === 0 ? 'spin 0.8s linear infinite' : 'none',
-                    flexShrink: 0,
-                  }} />
-                  <span style={{ fontSize: 13, color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>
-                    {steps.length === 0
-                      ? 'Agent is connecting to the job application…'
-                      : `Filling form — ${steps.filter(s => s.status === 'ok').length} field${steps.filter(s => s.status === 'ok').length !== 1 ? 's' : ''} filled`
-                    }
-                  </span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {steps.map((step, i) => {
-                    const icon = step.status === 'ok' ? '✓' : step.status === 'skip' ? '–' : step.status === 'error' ? '✕' : step.status === 'writing' ? '✎' : '·'
-                    const color = step.status === 'ok' ? '#a3e635' : step.status === 'skip' ? 'rgba(255,255,255,0.25)' : step.status === 'error' ? '#f87171' : step.status === 'writing' ? '#e8ff6b' : 'var(--text-dim)'
-                    return (
-                      <div key={i} style={{
-                        display: 'flex', alignItems: 'flex-start', gap: 10,
-                        padding: '7px 10px', borderRadius: 8,
-                        background: i === steps.length - 1 ? 'rgba(232,255,107,0.04)' : 'transparent',
-                      }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color, flexShrink: 0, width: 14, textAlign: 'center', marginTop: 1, fontFamily: 'monospace' }}>{icon}</span>
-                        <span style={{ fontSize: 13, color: step.status === 'skip' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.75)', fontFamily: 'var(--font-body)', lineHeight: 1.4 }}>{step.text}</span>
-                      </div>
-                    )
-                  })}
-                  {applyMsg?.loading && steps.length > 0 && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px' }}>
-                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#e8ff6b', animation: 'pulse 1.2s ease-in-out infinite', flexShrink: 0, marginLeft: 4 }} />
-                      <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', fontFamily: 'var(--font-body)' }}>working…</span>
-                    </div>
-                  )}
-                </div>
-                {steps.length === 0 && (
-                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.2)', fontSize: 13, fontFamily: 'var(--font-body)' }}>
-                    Steps will appear here as the agent fills your application
-                  </div>
-                )}
-              </div>
-            )
-          })()}
-
-          {/* Footer */}
-          <div style={{
-            padding: '8px 16px',
-            borderTop: '1px solid rgba(255,255,255,0.05)',
-            background: '#080808', flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          }}>
-            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontFamily: 'var(--font-body)' }}>
-              Close this window anytime — the agent keeps running in the background.
-            </span>
-          </div>
-        </div>
-      </div>,
-      document.body
-    )}
-
-    {/* ── "Watch live" re-open button — shown when viewer is minimized ── */}
-    {steelViewer && !steelViewer.isOpen && createPortal(
-      <button
-        onClick={() => setSteelViewer(v => ({ ...v, isOpen: true }))}
-        style={{
-          position: 'fixed', bottom: 90, right: 24,
-          zIndex: 9998,
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '10px 16px',
-          background: 'rgba(8,8,8,0.92)',
-          border: '1px solid rgba(232,255,107,0.35)',
-          borderRadius: 40,
-          color: '#e8ff6b',
-          fontSize: 13, fontWeight: 600,
-          fontFamily: 'var(--font-display)',
-          cursor: 'pointer',
-          boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
-          backdropFilter: 'blur(8px)',
-        }}
-      >
-        <span style={{
-          width: 7, height: 7, borderRadius: '50%',
-          background: '#e8ff6b',
-          boxShadow: '0 0 6px #e8ff6b',
-          animation: 'pulse 2s ease-in-out infinite',
-          display: 'inline-block', flexShrink: 0,
-        }} />
-        Watch live
-      </button>,
-      document.body
     )}
     </>
   )

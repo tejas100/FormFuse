@@ -243,6 +243,8 @@ route_to_refine: User wants to refine/modify a PREVIOUSLY TAILORED resume. Only 
 answer_career_question: User asked a career-related question (about their resumes, job search strategy, interview prep, skills gaps, salary, matched jobs). NOT a routing decision — you'll use DB tools to answer.
 
 show_matched_jobs: User wants to SEE their matched jobs as a list/table. Triggers on "show me my matches", "what jobs did you find", "top jobs for me", "85%+ matches". Distinct from answer_career_question which gives a text answer.
+  RECENCY — when the user says "recent", "recently matched", "latest", "new matches", "past few days", "yesterday", "jobs from today", "newly matched", "what's new" → set sort_by="recent". Also set hours based on time frame: "today" or "yesterday" → hours=48, "past 3 days" → hours=72, "past week" → hours=168, "recently" with no specific time → hours=72. Always combine sort_by="recent" with the appropriate hours value.
+  SCORE — when the user says "top", "best", "highest", "85%+", "75%+" → set sort_by="score" with appropriate min_score.
 
 route_off_topic: Anything not related to jobs, careers, resumes, or professional development. This includes pure greetings ("hi", "hello", "hey", "what's up", "how are you"), small talk, and genuinely off-topic topics. Route greetings here — the LLM will generate a warm, natural response.
 
@@ -709,6 +711,31 @@ Call exactly ONE routing tool now."""
             # Fallback: assume JD so match pipeline runs
             return ChatResponse(tool="route_to_rank", intent="JD")
 
+        # ── Deterministic recency override ────────────────────────────────────
+        # Runs BEFORE the log so params are already corrected when logged.
+        # If the user's message contains recency keywords, force sort_by=recent
+        # and set hours regardless of what the router LLM extracted.
+        _RECENCY_KEYWORDS = [
+            'recently matched', 'recent match', 'recent jobs', 'recent ones',
+            'recently', 'latest jobs', 'latest matches', 'latest ones', 'new matches',
+            'new jobs', 'newly matched', "what's new", 'whats new',
+            'past few days', 'past 3 days', 'past three days', 'last 3 days',
+            'past week', 'last week', 'past 7 days',
+            'yesterday', 'today', 'jobs from today', 'jobs from yesterday',
+            'matched today', 'matched yesterday', 'matched recently',
+        ]
+        if selected_tool == "show_matched_jobs" and any(kw in text.lower() for kw in _RECENCY_KEYWORDS):
+            _txt_lower = text.lower()
+            if 'week' in _txt_lower or '7 day' in _txt_lower:
+                _hours = 168
+            elif 'yesterday' in _txt_lower or 'today' in _txt_lower:
+                _hours = 48
+            elif '3 day' in _txt_lower or 'three day' in _txt_lower or 'few day' in _txt_lower:
+                _hours = 72
+            else:
+                _hours = 72  # default "recently" window
+            tool_params = {**tool_params, "sort_by": "recent", "hours": _hours}
+
         _chat_log.info(f"[chat] Router selected: {selected_tool} | user={user_id} | params={tool_params}")
 
         # ── Step 2: Execute routing decision ──────────────────────────────────
@@ -881,14 +908,25 @@ Call exactly ONE routing tool now."""
                 top_job = jobs_list[0] if jobs_list else None
                 try:
                     _name_part = f"{_display_name}, " if _display_name else ""
-                    _top_part = f" The top pick is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — it lines up really well with your profile." if top_job else ""
+                    _is_recent_query = sort_by == "recent" or hours > 0
+                    _top_part = (
+                        f" The most recently matched role is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match)."
+                        if (top_job and _is_recent_query) else
+                        f" The top pick is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — it lines up really well with your profile."
+                        if top_job else ""
+                    )
+                    _context_hint = (
+                        f"The user asked for their RECENTLY matched jobs (sorted by match date, past {hours}h)."
+                        if _is_recent_query else
+                        f"The user asked for their top matched jobs (sorted by score)."
+                    )
                     _intro_prompt = (
-                        f"You are RACK's job search assistant. The user asked to see their matched jobs. "
+                        f"You are RACK's job search assistant. {_context_hint} "
                         f"I found {len(jobs_list)} job{'s' if len(jobs_list) != 1 else ''} for them. "
                         f"{_top_part} "
                         f"Write 1-2 warm, personal sentences to introduce these results. "
                         f"Address them by first name if available: {_display_name or 'not available'}. "
-                        f"Mention the top match briefly and express genuine enthusiasm. "
+                        f"{'Emphasize that these are freshly matched — mention recency, not just score.' if _is_recent_query else 'Mention the top match briefly and express genuine enthusiasm.'} "
                         f"Sound like a recruiter friend, not a bot. "
                         f"Return ONLY the sentences, no preamble."
                     )

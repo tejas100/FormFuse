@@ -693,7 +693,7 @@ async def run_apply_agent(
                 None
             )
             if resume_file_field and resume_id and user_id:
-                import tempfile, os as _os, httpx as _httpx
+                import os as _os, httpx as _httpx
                 try:
                     # Get signed URL from our own resumes endpoint
                     from db.database import AsyncSessionLocal as _ASL
@@ -725,25 +725,22 @@ async def run_apply_agent(
                                 _r = await _hx.get(_signed_url, timeout=20)
                             _ext = (_resume_row.file_ext or "pdf").lstrip(".")
                             _fname = (_resume_row.filename or f"resume.{_ext}")
-                            with tempfile.NamedTemporaryFile(
-                                suffix=f".{_ext}", prefix="rack_resume_", delete=False
-                            ) as _tf:
-                                _tf.write(_r.content)
-                                _tmp_path = _tf.name
+                            _mime = "application/pdf" if _ext == "pdf" else "application/octet-stream"
 
-                            # Find file input on page and upload
+                            # Use bytes buffer directly — temp file paths won't work
+                            # because Playwright is connected over CDP to a Steel cloud
+                            # browser on a different machine that can't access our /tmp.
                             _file_inp = page.locator('input[type="file"]').first
                             if await _file_inp.count() > 0:
-                                await _file_inp.set_input_files(_tmp_path)
+                                await _file_inp.set_input_files(files=[{
+                                    "name":     _fname,
+                                    "mimeType": _mime,
+                                    "buffer":   _r.content,
+                                }])
                                 filled_count += 1
                                 yield _step("ok", f'Attached resume: {_fname}')
                             else:
                                 yield _step("skip", "No file input found on page")
-                            # Clean up temp file
-                            try:
-                                _os.unlink(_tmp_path)
-                            except Exception:
-                                pass
                         else:
                             yield _step("skip", "Could not get resume download URL")
                     else:

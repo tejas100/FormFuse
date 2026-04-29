@@ -41,21 +41,26 @@ async def create_session() -> dict:
     """
     from steel import AsyncSteel
 
-    client = AsyncSteel(steel_api_key=_api_key())
+    api_key = _api_key()
+    client = AsyncSteel(steel_api_key=api_key)
     session = await client.sessions.create(timeout=SESSION_TIMEOUT_MS)
 
     session_id = str(session.id)
-    ws_url = str(session.websocket_url)
 
-    # session.session_viewer_url is https://app.steel.dev/sessions/{id}
-    # It requires the user to log in to Steel — NOT embeddable as an iframe on free tier.
-    # We deliberately do NOT forward it to the frontend.
-    logger.info(f"[steel] Session created — id={session_id} ws={ws_url}")
+    # The SDK's session.websocket_url omits the apiKey query param, causing a 502.
+    # Always construct the CDP URL manually — this is the correct Steel format.
+    ws_url = f"wss://connect.steel.dev?apiKey={api_key}&sessionId={session_id}"
+
+    # session.debug_url is the embeddable live viewer URL (WebRTC, 25fps, no auth required).
+    # Works on all plans including free. Embed with ?interactive=false for read-only watch mode.
+    # DO NOT use session.session_viewer_url — that requires Steel dashboard login.
+    debug_url = str(session.debug_url) if session.debug_url else ""
+    logger.info(f"[steel] Session created — id={session_id} debug_url={debug_url}")
 
     return {
         "session_id":    session_id,
         "ws_url":        ws_url,
-        "live_view_url": "",   # free tier: no embeddable viewer
+        "live_view_url": debug_url,
     }
 
 
@@ -73,5 +78,3 @@ async def release_session(session_id: str) -> None:
     except Exception as e:
         # Non-fatal — session will timeout on its own after SESSION_TIMEOUT_MS
         logger.warning(f"[steel] Could not release session {session_id}: {e}")
-
-

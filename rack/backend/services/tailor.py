@@ -338,6 +338,9 @@ ul li {{
 _ASHBY_JOB_RE      = re.compile(r"jobs\.ashbyhq\.com/([^/?]+)/([0-9a-f-]{36})", re.IGNORECASE)
 _GREENHOUSE_JOB_RE = re.compile(r"boards\.greenhouse\.io/[^/]+/jobs/(\d+)", re.IGNORECASE)
 _LEVER_JOB_RE      = re.compile(r"jobs\.lever\.co/[^/]+/([0-9a-f-]{36})", re.IGNORECASE)
+# Workday renders entirely client-side and crashes local Playwright — no public API available.
+# Detect upfront and skip all scrape attempts.
+_WORKDAY_JOB_RE    = re.compile(r"myworkdayjobs\.com|wd\d+\.myworkdayjobs\.com", re.IGNORECASE)
 
 
 async def _fetch_ashby_api(job_id: str, company_slug: str = "") -> str:
@@ -456,6 +459,14 @@ async def fetch_job_description(url: str) -> str:
     For any other job board we fall back to a BeautifulSoup HTML scrape.
     """
     try:
+        # ── Workday — known unsupported (client-side only, no public API) ──
+        if _WORKDAY_JOB_RE.search(url):
+            logger.info(f"[tailor] Workday URL detected — skipping scrape (unsupported)")
+            raise ValueError(
+                "Workday job pages load entirely in the browser and can't be fetched automatically. "
+                "Open the job posting, copy all the text, and paste it here directly."
+            )
+
         # ── Ashby ──────────────────────────────────────────────────────────
         m = _ASHBY_JOB_RE.search(url)
         if m:
