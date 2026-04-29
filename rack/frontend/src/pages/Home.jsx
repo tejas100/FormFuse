@@ -42,6 +42,9 @@ const mobileCardStyles = `
     from { opacity: 1; transform: translateX(-50%) translateY(0); }
     to   { opacity: 0; transform: translateX(-50%) translateY(-8px); }
   }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
   .rack-toast {
     position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
     z-index: 9999;
@@ -951,6 +954,9 @@ export default function Home() {
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [tailorLoading, setTailorLoading] = useState(false)
   const [applyLoading, setApplyLoading]   = useState(false)
+  // Steel live browser viewer — null when no session active
+  // { liveViewUrl, sessionId, isOpen }
+  const [steelViewer, setSteelViewer]     = useState(null)
 
   // Derived: last completed message's results (for ValuePreviewCard)
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
@@ -2119,7 +2125,14 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
             try { event = JSON.parse(line.slice(5).trim()) }
             catch { continue }
 
-            if (event.type === 'step') {
+            if (event.type === 'steel_session') {
+              // Steel remote browser is ready — open the live viewer modal
+              setSteelViewer({
+                liveViewUrl: event.live_view_url,
+                sessionId:   event.session_id,
+                isOpen:      true,
+              })
+            } else if (event.type === 'step') {
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applySteps: [...(m.applySteps || []), event] }
                 : m
@@ -2451,7 +2464,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         {/* "new chat" pill — floats top-right inside scroll area when a convo is active */}
         {hasConversation && (
           <button
-            onClick={() => { setMessages([]); setJd(''); setExpandedIds(new Set()) }}
+            onClick={() => { setMessages([]); setJd(''); setExpandedIds(new Set()); localStorage.removeItem(_chatHistoryKey) }}
             style={{
               position: 'sticky', top: '0px', alignSelf: 'flex-end',
               fontSize: '11px', padding: '5px 12px', borderRadius: '20px',
@@ -3782,6 +3795,199 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         <span className="rack-toast-dot" />
         {toast.msg}
       </div>
+    )}
+
+    {/* ── Steel Live Browser Viewer Modal ── */}
+    {steelViewer?.isOpen && createPortal(
+      <div
+        onClick={() => setSteelViewer(v => ({ ...v, isOpen: false }))}
+        style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(0,0,0,0.78)', backdropFilter: 'blur(6px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            width: 'min(92vw, 1100px)',
+            height: '88vh',
+            background: '#0d0d0d',
+            borderRadius: 14,
+            border: '1px solid rgba(232,255,107,0.22)',
+            display: 'flex', flexDirection: 'column',
+            overflow: 'hidden',
+            boxShadow: '0 0 80px rgba(232,255,107,0.07), 0 24px 64px rgba(0,0,0,0.6)',
+          }}
+        >
+          {/* Header */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '10px 16px',
+            borderBottom: '1px solid rgba(255,255,255,0.07)',
+            background: '#080808',
+            flexShrink: 0,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {/* Live pulse dot */}
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: '#e8ff6b',
+                display: 'inline-block',
+                boxShadow: '0 0 8px #e8ff6b',
+                animation: 'pulse 2s ease-in-out infinite',
+              }} />
+              <span style={{
+                fontSize: 12, fontWeight: 600,
+                color: 'rgba(232,255,107,0.85)',
+                fontFamily: 'var(--font-display)',
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+              }}>
+                RACK · Live Application
+              </span>
+              <span style={{
+                fontSize: 11, color: 'var(--text-dim)',
+                fontFamily: 'var(--font-body)',
+              }}>
+                — watching form fill in real time
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                onClick={() => setSteelViewer(v => ({ ...v, isOpen: false }))}
+                style={{
+                  background: 'rgba(255,255,255,0.05)',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: 8, color: 'var(--text-muted)',
+                  padding: '4px 12px', cursor: 'pointer',
+                  fontSize: 12, fontFamily: 'var(--font-body)',
+                  color: 'rgba(255,255,255,0.45)',
+                }}
+              >
+                Minimize
+              </button>
+              <button
+                onClick={() => setSteelViewer(null)}
+                style={{
+                  background: 'none', border: 'none',
+                  color: 'rgba(255,255,255,0.3)',
+                  fontSize: 20, cursor: 'pointer',
+                  lineHeight: 1, padding: '2px 4px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+                title="Close viewer"
+              >×</button>
+            </div>
+          </div>
+
+          {/* Live step feed — free tier has no embeddable iframe viewer */}
+          {(() => {
+            const applyMsg = messages.find(m => m.isApplyResult && (m.loading || (m.applySteps && m.applySteps.length > 0)))
+            const steps = applyMsg?.applySteps || []
+            return (
+              <div style={{
+                flex: 1, display: 'flex', flexDirection: 'column',
+                padding: '20px 24px', gap: 0,
+                overflowY: 'auto',
+              }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  marginBottom: 20, paddingBottom: 16,
+                  borderBottom: '1px solid rgba(255,255,255,0.06)',
+                }}>
+                  <div style={{
+                    width: 28, height: 28,
+                    border: '2px solid rgba(232,255,107,0.2)',
+                    borderTopColor: '#e8ff6b',
+                    borderRadius: '50%',
+                    animation: steps.length === 0 ? 'spin 0.8s linear infinite' : 'none',
+                    flexShrink: 0,
+                  }} />
+                  <span style={{ fontSize: 13, color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>
+                    {steps.length === 0
+                      ? 'Agent is connecting to the job application…'
+                      : `Filling form — ${steps.filter(s => s.status === 'ok').length} field${steps.filter(s => s.status === 'ok').length !== 1 ? 's' : ''} filled`
+                    }
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {steps.map((step, i) => {
+                    const icon = step.status === 'ok' ? '✓' : step.status === 'skip' ? '–' : step.status === 'error' ? '✕' : step.status === 'writing' ? '✎' : '·'
+                    const color = step.status === 'ok' ? '#a3e635' : step.status === 'skip' ? 'rgba(255,255,255,0.25)' : step.status === 'error' ? '#f87171' : step.status === 'writing' ? '#e8ff6b' : 'var(--text-dim)'
+                    return (
+                      <div key={i} style={{
+                        display: 'flex', alignItems: 'flex-start', gap: 10,
+                        padding: '7px 10px', borderRadius: 8,
+                        background: i === steps.length - 1 ? 'rgba(232,255,107,0.04)' : 'transparent',
+                      }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color, flexShrink: 0, width: 14, textAlign: 'center', marginTop: 1, fontFamily: 'monospace' }}>{icon}</span>
+                        <span style={{ fontSize: 13, color: step.status === 'skip' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.75)', fontFamily: 'var(--font-body)', lineHeight: 1.4 }}>{step.text}</span>
+                      </div>
+                    )
+                  })}
+                  {applyMsg?.loading && steps.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px' }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#e8ff6b', animation: 'pulse 1.2s ease-in-out infinite', flexShrink: 0, marginLeft: 4 }} />
+                      <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', fontFamily: 'var(--font-body)' }}>working…</span>
+                    </div>
+                  )}
+                </div>
+                {steps.length === 0 && (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.2)', fontSize: 13, fontFamily: 'var(--font-body)' }}>
+                    Steps will appear here as the agent fills your application
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+
+          {/* Footer */}
+          <div style={{
+            padding: '8px 16px',
+            borderTop: '1px solid rgba(255,255,255,0.05)',
+            background: '#080808', flexShrink: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontFamily: 'var(--font-body)' }}>
+              Close this window anytime — the agent keeps running in the background.
+            </span>
+          </div>
+        </div>
+      </div>,
+      document.body
+    )}
+
+    {/* ── "Watch live" re-open button — shown when viewer is minimized ── */}
+    {steelViewer && !steelViewer.isOpen && createPortal(
+      <button
+        onClick={() => setSteelViewer(v => ({ ...v, isOpen: true }))}
+        style={{
+          position: 'fixed', bottom: 90, right: 24,
+          zIndex: 9998,
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '10px 16px',
+          background: 'rgba(8,8,8,0.92)',
+          border: '1px solid rgba(232,255,107,0.35)',
+          borderRadius: 40,
+          color: '#e8ff6b',
+          fontSize: 13, fontWeight: 600,
+          fontFamily: 'var(--font-display)',
+          cursor: 'pointer',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(8px)',
+        }}
+      >
+        <span style={{
+          width: 7, height: 7, borderRadius: '50%',
+          background: '#e8ff6b',
+          boxShadow: '0 0 6px #e8ff6b',
+          animation: 'pulse 2s ease-in-out infinite',
+          display: 'inline-block', flexShrink: 0,
+        }} />
+        Watch live
+      </button>,
+      document.body
     )}
     </>
   )

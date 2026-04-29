@@ -469,21 +469,32 @@ async def run_apply_agent(
     ats_selectors = _get_ats_selectors(job_url)
     ats_hint      = _get_ats_hint(job_url)
 
+    # -- Create Steel remote browser session ----------------------------------
+    from services.steel_client import create_session, release_session
+
+    try:
+        steel_session = await create_session()
+    except Exception as e:
+        yield {"type": "error", "text": f"Could not create browser session: {e}"}
+        return
+
+    # Emit live viewer URL to frontend BEFORE any navigation — user sees the
+    # browser window appear immediately while the agent is still loading the page
+    yield {
+        "type":         "steel_session",
+        "session_id":   steel_session["session_id"],
+        "live_view_url": steel_session["live_view_url"],
+    }
+
+    steel_session_id = steel_session["session_id"]
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage",
-                  "--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 900},
-        )
-        page = await context.new_page()
+        # Connect to Steel's remote browser via CDP instead of launching local Chromium
+        browser = await pw.chromium.connect_over_cdp(steel_session["ws_url"])
+
+        # Steel starts with one context and one blank tab — use them directly
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page    = context.pages[0]    if context.pages    else await context.new_page()
 
         try:
             # -- Navigate -----------------------------------------------------
@@ -869,5 +880,10 @@ async def run_apply_agent(
             logger.error("[browser_agent] Error: " + str(e), exc_info=True)
             yield {"type": "error", "text": "Agent error: " + str(e)[:200]}
         finally:
-            await context.close()
-            await browser.close()
+            # Don't close context/browser — Steel owns the session lifecycle.
+            # Just disconnect Playwright and release the Steel session.
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            await release_session(steel_session_id)
