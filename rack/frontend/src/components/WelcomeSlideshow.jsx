@@ -9,22 +9,29 @@ const SLIDES = [
     visual: 'boards',
   },
   {
+    id: 'resumes',
+    tag: '02 / RESUME VERSIONS',
+    headline: 'Upload every version.\nRack picks the best one.',
+    body: 'Got a frontend resume and a backend one? Upload both. For every job Rack finds, it automatically picks whichever version scores highest — so the right resume always goes to the right role.',
+    visual: 'resumes',
+  },
+  {
     id: 'ai',
-    tag: '02 / SCORING',
+    tag: '03 / SCORING',
     headline: 'Two-stage AI ranks\nyour actual fit.',
     body: 'Phase 1 filters by semantic similarity. Phase 2 sends your real resume text to Rack AI, scoring Skills Fit, Experience, and Trajectory separately.',
     visual: 'pipeline',
   },
   {
     id: 'creature',
-    tag: '03 / YOUR AGENT',
+    tag: '04 / YOUR AGENT',
     headline: 'Meet your\nRack agent.',
     body: 'Drop a JD. Get ranked matches. Ask career questions. Your Rack agent lives right in the chat, always ready, never asleep for long.',
     visual: 'creature',
   },
   {
     id: 'apply',
-    tag: '04 / AUTO-APPLY',
+    tag: '05 / AUTO-APPLY',
     headline: 'One click.\nApplication sent.',
     body: 'Rack fills and submits Greenhouse, Ashby, and Lever applications for you, live browser stream so you can watch every field get filled.',
     visual: 'apply',
@@ -36,19 +43,25 @@ const STORAGE_KEY = 'rack_welcomed_v1'
 export function useFirstVisit() {
   const [show, setShow] = useState(false)
   const [checked, setChecked] = useState(false)
+  const [exiting, setExiting] = useState(false)
 
   useEffect(() => {
     const seen = localStorage.getItem(STORAGE_KEY)
-    if (!seen) setShow(true)
+    const forceShow = new URLSearchParams(window.location.search).has('welcome')
+    if (!seen || forceShow) setShow(true)
     setChecked(true)
   }, [])
 
   const dismiss = () => {
-    localStorage.setItem(STORAGE_KEY, '1')
-    setShow(false)
+    setExiting(true)
+    setTimeout(() => {
+      localStorage.setItem(STORAGE_KEY, '1')
+      setShow(false)
+      setExiting(false)
+    }, 220)
   }
 
-  return { show: checked && show, dismiss }
+  return { show: checked && show, dismiss, exiting }
 }
 
 // ── Board scan visual ────────────────────────────────────────────────────────
@@ -96,6 +109,128 @@ function BoardsVisual() {
         letterSpacing: '0.5px',
       }}>
         + 147 more boards
+      </div>
+    </div>
+  )
+}
+
+// ── Resume versions visual ───────────────────────────────────────────────────
+function ResumesVisual() {
+  const resumes = [
+    { name: 'resume_frontend.pdf',  scores: [92, 61, 74], best: 0 },
+    { name: 'resume_backend.pdf',   scores: [68, 95, 80], best: 1 },
+    { name: 'resume_fullstack.pdf', scores: [79, 83, 91], best: 2 },
+  ]
+  const jobs = ['Stripe · Frontend Eng', 'Anthropic · Backend', 'Vercel · Fullstack']
+
+  return (
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* Header row */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: '1fr 60px 60px 60px',
+        gap: 4,
+        padding: '0 4px',
+        marginBottom: 2,
+      }}>
+        <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 9, color: 'rgba(255,255,255,0.2)', letterSpacing: '0.5px' }}>RESUME</div>
+        {jobs.map((j, i) => (
+          <div key={i} style={{
+            fontFamily: 'var(--font-mono, monospace)', fontSize: 8,
+            color: 'rgba(255,255,255,0.2)', letterSpacing: '0.3px',
+            textAlign: 'center', lineHeight: 1.3,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {j.split(' · ')[0]}
+          </div>
+        ))}
+      </div>
+
+      {resumes.map(({ name, scores, best }, ri) => (
+        <div key={ri} style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 60px 60px 60px',
+          gap: 4,
+          background: 'rgba(255,255,255,0.02)',
+          border: '1px solid rgba(255,255,255,0.05)',
+          borderRadius: 8, padding: '8px 10px',
+          alignItems: 'center',
+          animation: `slideRowIn 0.4s ease both`,
+          animationDelay: `${ri * 100}ms`,
+        }}>
+          {/* Resume name */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <svg width="11" height="13" viewBox="0 0 11 13" fill="none">
+              <rect x="0.5" y="0.5" width="10" height="12" rx="1.5" stroke="rgba(255,255,255,0.2)"/>
+              <path d="M2.5 4h6M2.5 6.5h6M2.5 9h4" stroke="rgba(255,255,255,0.2)" strokeWidth="0.8" strokeLinecap="round"/>
+            </svg>
+            <span style={{
+              fontFamily: 'var(--font-mono, monospace)', fontSize: 9,
+              color: 'rgba(255,255,255,0.5)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {name.replace('.pdf', '')}
+            </span>
+          </div>
+
+          {/* Score cells */}
+          {scores.map((score, ci) => {
+            const isWinner = ci === best
+            return (
+              <div key={ci} style={{
+                textAlign: 'center',
+                position: 'relative',
+              }}>
+                <div style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: 38, height: 22, borderRadius: 5,
+                  background: isWinner ? 'rgba(232,255,107,0.12)' : 'transparent',
+                  border: isWinner ? '1px solid rgba(232,255,107,0.3)' : '1px solid transparent',
+                  fontFamily: 'var(--font-mono, monospace)',
+                  fontSize: 10, fontWeight: isWinner ? 700 : 400,
+                  color: isWinner ? '#E8FF6B' : 'rgba(255,255,255,0.25)',
+                  position: 'relative',
+                }}>
+                  {score}
+                  {isWinner && (
+                    <div style={{
+                      position: 'absolute', top: -5, right: -5,
+                      width: 10, height: 10, borderRadius: '50%',
+                      background: '#E8FF6B',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <svg width="6" height="6" viewBox="0 0 6 6" fill="none">
+                        <path d="M1 3l1.5 1.5L5 1.5" stroke="#0a0a0a" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+
+      {/* Caption */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 5,
+        marginTop: 2, padding: '0 2px',
+      }}>
+        <div style={{
+          width: 8, height: 8, borderRadius: '50%',
+          background: '#E8FF6B', flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <svg width="5" height="5" viewBox="0 0 5 5" fill="none">
+            <path d="M0.8 2.5l1.2 1.2L4.2 1.2" stroke="#0a0a0a" strokeWidth="0.9" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+        <span style={{
+          fontFamily: 'var(--font-mono, monospace)', fontSize: 9,
+          color: 'rgba(255,255,255,0.2)', letterSpacing: '0.3px',
+        }}>
+          Rack auto-selects the highest scoring version per job
+        </span>
       </div>
     </div>
   )
@@ -290,6 +425,7 @@ function ApplyVisual() {
 
 const VISUALS = {
   boards: BoardsVisual,
+  resumes: ResumesVisual,
   pipeline: PipelineVisual,
   creature: CreatureVisual,
   apply: ApplyVisual,
@@ -297,6 +433,12 @@ const VISUALS = {
 
 // ── Main slideshow ───────────────────────────────────────────────────────────
 export default function WelcomeSlideshow({ onDismiss }) {
+  const [exiting, setExiting] = useState(false)
+
+  const handleDismiss = () => {
+    setExiting(true)
+    setTimeout(onDismiss, 220)
+  }
   const [slide, setSlide] = useState(0)
   const [dir, setDir] = useState(1)    // 1 = forward, -1 = back
   const [animKey, setAnimKey] = useState(0)
@@ -310,7 +452,7 @@ export default function WelcomeSlideshow({ onDismiss }) {
   }
 
   const next = () => {
-    if (isLast) { onDismiss(); return }
+    if (isLast) { handleDismiss(); return }
     go(slide + 1, 1)
   }
   const prev = () => {
@@ -326,7 +468,7 @@ export default function WelcomeSlideshow({ onDismiss }) {
     const handler = (e) => {
       if (e.key === 'ArrowRight' || e.key === 'Enter') next()
       if (e.key === 'ArrowLeft') prev()
-      if (e.key === 'Escape') onDismiss()
+      if (e.key === 'Escape') handleDismiss()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -337,15 +479,27 @@ export default function WelcomeSlideshow({ onDismiss }) {
       position: 'fixed', inset: 0, zIndex: 9000,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: 'rgba(6,6,6,0.55)',
-      backdropFilter: 'blur(5px) saturate(0.8)',
+      backdropFilter: 'blur(18px) saturate(0.8)',
       WebkitBackdropFilter: 'blur(18px) saturate(0.8)',
-      animation: 'wsOverlayIn 0.3s ease both',
+      animation: exiting ? 'wsOverlayOut 0.22s ease forwards' : 'wsOverlayIn 0.3s ease both',
       padding: '20px',
     }}>
       <style>{`
         @keyframes wsOverlayIn {
           from { opacity: 0; }
           to   { opacity: 1; }
+        }
+        @keyframes wsOverlayOut {
+          from { opacity: 1; backdrop-filter: blur(18px); }
+          to   { opacity: 0; backdrop-filter: blur(0px); }
+        }
+        @keyframes wsProgressFill {
+          from { width: 0%; }
+          to   { width: var(--progress-target); }
+        }
+        @keyframes wsLaunchPulse {
+          0%, 100% { box-shadow: 0 0 24px rgba(232,255,107,0.25); }
+          50%       { box-shadow: 0 0 40px rgba(232,255,107,0.55), 0 0 80px rgba(232,255,107,0.15); }
         }
         @keyframes wsCardIn {
           from { opacity: 0; transform: translateY(16px) scale(0.97); }
@@ -375,22 +529,34 @@ export default function WelcomeSlideshow({ onDismiss }) {
         .ws-card {
           width: 100%;
           max-width: 480px;
+          height: 640px;
+          max-height: 90dvh;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
           background: rgba(12,12,12,0.98);
           border: 1px solid rgba(255,255,255,0.09);
           border-radius: 16px;
-          overflow: hidden;
           animation: wsCardIn 0.35s cubic-bezier(0.22,1,0.36,1) both;
           box-shadow:
             0 0 0 1px rgba(255,255,255,0.04) inset,
             0 40px 80px rgba(0,0,0,0.7),
             0 0 60px rgba(232,255,107,0.04);
         }
+        .ws-card::-webkit-scrollbar { display: none; }
+        .ws-card.is-last {
+          border-color: rgba(232,255,107,0.18);
+          box-shadow:
+            0 0 0 1px rgba(232,255,107,0.06) inset,
+            0 40px 80px rgba(0,0,0,0.7),
+            0 0 80px rgba(232,255,107,0.12);
+        }
 
         .ws-content-anim-fwd {
-          animation: wsSlideForward 0.32s cubic-bezier(0.22,1,0.36,1) both;
+          animation: wsSlideForward 1.50s cubic-bezier(0.22,1,0.36,1) both;
         }
         .ws-content-anim-back {
-          animation: wsSlideBack 0.32s cubic-bezier(0.22,1,0.36,1) both;
+          animation: wsSlideBack 1.50s cubic-bezier(0.22,1,0.36,1) both;
         }
 
         .ws-next-btn {
@@ -410,7 +576,9 @@ export default function WelcomeSlideshow({ onDismiss }) {
 
         .ws-launch-btn {
           background: #E8FF6B;
-          box-shadow: 0 0 24px rgba(232,255,107,0.25);
+          font-size: 14px;
+          padding: 15px 20px;
+          animation: wsLaunchPulse 2s ease-in-out infinite;
         }
 
         .ws-skip-btn {
@@ -434,16 +602,29 @@ export default function WelcomeSlideshow({ onDismiss }) {
         }
       `}</style>
 
-      <div className="ws-card">
+      <div className={`ws-card${isLast ? " is-last" : ""}`}>
+
+        {/* ── Progress bar ── */}
+        <div style={{
+          height: 2, width: '100%',
+          background: 'rgba(255,255,255,0.05)',
+          position: 'relative', overflow: 'hidden',
+        }}>
+          <div style={{
+            position: 'absolute', left: 0, top: 0, height: '100%',
+            background: '#E8FF6B',
+            width: `${((slide + 1) / SLIDES.length) * 100}%`,
+            transition: 'width 0.35s cubic-bezier(0.22,1,0.36,1)',
+            boxShadow: '0 0 8px rgba(232,255,107,0.6)',
+          }} />
+        </div>
 
         {/* ── Top bar ── */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '16px 20px 0',
+          padding: '14px 20px 0',
         }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 7,
-          }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             <div style={{
               width: 6, height: 6, borderRadius: '50%',
               background: '#E8FF6B',
@@ -456,8 +637,16 @@ export default function WelcomeSlideshow({ onDismiss }) {
               letterSpacing: '1px',
             }}>RACK</span>
           </div>
-          <button className="ws-skip-btn" onClick={onDismiss}>
-            Skip
+          {/* Slide counter */}
+          <span style={{
+            fontFamily: 'var(--font-mono, monospace)',
+            fontSize: 9, color: 'rgba(255,255,255,0.2)',
+            letterSpacing: '0.5px',
+          }}>
+            {slide + 1} of {SLIDES.length}
+          </span>
+          <button className="ws-skip-btn" onClick={handleDismiss}>
+            {isLast ? 'Close' : 'Skip'}
           </button>
         </div>
 
@@ -465,7 +654,7 @@ export default function WelcomeSlideshow({ onDismiss }) {
         <div
           key={animKey}
           className={dir >= 0 ? 'ws-content-anim-fwd' : 'ws-content-anim-back'}
-          style={{ padding: '20px 20px 0' }}
+          style={{ padding: '20px 20px 0', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
         >
           {/* Tag */}
           <div style={{
@@ -482,11 +671,14 @@ export default function WelcomeSlideshow({ onDismiss }) {
           {/* Headline */}
           <div style={{
             fontFamily: 'var(--font-display)',
-            fontSize: 24, fontWeight: 800,
-            color: '#fff',
-            letterSpacing: '-0.6px', lineHeight: 1.18,
+            fontSize: isLast ? 28 : 24,
+            fontWeight: 800,
+            color: isLast ? '#E8FF6B' : '#fff',
+            letterSpacing: isLast ? '-0.8px' : '-0.6px',
+            lineHeight: 1.18,
             marginBottom: 10,
             whiteSpace: 'pre-line',
+            transition: 'font-size 0.3s ease, color 0.3s ease',
           }}>
             {headline}
           </div>
@@ -508,7 +700,11 @@ export default function WelcomeSlideshow({ onDismiss }) {
             borderRadius: 10,
             padding: '16px',
             marginBottom: 20,
-            minHeight: 160,
+            flex: 1,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
           }}>
             <Visual />
           </div>
@@ -518,6 +714,7 @@ export default function WelcomeSlideshow({ onDismiss }) {
         <div style={{
           padding: '0 20px 20px',
           display: 'flex', flexDirection: 'column', gap: 12,
+          flexShrink: 0,
         }}>
           {/* Dots + back */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
