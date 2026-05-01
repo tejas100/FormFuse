@@ -44,14 +44,18 @@ export function useFirstVisit() {
   const [show, setShow] = useState(false)
   const [checked, setChecked] = useState(false)
   const [exiting, setExiting] = useState(false)
-
+ 
   useEffect(() => {
     const seen = localStorage.getItem(STORAGE_KEY)
     const forceShow = new URLSearchParams(window.location.search).has('welcome')
-    if (!seen || forceShow) setShow(true)
+    if (!seen || forceShow) {
+      const t = setTimeout(() => setShow(true), forceShow ? 0 : 3500)
+      setChecked(true)
+      return () => clearTimeout(t)
+    }
     setChecked(true)
   }, [])
-
+ 
   const dismiss = () => {
     setExiting(true)
     setTimeout(() => {
@@ -60,7 +64,7 @@ export function useFirstVisit() {
       setExiting(false)
     }, 220)
   }
-
+ 
   return { show: checked && show, dismiss, exiting }
 }
 
