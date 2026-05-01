@@ -23,6 +23,7 @@ function ThemeProvider({ children }) {
   )
 }
 import { AuthProvider, useAuth } from './context/AuthContext'
+import WelcomeSlideshow, { useFirstVisit } from './components/WelcomeSlideshow'
 import TabBar, { MobileMenu } from './components/TabBar'
 import Home from './pages/Home'
 import Resumes from './pages/Resumes'
@@ -40,6 +41,7 @@ function AppInner() {
   const [pageKey, setPageKey] = useState(0)
   const { user, authLoading, signInWithGoogle } = useAuth()
   const { theme } = useTheme()
+  const { show: showWelcome, dismiss: dismissWelcome } = useFirstVisit()
 
   const switchTab = (tab) => {
     setActive(tab)
@@ -345,6 +347,8 @@ function AppInner() {
         </div>
         <div style={{ width: 54 }} />
       </div>
+
+      {showWelcome && <WelcomeSlideshow onDismiss={dismissWelcome} />}
     </div>
   )
 }
