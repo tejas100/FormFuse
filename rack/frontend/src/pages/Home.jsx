@@ -926,6 +926,8 @@ export default function Home() {
   }
   useEffect(() => () => clearTimeout(typewriterRef.current), [])
 
+
+
   // ── Anonymous session ID — scopes FAISS index so only THIS session's
   //    resumes get matched. Generated once, persisted in localStorage.
   const sessionId = (() => {
@@ -1006,6 +1008,61 @@ export default function Home() {
   // ── Creature mood — derived from app state ──────────────────────
   const [creatureMood, setCreatureMood] = useState('idle')
   const [startleCount, setStartleCount] = useState(0)
+  const [creatureBubble, setCreatureBubble] = useState(null) // { text, color, duration }
+
+  // ── Filter card reveal engine — stagger job cards in after intro types out ──
+  const filterRevealRef = useRef(null)
+
+  const makeCreatureOpinion = (jobs) => {
+    if (!jobs || jobs.length === 0) return null
+    const top = jobs[0]
+    const score = Math.round(top.score ?? 0)
+    const company = top.company
+      ? top.company.charAt(0).toUpperCase() + top.company.slice(1)
+      : null
+
+    const lines = []
+    if (score >= 85 && company) {
+      lines.push(`#1 at ${company}!! apply NOW`, `${company} wants u!!`, `this one!! #1!!`, `omg ${company}!!`)
+    } else if (score >= 75 && company) {
+      lines.push(`${company} is 🔥`, `i like #1 a lot`, `#1 looks great!!`, `apply to #1!`)
+    } else if (score >= 60) {
+      lines.push(`#1 is decent!`, `worth a shot!!`, `i'd apply #1`, `#1 not bad!`)
+    } else {
+      lines.push(`hmm...look at #1`, `these r ok!`, `explore #1?`, `ur call fren`)
+    }
+    const text = lines[Math.floor(Math.random() * lines.length)]
+    const color = score >= 85 ? '#d4f04a' : score >= 75 ? '#a3e635' : '#fbbf24'
+    return { text, color, duration: 3400 }
+  }
+
+  const startFilterReveal = (msgId, totalCards, allJobs = null) => {
+    const PAGE_SIZE_F   = 5
+    const visibleTarget = Math.min(totalCards, PAGE_SIZE_F)
+    const CARD_INTERVAL = 110
+    let shown = 0
+    const tick = () => {
+      shown++
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, filterJobsVisible: shown } : m
+      ))
+      if (shown < visibleTarget) {
+        filterRevealRef.current = setTimeout(tick, CARD_INTERVAL)
+      } else if (allJobs) {
+        setTimeout(() => {
+          const opinion = makeCreatureOpinion(allJobs)
+          if (opinion) {
+            setCreatureMood('happy')
+            setCreatureBubble(opinion)
+            setTimeout(() => setCreatureMood('idle'), opinion.duration + 200)
+          }
+        }, 400)
+      }
+    }
+    clearTimeout(filterRevealRef.current)
+    filterRevealRef.current = setTimeout(tick, CARD_INTERVAL)
+  }
+  useEffect(() => () => clearTimeout(filterRevealRef.current), []) // eslint-disable-line
 
   // Mood transitions
   useEffect(() => {
@@ -1524,10 +1581,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
         isFilterResult: true,
         filterAction: action,
         filterJobs: jobs,
+        filterJobsVisible: 0,  // cards revealed incrementally
         results: null,
         loading: false,
         error: jobs.length === 0 ? 'No jobs found for this filter. Try refreshing Auto Matches in the Tracking tab.' : null,
       }])
+      if (jobs.length > 0) startFilterReveal(msgId, jobs.length, jobs)
     } catch (err) {
       console.error('Filter error:', err)
       const msgId = Date.now()
@@ -1868,14 +1927,13 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
       const label = triage.filter_label || 'Matched jobs'
       const introReply = triage.reply || null   // personalized intro from backend LLM
 
-      // If the backend generated a personal intro message, show it first as a RACK reply,
-      // then immediately append the job table as a second message so they feel connected.
       const tableMsg = {
         id: msgId,
         jd: capturedJd,
         filterLabel: label,
         isFilterResult: true,
         filterJobs: jobs,
+        filterJobsVisible: 0,   // cards revealed incrementally after intro types out
         results: null,
         loading: false,
         error: jobs.length === 0
@@ -1883,12 +1941,20 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           : null,
       }
 
-      // Single bubble: attach intro text to the table message so renderer shows both together
       const finalMsg = (introReply && jobs.length > 0)
         ? { ...tableMsg, filterIntro: introReply }
         : tableMsg
+
       setMessages(prev => prev.filter(m => m.id !== thinkingId).concat([finalMsg]))
       setLoading(false)
+
+      // Phase 1: typewrite the intro text, then Phase 2: stagger cards in
+      if (introReply && jobs.length > 0) {
+        startTypewriter(msgId, introReply, () => startFilterReveal(msgId, jobs.length, jobs))
+      } else if (jobs.length > 0) {
+        // No intro — reveal cards immediately
+        startFilterReveal(msgId, jobs.length, jobs)
+      }
       return
     }
 
@@ -2902,18 +2968,26 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
 
                   {/* Filter results — auto-match chip queries, paginated 5/page */}
                   {msg.isFilterResult && !msg.error && (() => {
-                    const PAGE_SIZE_F = 5
-                    const allJobs     = msg.filterJobs || []
-                    const totalJobs   = allJobs.length
-                    const fPage       = msg.filterPage || 1
-                    const totalPages  = Math.max(1, Math.ceil(Math.min(totalJobs, 20) / PAGE_SIZE_F))
-                    const pageJobs    = allJobs.slice((fPage - 1) * PAGE_SIZE_F, fPage * PAGE_SIZE_F)
-                    const setFPage    = (p) => setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, filterPage: p } : m))
+                    const PAGE_SIZE_F   = 5
+                    const allJobs       = msg.filterJobs || []
+                    const totalJobs     = allJobs.length
+                    const fPage         = msg.filterPage || 1
+                    const totalPages    = Math.max(1, Math.ceil(Math.min(totalJobs, 20) / PAGE_SIZE_F))
+                    const pageJobs      = allJobs.slice((fPage - 1) * PAGE_SIZE_F, fPage * PAGE_SIZE_F)
+                    const setFPage      = (p) => {
+                      const nextPageJobs = allJobs.slice((p - 1) * PAGE_SIZE_F, p * PAGE_SIZE_F)
+                      setMessages(prev => prev.map(m =>
+                        m.id === msg.id ? { ...m, filterPage: p, filterJobsVisible: 0 } : m
+                      ))
+                      startFilterReveal(msg.id, nextPageJobs.length)
+                    }
+                    const visibleCount  = msg.filterJobsVisible ?? pageJobs.length  // fallback: all visible (rehydrated msgs)
+                    const isTypingIntro = typewriterMsgId === msg.id
 
                     return (
                       <div style={{ animation: 'bubbleIn 0.4s ease both' }}>
 
-                        {/* ── Personal intro text (above the table) ── */}
+                        {/* ── Personal intro text — typed out character by character ── */}
                         {msg.filterIntro && (
                           <p style={{
                             margin: '0 0 16px',
@@ -2922,38 +2996,52 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                             lineHeight: 1.65,
                             fontWeight: 400,
                           }}>
-                            {msg.filterIntro}
+                            {isTypingIntro ? typewriterText : msg.filterIntro}
+                            {isTypingIntro && (
+                              <span style={{
+                                display: 'inline-block', width: 2, height: '1em',
+                                background: 'var(--accent)', marginLeft: 2,
+                                verticalAlign: 'text-bottom', opacity: 0.8,
+                                animation: 'pulse 0.8s ease-in-out infinite',
+                              }} />
+                            )}
                           </p>
                         )}
 
-                        {/* ── Header bar ── */}
-                        <div style={{
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                          marginBottom: '12px', padding: '0 2px',
-                        }}>
-                          <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
-                            {Math.min(totalJobs, 20)} job{totalJobs !== 1 ? 's' : ''} · page {fPage}/{totalPages}
-                          </span>
-                          {totalJobs > 20 && (
-                            <span className="rack-tracking-cta" onClick={() => {}}>
-                              ✦ See all {totalJobs} in Tracking →
+                        {/* ── Header bar — only show once first card is visible ── */}
+                        {visibleCount > 0 && (
+                          <div style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            marginBottom: '12px', padding: '0 2px',
+                            animation: 'bubbleIn 0.3s ease both',
+                          }}>
+                            <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
+                              {Math.min(totalJobs, 20)} job{totalJobs !== 1 ? 's' : ''} · page {fPage}/{totalPages}
                             </span>
-                          )}
-                        </div>
+                            {totalJobs > 20 && (
+                              <span className="rack-tracking-cta" onClick={() => window.dispatchEvent(new CustomEvent('rack:navigate', { detail: { tab: 'Tracking' } }))}>
+                                ✦ See all {totalJobs} in Tracking →
+                              </span>
+                            )}
+                          </div>
+                        )}
 
-                        {/* ── Table header row ── */}
-                        <div style={{
-                          display: 'grid',
-                          gridTemplateColumns: '40px 1fr 56px',
-                          gap: '0 12px',
-                          padding: '6px 14px',
-                          marginBottom: '4px',
-                          borderBottom: '1px solid var(--border)',
-                        }}>
-                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>#</span>
-                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Role · Company</span>
-                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Score</span>
-                        </div>
+                        {/* ── Table header row — only show once first card is visible ── */}
+                        {visibleCount > 0 && (
+                          <div style={{
+                            display: 'grid',
+                            gridTemplateColumns: '40px 1fr 56px',
+                            gap: '0 12px',
+                            padding: '6px 14px',
+                            marginBottom: '4px',
+                            borderBottom: '1px solid var(--border)',
+                            animation: 'bubbleIn 0.3s ease both',
+                          }}>
+                            <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>#</span>
+                            <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>Role · Company</span>
+                            <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Score</span>
+                          </div>
+                        )}
 
                         {/* ── Job rows ── */}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -2978,10 +3066,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                             const rec       = job.llm_recommendation
 
                             return (
+                              ji >= visibleCount ? null :
                               <div key={globalIdx} style={{
                                 borderRadius: '10px', overflow: 'hidden',
                                 background: 'var(--surface)', border: '1px solid var(--border-bright)',
-                                animation: `bubbleIn 0.25s ease ${ji * 0.04}s both`,
+                                animation: 'bubbleIn 0.32s cubic-bezier(0.22,1,0.36,1) both',
                               }}>
                                 {/* Score accent bar */}
                                 <div style={{ height: '2px', background: gradient, width: `${jScore}%`, transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)' }} />
@@ -3155,7 +3244,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
                           <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 400 }}>
                             Want to apply, filter by company, or see all {totalJobs} jobs?
                           </span>
-                          <span className="rack-tracking-cta">
+                          <span
+                            className="rack-tracking-cta"
+                            onClick={() => window.dispatchEvent(new CustomEvent('rack:navigate', { detail: { tab: 'Tracking' } }))}
+                            style={{ cursor: 'pointer' }}
+                          >
                             Open Tracking ✦
                           </span>
                         </div>
@@ -3727,7 +3820,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           })()}
 
           {/* Creature walks along the top edge of this box */}
-          <RackCreature mood={creatureMood} startle={startleCount} />
+          <RackCreature mood={creatureMood} startle={startleCount} forceBubble={creatureBubble} />
           <textarea
             ref={textareaRef}
             className="rack-chat-textarea"

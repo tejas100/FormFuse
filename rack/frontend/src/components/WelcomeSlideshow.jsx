@@ -481,12 +481,13 @@ export default function WelcomeSlideshow({ onDismiss }) {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 9000,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
       background: 'rgba(6,6,6,0.55)',
       backdropFilter: 'blur(18px) saturate(0.8)',
       WebkitBackdropFilter: 'blur(18px) saturate(0.8)',
       animation: exiting ? 'wsOverlayOut 0.22s ease forwards' : 'wsOverlayIn 0.3s ease both',
       padding: '20px',
+      gap: '16px',
     }}>
       <style>{`
         @keyframes wsOverlayIn {
@@ -529,6 +530,34 @@ export default function WelcomeSlideshow({ onDismiss }) {
           from { opacity: 0; letter-spacing: 3px; }
           to   { opacity: 1; letter-spacing: 1px; }
         }
+        @keyframes wsShimmer {
+          0%   { background-position: -300px 0; }
+          100% { background-position:  300px 0; }
+        }
+        .ws-byline {
+          font-family: var(--font-mono, monospace);
+          font-size: 10px;
+          letter-spacing: 0px;
+          background: linear-gradient(
+            90deg,
+            rgba(255,255,255,0.12) 0%,
+            rgba(232,255,107,0.55) 40%,
+            rgba(255,255,255,0.55) 55%,
+            rgba(218, 246, 60, 0.55) 70%,
+            rgba(255,255,255,0.12) 100%
+          );
+          background-size: 300px 100%;
+          background-clip: text;
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          animation: wsShimmer 8s ease-in-out infinite;
+          animation-delay: 0.6s;
+          user-select: none;
+          text-decoration: none;
+          cursor: pointer;
+          transition: opacity 0.2s;
+        }
+        .ws-byline:hover { opacity: 0.7; }
 
         .ws-card {
           width: 100%;
@@ -781,6 +810,17 @@ export default function WelcomeSlideshow({ onDismiss }) {
         </div>
 
       </div>
+
+      {/* ── Byline ── */}
+      <a
+        href="https://tejasbk.dev"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="ws-byline"
+      >
+        Built by Tejas B K
+      </a>
+
     </div>
   )
 }

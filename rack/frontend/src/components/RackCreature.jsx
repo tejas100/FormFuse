@@ -90,8 +90,8 @@ const MAME_HAPPY_A = [
   'B,W,W,W,W,W,W,W,W,W,W,W,W,W,B,_'.split(','),
   '_,B,W,W,W,W,W,W,W,W,W,W,W,B,_,_'.split(','),
   '_,_,B,W,W,W,W,W,W,W,W,W,B,_,_,_'.split(','),
-  'B,B,_,B,W,W,W,W,W,W,W,B,_,B,B,_'.split(','), // arms out!
-  'B,_,_,B,W,W,B,_,_,B,W,W,B,_,_,B'.split(','),
+  'W,W,_,B,W,W,W,W,W,W,W,B,_,W,W,_'.split(','), // arms out!
+  'W,_,_,B,W,W,B,_,_,B,W,W,B,_,_,W'.split(','),
   '_,_,_,B,W,B,_,_,_,_,B,W,B,_,_,_'.split(','),
   '_,_,_,B,W,B,_,_,_,_,B,W,B,_,_,_'.split(','),
   '_,_,_,B,B,_,_,_,_,_,_,B,B,_,_,_'.split(','),
@@ -113,8 +113,8 @@ const MAME_HAPPY_B = [
   'B,W,W,W,W,W,W,W,W,W,W,W,W,W,B,_'.split(','),
   '_,B,W,W,W,W,W,W,W,W,W,W,W,B,_,_'.split(','),
   '_,_,B,W,W,W,W,W,W,W,W,W,B,_,_,_'.split(','),
-  'B,B,_,B,W,W,W,W,W,W,W,B,_,B,B,_'.split(','),
-  'B,_,_,B,W,W,B,_,_,B,W,W,B,_,_,B'.split(','),
+  'W,W,_,B,W,W,W,W,W,W,W,B,_,W,W,_'.split(','),
+  'W,_,_,B,W,W,B,_,_,B,W,W,B,_,_,W'.split(','),
   '_,_,_,_,B,W,B,_,_,_,B,W,B,_,_,_'.split(','), // legs inward
   '_,_,_,_,B,W,B,_,_,_,B,W,B,_,_,_'.split(','),
   '_,_,_,_,B,B,_,_,_,_,_,B,B,_,_,_'.split(','),
@@ -137,8 +137,8 @@ const MAME_THINK_A = [
   'B,W,W,W,W,W,W,W,W,W,W,W,W,W,B,_'.split(','),
   '_,B,W,W,W,W,W,W,W,W,W,W,W,B,_,_'.split(','),
   '_,_,B,W,W,W,W,W,W,W,W,W,B,_,_,_'.split(','),
-  '_,_,_,B,W,W,W,W,W,W,W,B,_,B,B,_'.split(','), // right arm up
-  '_,_,_,B,W,W,B,_,_,B,W,W,B,_,B,_'.split(','),
+  '_,_,_,B,W,W,W,W,W,W,W,B,_,W,W,_'.split(','), // right arm up
+  '_,_,_,B,W,W,B,_,_,B,W,W,B,_,W,_'.split(','),
   '_,_,_,B,W,B,_,_,_,_,B,W,B,_,_,_'.split(','),
   '_,_,_,B,W,B,_,_,_,_,B,W,B,_,_,_'.split(','),
   '_,_,_,B,B,_,_,_,_,_,_,B,B,_,_,_'.split(','),
@@ -160,8 +160,8 @@ const MAME_THINK_B = [
   'B,W,W,W,W,W,W,W,W,W,W,W,W,W,B,_'.split(','),
   '_,B,W,W,W,W,W,W,W,W,W,W,W,B,_,_'.split(','),
   '_,_,B,W,W,W,W,W,W,W,W,W,B,_,_,_'.split(','),
-  '_,_,_,B,W,W,W,W,W,W,W,B,_,B,B,_'.split(','),
-  '_,_,_,B,W,W,B,_,_,B,W,W,B,B,_,_'.split(','),
+  '_,_,_,B,W,W,W,W,W,W,W,B,_,W,W,_'.split(','),
+  '_,_,_,B,W,W,B,_,_,B,W,W,B,W,_,_'.split(','),
   '_,_,_,_,B,W,B,_,_,_,B,W,B,_,_,_'.split(','),
   '_,_,_,_,B,W,B,_,_,_,B,W,B,_,_,_'.split(','),
   '_,_,_,_,B,B,_,_,_,_,_,B,B,_,_,_'.split(','),
@@ -413,7 +413,7 @@ function ZZZ() {
   ))
 }
 
-export default function RackCreature({ mood = 'idle', startle = 0 }) {
+export default function RackCreature({ mood = 'idle', startle = 0, forceBubble = null }) {
   const wrapRef = useRef(null)
   const [maxX, setMaxX] = useState(0)
 
@@ -455,6 +455,21 @@ export default function RackCreature({ mood = 'idle', startle = 0 }) {
   }, [startle])
   const hoverTimerRef = useRef(null)
   const [sleepHovered, setSleepHovered] = useState(false)
+
+  // External opinion bubble — fired from Home.jsx after filter results land
+  const forceBubbleRef = useRef(null)
+  useEffect(() => {
+    if (!forceBubble) return
+    // Don't interrupt a tickle
+    if (tickled) return
+    clearTimeout(forceBubbleRef.current)
+    setBubble({ text: forceBubble.text, color: forceBubble.color || '#d4f04a' })
+    forceBubbleRef.current = setTimeout(
+      () => setBubble(null),
+      forceBubble.duration || 3200
+    )
+    return () => clearTimeout(forceBubbleRef.current)
+  }, [forceBubble]) // eslint-disable-line
 
   const handleSleepHoverEnter = () => {
     if (mood !== 'sleeping' || tickled) return

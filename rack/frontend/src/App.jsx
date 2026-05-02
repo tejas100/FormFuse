@@ -48,6 +48,16 @@ function AppInner() {
     setPageKey(k => k + 1)
   }
 
+  // ── rack:navigate — fired by Home.jsx "Open Tracking ✦" buttons ──
+  useEffect(() => {
+    const handler = (e) => {
+      const tab = e.detail?.tab
+      if (tab && PAGE_MAP[tab]) switchTab(tab)
+    }
+    window.addEventListener('rack:navigate', handler)
+    return () => window.removeEventListener('rack:navigate', handler)
+  }, []) // eslint-disable-line
+
   const ActivePage = PAGE_MAP[active]
 
   // Is this tab gated and the user is not signed in?
