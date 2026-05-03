@@ -5,6 +5,7 @@ import { getAuthHeaders } from '../utils/api'
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const LS_KEY = 'rack_resumes'
 const ANON_CAP = 5
+const AUTH_CAP = 5
 
 // ── localStorage helpers ─────────────────────────────────────────────────────
 
@@ -353,7 +354,8 @@ export default function Resumes() {
   // ── Derived ─────────────────────────────────────────────────────────────────
 
   const activeCount = resumes.filter(r => r.status === 'active').length
-  const atCap = !isAuthed && resumes.length >= ANON_CAP
+  const cap = isAuthed ? AUTH_CAP : ANON_CAP
+  const atCap = resumes.length >= cap
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -469,21 +471,25 @@ export default function Resumes() {
         </div>
       </div>
 
-      {/* Anonymous cap warning banner */}
+      {/* Cap warning banner — anon and auth */}
       {atCap && (
         <div style={{
           width: '100%', maxWidth: '960px', marginBottom: '20px',
           padding: '12px 16px', borderRadius: '12px',
           background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)',
-          display: 'flex', alignItems: 'center', gap: '10px',
+          display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 10px',
           animation: 'fadeUp 0.3s ease both',
         }}>
-          <span style={{ fontSize: '16px' }}>⚠</span>
-          <span style={{ fontSize: '13px', color: 'rgba(251,191,36,0.8)', flex: 1 }}>
-            You've reached the {ANON_CAP}-resume limit for anonymous use.
+          <span style={{ fontSize: '16px', flexShrink: 0 }}>⚠</span>
+          <span style={{ fontSize: '13px', color: 'rgba(251,191,36,0.8)', flex: '1 1 160px' }}>
+            {isAuthed
+              ? `You've reached the ${AUTH_CAP}-resume beta limit.`
+              : `You've reached the ${ANON_CAP}-resume limit for anonymous use.`}
           </span>
-          <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-            Sign in to upload more & save permanently.
+          <span style={{ fontSize: '12px', color: 'var(--text-dim)', flex: '0 1 auto', marginLeft: 'auto', textAlign: 'right' }}>
+            {isAuthed
+              ? 'Unlimited slots coming soon in Pro.'
+              : 'Sign in to upload more & save permanently.'}
           </span>
         </div>
       )}
@@ -725,7 +731,7 @@ export default function Resumes() {
           <button
             onClick={() => !atCap && fileInputRef.current.click()}
             disabled={uploading || atCap}
-            title={atCap ? `Sign in to upload more than ${ANON_CAP} resumes` : 'Upload a resume'}
+            title={atCap ? (isAuthed ? `Beta limit: ${AUTH_CAP} resumes. Pro tier coming soon.` : `Sign in to upload more than ${ANON_CAP} resumes`) : 'Upload a resume'}
             style={{
               background: 'transparent',
               border: `1px dashed ${atCap ? 'var(--upload-disabled-border)' : 'var(--upload-border)'}`,
@@ -754,7 +760,7 @@ export default function Resumes() {
             <span style={{ fontSize: '28px', opacity: atCap ? 0.2 : 0.5 }}>+</span>
             <span>{atCap ? 'Limit reached' : 'Upload resume'}</span>
             <span style={{ fontSize: '11px', opacity: 0.5 }}>
-              {atCap ? `Sign in to add more` : 'PDF or DOCX'}
+              {atCap ? (isAuthed ? 'Pro tier coming soon' : 'Sign in to add more') : 'PDF or DOCX'}
             </span>
           </button>
         )}
