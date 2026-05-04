@@ -30,6 +30,7 @@ from models.orm import User
 from routers.auth import get_current_user
 from services.auto_match import (
     run_auto_pipeline,
+    run_pipeline_for_new_user,
     archive_jobs_for_user,
     _load_auto_meta_for_user,
     _load_results_from_db,
@@ -324,6 +325,22 @@ async def auto_fresh(
     jobs = [row.job_data for row in rows]
 
     return {"jobs": jobs, "total": len(jobs), "hours": hours}
+
+
+
+
+@router.post("/auto/trigger")
+async def auto_trigger(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fires run_pipeline_for_new_user() as a background task.
+    Called once from Home.jsx uploadAll() after onboarding resume upload completes.
+    Returns immediately — pipeline runs in the background.
+    """
+    import asyncio
+    asyncio.create_task(run_pipeline_for_new_user(str(current_user.id)))
+    return {"status": "triggered", "user_id": str(current_user.id)}
 
 
 @router.post("/auto/archive")

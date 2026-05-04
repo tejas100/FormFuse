@@ -247,7 +247,7 @@ def _normalize_job(
         "location": location.strip() if location else "Not specified",
         "url": url.strip(),
         "description_text": description_text,
-        "description_html": description_html,
+        # description_html intentionally omitted — plain text sufficient for all scoring paths.
         "posted_at": posted_at,
         "department": department,
         "commitment": commitment,

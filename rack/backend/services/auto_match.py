@@ -1114,8 +1114,9 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
     Only admins can trigger it manually via the admin dashboard.
 
     Pool strategy:
-      - If job_pool.json is fresh (< POOL_MAX_AGE_MINUTES), read from disk — instant
-      - If stale or missing, fetch fresh from job boards and write to disk
+      - ALWAYS reads from existing Supabase Storage pool. Never fetches from job boards.
+      - The 60-min APScheduler is the ONLY code path that fetches from job boards.
+      - If pool is empty/missing, log and abort. Scheduler populates within 60 min.
     """
     from db.database import AsyncSessionLocal
     from models.orm import User
@@ -1123,21 +1124,15 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
 
     logger.info(f"[NewUser] On-demand pipeline triggered for user={user_id}")
 
-    # ── Load or fetch job pool ────────────────────────────────────────
-    if _is_pool_cache_fresh():
-        raw_pool = _load_pool_from_disk()
-        logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs (skipping job board fetch)")
-    else:
-        logger.info("[NewUser] Pool cache stale or missing — fetching from job boards…")
-        from services.job_fetcher import fetch_all_auto_match
-        try:
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-            raw_pool = await fetch_all_auto_match(semaphore)
-            _save_pool_to_disk(raw_pool)
-            logger.info(f"[NewUser] Pool fetched and cached: {len(raw_pool)} jobs")
-        except Exception as e:
-            logger.error(f"[NewUser] Job pool fetch failed for user={user_id}: {e}")
-            return
+    # ── Load job pool — always from cache, never from job boards ─────
+    raw_pool = _load_pool_from_disk()
+    if not raw_pool:
+        logger.warning(
+            f"[NewUser] Job pool empty or missing for user={user_id} — "
+            "skipping. Scheduler will populate within 60 min."
+        )
+        return
+    logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs")
 
     # ── Load user profile from DB ─────────────────────────────────────
     try:
