@@ -81,36 +81,113 @@ POOL_MAX_AGE_MINUTES = 90   # Pool older than 90 min is considered stale for new
 
 def _save_pool_to_disk(pool: list) -> None:
     """
-    Write the fetched job pool to Supabase Storage (job-pool/job_pool.json).
-    Falls back to local disk write if Supabase upload fails, so the scheduler
-    never aborts due to a storage hiccup.
+    Upsert the fetched job pool into the Postgres job_pool table.
+
+    Strategy:
+      1. Bulk-upsert all fetched jobs (INSERT ... ON CONFLICT DO UPDATE).
+      2. Mark any job not touched by this fetch as is_active=False — these
+         are roles that have been taken down since the last run.
+
+    Falls back to local disk write if the DB upsert fails, so the scheduler
+    never aborts due to a transient DB error.
     """
-    payload = {
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "job_count":  len(pool),
-        "jobs":       pool,
-    }
-    payload_bytes = json.dumps(payload).encode("utf-8")
+    import psycopg2
+    from urllib.parse import urlparse, unquote
 
-    # ── Primary: Supabase Storage ─────────────────────────────────────
+    now = datetime.now(timezone.utc)
+
+    # ── Primary: Postgres job_pool table ─────────────────────────────
     try:
-        from supabase import create_client
-        sb = create_client(
-            os.environ["SUPABASE_URL"],
-            os.environ["SUPABASE_SERVICE_KEY"],
+        db_url = os.environ["DATABASE_URL_DIRECT"]
+        # Parse the SQLAlchemy URL into psycopg2 kwargs
+        parsed   = urlparse(db_url.replace("postgresql+psycopg2://", "postgresql://"))
+        password = unquote(parsed.password or "")
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            dbname=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=password,
+            sslmode="require",
         )
-        sb.storage.from_("job-pool").upload(
-            path="job_pool.json",
-            file=payload_bytes,
-            file_options={"content-type": "application/json", "upsert": "true"},
+        cur = conn.cursor()
+
+        upsert_sql = """
+            INSERT INTO job_pool (
+                job_id, source, external_id, title, company, location, url,
+                description_text, posted_at, department, commitment,
+                board_token, fetched_at, is_active
+            ) VALUES (
+                %(job_id)s, %(source)s, %(external_id)s, %(title)s, %(company)s,
+                %(location)s, %(url)s, %(description_text)s, %(posted_at)s,
+                %(department)s, %(commitment)s, %(board_token)s, %(fetched_at)s, TRUE
+            )
+            ON CONFLICT (job_id) DO UPDATE SET
+                title            = EXCLUDED.title,
+                company          = EXCLUDED.company,
+                location         = EXCLUDED.location,
+                url              = EXCLUDED.url,
+                description_text = EXCLUDED.description_text,
+                posted_at        = EXCLUDED.posted_at,
+                department       = EXCLUDED.department,
+                commitment       = EXCLUDED.commitment,
+                board_token      = EXCLUDED.board_token,
+                fetched_at       = EXCLUDED.fetched_at,
+                is_active        = TRUE
+        """
+
+        rows = []
+        for j in pool:
+            posted_raw = j.get("posted_at")
+            try:
+                posted_dt = datetime.fromisoformat(
+                    posted_raw.replace("Z", "+00:00")
+                ) if posted_raw else None
+            except Exception:
+                posted_dt = None
+
+            rows.append({
+                "job_id":           j["job_id"],
+                "source":           j.get("source", ""),
+                "external_id":      j.get("external_id", ""),
+                "title":            j.get("title", ""),
+                "company":          j.get("company", ""),
+                "location":         j.get("location", "Not specified"),
+                "url":              j.get("url", ""),
+                "description_text": j.get("description_text", ""),
+                "posted_at":        posted_dt,
+                "department":       j.get("department", ""),
+                "commitment":       j.get("commitment", ""),
+                "board_token":      j.get("board_token", ""),
+                "fetched_at":       now,
+            })
+
+        cur.executemany(upsert_sql, rows)
+
+        # Mark jobs not seen in this fetch as inactive
+        fetched_ids = [j["job_id"] for j in pool]
+        cur.execute(
+            "UPDATE job_pool SET is_active = FALSE "
+            "WHERE fetched_at < %s AND is_active = TRUE",
+            (now,)
         )
-        logger.info(f"[AutoMatch] Pool written to Supabase Storage: {len(pool)} jobs")
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"[AutoMatch] Pool written to Postgres: {len(pool)} jobs upserted")
         return
-    except Exception as e:
-        logger.warning(f"[AutoMatch] Supabase pool upload failed ({e}) — falling back to disk")
 
-    # ── Fallback: local disk (ephemeral on Render, but better than nothing) ──
+    except Exception as e:
+        logger.warning(f"[AutoMatch] Postgres pool upsert failed ({e}) — falling back to disk")
+
+    # ── Fallback: local disk ──────────────────────────────────────────
     try:
+        payload = {
+            "fetched_at": now.isoformat(),
+            "job_count":  len(pool),
+            "jobs":       pool,
+        }
         os.makedirs(WATCHLIST_DIR, exist_ok=True)
         with open(POOL_CACHE_PATH, "w") as f:
             f.write(json.dumps(payload))
@@ -121,23 +198,51 @@ def _save_pool_to_disk(pool: list) -> None:
 
 def _load_pool_from_disk() -> list:
     """
-    Load the cached job pool — tries Supabase Storage first, then local disk.
-    Returns empty list if both fail — caller handles the fresh-fetch fallback.
+    Load the active job pool from Postgres job_pool table.
+    Falls back to local disk if DB is unreachable.
+    Returns empty list if both fail — caller handles gracefully.
     """
-    # ── Primary: Supabase Storage ─────────────────────────────────────
+    import psycopg2
+    from urllib.parse import urlparse, unquote
+
+    # ── Primary: Postgres job_pool table ─────────────────────────────
     try:
-        from supabase import create_client
-        sb = create_client(
-            os.environ["SUPABASE_URL"],
-            os.environ["SUPABASE_SERVICE_KEY"],
+        db_url = os.environ["DATABASE_URL_DIRECT"]
+        parsed   = urlparse(db_url.replace("postgresql+psycopg2://", "postgresql://"))
+        password = unquote(parsed.password or "")
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            dbname=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=password,
+            sslmode="require",
         )
-        raw = sb.storage.from_("job-pool").download("job_pool.json")
-        payload = json.loads(raw.decode("utf-8"))
-        jobs = payload.get("jobs", [])
-        logger.info(f"[AutoMatch] Pool loaded from Supabase Storage: {len(jobs)} jobs")
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT job_id, source, external_id, title, company, location, url,
+                   description_text, posted_at, department, commitment,
+                   board_token, fetched_at
+            FROM job_pool
+            WHERE is_active = TRUE
+        """)
+        cols = [desc[0] for desc in cur.description]
+        jobs = []
+        for row in cur.fetchall():
+            j = dict(zip(cols, row))
+            # Convert timestamps to ISO strings so downstream code is unchanged
+            if j.get("posted_at"):
+                j["posted_at"] = j["posted_at"].isoformat()
+            if j.get("fetched_at"):
+                j["fetched_at"] = j["fetched_at"].isoformat()
+            jobs.append(j)
+        cur.close()
+        conn.close()
+        logger.info(f"[AutoMatch] Pool loaded from Postgres: {len(jobs)} jobs")
         return jobs
+
     except Exception as e:
-        logger.warning(f"[AutoMatch] Supabase pool download failed ({e}) — trying disk")
+        logger.warning(f"[AutoMatch] Postgres pool load failed ({e}) — trying disk")
 
     # ── Fallback: local disk ──────────────────────────────────────────
     try:
@@ -152,23 +257,34 @@ def _load_pool_from_disk() -> list:
 
 def _is_pool_cache_fresh() -> bool:
     """
-    Returns True if the cached pool (Supabase Storage or disk) was written
-    within POOL_MAX_AGE_MINUTES. Used by run_pipeline_for_new_user() to decide
-    whether to re-fetch from job boards.
+    Returns True if the Postgres pool was populated within POOL_MAX_AGE_MINUTES.
+    Used by the scheduler staleness check only — run_pipeline_for_new_user()
+    no longer calls this (it always reads from DB regardless of age).
     """
-    # ── Primary: Supabase Storage ─────────────────────────────────────
+    import psycopg2
+    from urllib.parse import urlparse, unquote
+
+    # ── Primary: Postgres ─────────────────────────────────────────────
     try:
-        from supabase import create_client
-        sb = create_client(
-            os.environ["SUPABASE_URL"],
-            os.environ["SUPABASE_SERVICE_KEY"],
+        db_url = os.environ["DATABASE_URL_DIRECT"]
+        parsed   = urlparse(db_url.replace("postgresql+psycopg2://", "postgresql://"))
+        password = unquote(parsed.password or "")
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            dbname=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=password,
+            sslmode="require",
         )
-        raw = sb.storage.from_("job-pool").download("job_pool.json")
-        payload = json.loads(raw.decode("utf-8"))
-        fetched_at_str = payload.get("fetched_at")
-        if not fetched_at_str:
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(fetched_at) FROM job_pool WHERE is_active = TRUE")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row or not row[0]:
             return False
-        fetched_at = datetime.fromisoformat(fetched_at_str)
+        fetched_at = row[0]
         if fetched_at.tzinfo is None:
             fetched_at = fetched_at.replace(tzinfo=timezone.utc)
         age_minutes = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 60
@@ -1114,9 +1230,8 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
     Only admins can trigger it manually via the admin dashboard.
 
     Pool strategy:
-      - ALWAYS reads from existing Supabase Storage pool. Never fetches from job boards.
-      - The 60-min APScheduler is the ONLY code path that fetches from job boards.
-      - If pool is empty/missing, log and abort. Scheduler populates within 60 min.
+      - If job_pool.json is fresh (< POOL_MAX_AGE_MINUTES), read from disk — instant
+      - If stale or missing, fetch fresh from job boards and write to disk
     """
     from db.database import AsyncSessionLocal
     from models.orm import User
@@ -1124,15 +1239,21 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
 
     logger.info(f"[NewUser] On-demand pipeline triggered for user={user_id}")
 
-    # ── Load job pool — always from cache, never from job boards ─────
-    raw_pool = _load_pool_from_disk()
-    if not raw_pool:
-        logger.warning(
-            f"[NewUser] Job pool empty or missing for user={user_id} — "
-            "skipping. Scheduler will populate within 60 min."
-        )
-        return
-    logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs")
+    # ── Load or fetch job pool ────────────────────────────────────────
+    if _is_pool_cache_fresh():
+        raw_pool = _load_pool_from_disk()
+        logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs (skipping job board fetch)")
+    else:
+        logger.info("[NewUser] Pool cache stale or missing — fetching from job boards…")
+        from services.job_fetcher import fetch_all_auto_match
+        try:
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+            raw_pool = await fetch_all_auto_match(semaphore)
+            _save_pool_to_disk(raw_pool)
+            logger.info(f"[NewUser] Pool fetched and cached: {len(raw_pool)} jobs")
+        except Exception as e:
+            logger.error(f"[NewUser] Job pool fetch failed for user={user_id}: {e}")
+            return
 
     # ── Load user profile from DB ─────────────────────────────────────
     try:
