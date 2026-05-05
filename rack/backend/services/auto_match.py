@@ -65,7 +65,7 @@ SCORE_WEIGHT           = 0.85
 RECENCY_WEIGHT         = 0.15
 RECENCY_HALF_LIFE_DAYS = 7
 MIN_SCORE              = 55   # LLM score floor — anything below is noise, never stored
-PHASE2_THRESHOLD       = 35   # Phase 1 pre-filter only — LLM is the real judge. 35% filters clearly irrelevant roles while passing ambiguous matches to GPT-4o-mini.
+PHASE2_THRESHOLD       = 55   # Phase 1 pre-filter only — LLM is the real judge. 35% filters clearly irrelevant roles while passing ambiguous matches to GPT-4o-mini.
 BATCH_SIZE             = 50
 MIN_DESC_LEN           = 100
 STALE_HOURS            = 0.5
@@ -196,9 +196,62 @@ def _save_pool_to_disk(pool: list) -> None:
         logger.error(f"[AutoMatch] Disk fallback also failed: {e2}")
 
 
-def _load_pool_from_disk() -> list:
+def _build_title_keywords(
+    target_roles: list | None,
+    role_aliases: dict | None,
+) -> list[str]:
+    """
+    Flatten target_roles + all their aliases into a deduplicated list of
+    whole-phrase terms for SQL ILIKE pre-filtering.
+
+    Each phrase becomes one `title ILIKE '%phrase%'` condition joined with OR.
+    Phrases are kept whole (not split into words) so the filter stays tight —
+    "%machine learning engineer%" won't match "Learning & Development Manager"
+    the way "%learning%" would.
+
+    False positives are acceptable (Stage 2 _role_matches_title handles precision),
+    but whole-phrase matching keeps the pre-filtered set much smaller than word-level.
+
+    Returns empty list if no roles/aliases provided — caller falls back to
+    unfiltered SELECT *.
+    """
+    if not target_roles:
+        return []
+
+    seen: set[str] = set()
+    terms: list[str] = []
+
+    def _add(phrase: str) -> None:
+        normalised = phrase.strip().lower()
+        if normalised and normalised not in seen:
+            seen.add(normalised)
+            terms.append(normalised)
+
+    aliases = role_aliases or {}
+    for role in target_roles:
+        _add(role)
+        for alias in aliases.get(role, []):
+            _add(alias)
+
+    return terms
+
+
+def _load_pool_from_disk(
+    target_roles: list | None = None,
+    role_aliases: dict | None = None,
+) -> list:
     """
     Load the active job pool from Postgres job_pool table.
+
+    Two-stage filtering when target_roles are provided:
+      Stage 1 (SQL): Broad ILIKE keyword filter on title — reduces 14k → ~2-3k rows.
+                     Accepts false positives deliberately; precision comes from Stage 2.
+      Stage 2 (Python): The existing _role_matches_title() word-overlap logic in the
+                        caller (_run_auto_pipeline_inner) runs unchanged on the smaller set.
+
+    When called without target_roles (scheduler path — full pool needed because it
+    scores multiple users with different roles), falls back to SELECT * as before.
+
     Falls back to local disk if DB is unreachable.
     Returns empty list if both fail — caller handles gracefully.
     """
@@ -219,13 +272,31 @@ def _load_pool_from_disk() -> list:
             sslmode="require",
         )
         cur = conn.cursor()
-        cur.execute("""
+
+        # ── Stage 1: build SQL with optional ILIKE keyword pre-filter ──
+        keywords = _build_title_keywords(target_roles, role_aliases)
+
+        base_sql = """
             SELECT job_id, source, external_id, title, company, location, url,
                    description_text, posted_at, department, commitment,
                    board_token, fetched_at
             FROM job_pool
             WHERE is_active = TRUE
-        """)
+        """
+
+        if keywords:
+            # Each keyword → one ILIKE condition; joined with OR for broad recall.
+            # Parameterised via %s to avoid SQL injection.
+            ilike_clauses = " OR ".join(["title ILIKE %s"] * len(keywords))
+            sql = base_sql + f" AND ({ilike_clauses})"
+            params = [f"%{kw}%" for kw in keywords]
+            cur.execute(sql, params)
+            filter_desc = f"keyword pre-filter ({len(keywords)} terms)"
+        else:
+            # Scheduler path — no per-user filter, load everything
+            cur.execute(base_sql)
+            filter_desc = "full pool (no keyword filter)"
+
         cols = [desc[0] for desc in cur.description]
         jobs = []
         for row in cur.fetchall():
@@ -236,15 +307,16 @@ def _load_pool_from_disk() -> list:
             if j.get("fetched_at"):
                 j["fetched_at"] = j["fetched_at"].isoformat()
             jobs.append(j)
+
         cur.close()
         conn.close()
-        logger.info(f"[AutoMatch] Pool loaded from Postgres: {len(jobs)} jobs")
+        logger.info(f"[AutoMatch] Pool loaded from Postgres: {len(jobs)} jobs ({filter_desc})")
         return jobs
 
     except Exception as e:
         logger.warning(f"[AutoMatch] Postgres pool load failed ({e}) — trying disk")
 
-    # ── Fallback: local disk ──────────────────────────────────────────
+    # ── Fallback: local disk (no keyword filter — always full pool) ───
     try:
         with open(POOL_CACHE_PATH) as f:
             payload = json.load(f)
@@ -1239,23 +1311,9 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
 
     logger.info(f"[NewUser] On-demand pipeline triggered for user={user_id}")
 
-    # ── Load or fetch job pool ────────────────────────────────────────
-    if _is_pool_cache_fresh():
-        raw_pool = _load_pool_from_disk()
-        logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs (skipping job board fetch)")
-    else:
-        logger.info("[NewUser] Pool cache stale or missing — fetching from job boards…")
-        from services.job_fetcher import fetch_all_auto_match
-        try:
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-            raw_pool = await fetch_all_auto_match(semaphore)
-            _save_pool_to_disk(raw_pool)
-            logger.info(f"[NewUser] Pool fetched and cached: {len(raw_pool)} jobs")
-        except Exception as e:
-            logger.error(f"[NewUser] Job pool fetch failed for user={user_id}: {e}")
-            return
-
-    # ── Load user profile from DB ─────────────────────────────────────
+    # ── Step 1: Load user profile from DB first ───────────────────────
+    # Profile must come before the pool load so we can pass target_roles +
+    # role_aliases into _load_pool_from_disk() for SQL-level pre-filtering.
     try:
         async with AsyncSessionLocal() as db:
             result = await db.execute(sa_select(User).where(User.id == user_id))
@@ -1281,7 +1339,26 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
         logger.error(f"[NewUser] Failed to load profile for user={user_id}: {e}")
         return
 
-    # ── Run scoring pipeline for this user ───────────────────────────
+    # ── Step 2: Load job pool with SQL keyword pre-filter ────────────
+    # Passing target_roles + role_aliases lets _load_pool_from_disk() push a
+    # broad ILIKE filter to Postgres, reducing 14k → ~2-3k rows in RAM.
+    # Stage 2 precision (_role_matches_title) is unchanged — runs on the
+    # smaller set inside _run_auto_pipeline_inner as always.
+    if _is_pool_cache_fresh():
+        raw_pool = _load_pool_from_disk(
+            target_roles=profile["target_roles"],
+            role_aliases=profile["role_aliases"],
+        )
+        logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs (SQL pre-filtered for this user)")
+    else:
+        logger.warning("[NewUser] Pool empty or stale — skipping. Scheduler populates within 60 min.")
+        return
+
+    if not raw_pool:
+        logger.warning(f"[NewUser] Pool empty after pre-filter for user={user_id} — skipping")
+        return
+
+    # ── Step 3: Run scoring pipeline for this user ───────────────────
     try:
         async with AsyncSessionLocal() as db:
             await run_auto_pipeline(
