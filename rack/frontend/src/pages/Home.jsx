@@ -1347,14 +1347,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
           setOnboardingStep('done')
           startTypewriter(doneId, doneText)
 
-          // Kick off background pipeline for this new user — fire and forget.
-          // run_pipeline_for_new_user() reads the cached job pool (never fetches
-          // from job boards) and writes results to auto_match_results.
-          getAuthHeaders().then(h =>
-            fetch(`${API_BASE}/api/tracking/auto/trigger`, { method: 'POST', headers: h })
-              .then(r => { if (!r.ok) console.warn('[RACK] auto/trigger failed', r.status) })
-              .catch(e => console.warn('[RACK] auto/trigger error', e))
-          )
+
         } else {
           // Non-onboarding upload (normal resume management) — just update count
           setResumeCount(finalCount)
