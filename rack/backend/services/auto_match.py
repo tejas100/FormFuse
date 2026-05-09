@@ -174,8 +174,11 @@ def _save_pool_to_disk(pool: list) -> None:
 
         conn.commit()
         cur.close()
-        conn.close()
         logger.info(f"[AutoMatch] Pool written to Postgres: {len(pool)} jobs upserted")
+
+        # Prune stale listings — reuse the same connection (upsert already committed)
+        _prune_stale_pool(conn)
+        conn.close()
         return
 
     except Exception as e:
@@ -194,6 +197,56 @@ def _save_pool_to_disk(pool: list) -> None:
         logger.info(f"[AutoMatch] Pool written to disk (fallback): {len(pool)} jobs")
     except Exception as e2:
         logger.error(f"[AutoMatch] Disk fallback also failed: {e2}")
+
+
+def _prune_stale_pool(conn) -> None:
+    """
+    Delete job listings older than 35 days from job_pool.
+
+    Two passes:
+      1. Jobs with a known posted_at older than 35 days — clearly dead listings.
+      2. Jobs with NULL posted_at whose fetched_at is also older than 35 days —
+         boards (mostly Lever/Ashby) that don't expose a posting date; use fetch
+         time as the proxy so they don't accumulate indefinitely.
+
+    seen_job_ids rows are intentionally NOT touched — they are a permanent
+    deduplication guard and must survive pool pruning.
+
+    Called inside _save_pool_to_disk() after the upsert commits, as a separate
+    transaction so a prune failure never rolls back the upsert.
+    """
+    PRUNE_DAYS = 35
+    try:
+        cur = conn.cursor()
+
+        # Pass 1 — dated jobs older than 35 days
+        cur.execute(
+            "DELETE FROM job_pool WHERE posted_at < NOW() - INTERVAL '%s days'",
+            (PRUNE_DAYS,)
+        )
+        dated_pruned = cur.rowcount
+
+        # Pass 2 — undated jobs whose fetched_at is also older than 35 days
+        cur.execute(
+            "DELETE FROM job_pool "
+            "WHERE posted_at IS NULL AND fetched_at < NOW() - INTERVAL '%s days'",
+            (PRUNE_DAYS,)
+        )
+        undated_pruned = cur.rowcount
+
+        conn.commit()
+        cur.close()
+        total = dated_pruned + undated_pruned
+        logger.info(
+            f"[AutoMatch] Pool pruned: {dated_pruned} dated + {undated_pruned} undated "
+            f"= {total} stale jobs removed (>{PRUNE_DAYS}d old)"
+        )
+    except Exception as e:
+        logger.warning(f"[AutoMatch] Pool prune failed (non-fatal): {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _build_title_keywords(
