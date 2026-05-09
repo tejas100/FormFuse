@@ -1253,94 +1253,30 @@ async def _run_auto_pipeline_inner(
 # ── APScheduler entry point ───────────────────────────────────────────
 async def run_pipeline_for_all_users() -> None:
     """
-    Called by APScheduler every 60 minutes.
+    Called by APScheduler every 60 minutes on Render.
 
-    Two-phase architecture:
-      Phase A — Fetch job pool ONCE from all job boards → write to job_pool.json
-      Phase B — Run per-user scoring concurrently against the shared pool
+    Phase A ONLY — fetch job pool from all job boards, upsert to Postgres,
+    prune stale listings. No user scoring happens here.
 
-    No user ever triggers a job board fetch. Only this scheduler does.
-    Per-user lock inside run_auto_pipeline() ensures manual refreshes that
-    arrive mid-run return cached results instead of starting a duplicate run.
+    Per-user matching (Phase B) runs on the local MacBook via
+    run_matching.py — 3x per day, concurrent, no Render load.
     """
-    from db.database import AsyncSessionLocal
-    from models.orm import User
-    from sqlalchemy import select as sa_select
-
-    logger.info("[Scheduler] Starting scheduled pipeline run for all users…")
-
-    # ── Phase A: Fetch job pool once ─────────────────────────────────
     from services.job_fetcher import fetch_all_auto_match
+
+    logger.info("[Scheduler] Starting pool refresh (fetch only — no user scoring)…")
     t0 = datetime.now(timezone.utc)
+
     try:
-        logger.info("[Scheduler] Fetching job pool from Greenhouse + Ashby + Lever…")
         semaphore = asyncio.Semaphore(MAX_CONCURRENT)
         raw_pool = await fetch_all_auto_match(semaphore)
         logger.info(f"[Scheduler] Pool fetched: {len(raw_pool)} jobs")
         _save_pool_to_disk(raw_pool)
     except Exception as e:
-        logger.error(f"[Scheduler] Job pool fetch failed: {e} — aborting run")
+        logger.error(f"[Scheduler] Job pool fetch failed: {e}")
         return
 
-    # ── Phase B: Score all users concurrently ────────────────────────
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(sa_select(User))
-        users = result.scalars().all()
-
-    active_users = [u for u in users if (u.preferences or {}).get("target_roles")]
-    logger.info(f"[Scheduler] {len(active_users)} users with target roles to process")
-
-    user_results: dict[str, dict] = {}  # user_id → stats dict
-
-    async def _run_one_user(user) -> None:
-        user_id = str(user.id)
-        profile = {
-            "target_roles":        user.preferences.get("target_roles", []),
-            "preferred_locations": user.preferences.get("preferred_locations", []),
-            "role_aliases":        user.preferences.get("role_aliases", {}),
-            "include_keywords":    user.preferences.get("include_keywords", []),
-            "exclude_keywords":    user.preferences.get("exclude_keywords", []),
-        }
-        try:
-            async with AsyncSessionLocal() as db:
-                result = await run_auto_pipeline(
-                    user_id=user_id,
-                    profile=profile,
-                    job_pool=raw_pool,
-                    force=False,
-                    db=db,
-                )
-                user_results[user_id] = result.get("stats", {})
-        except Exception as e:
-            logger.error(f"[Scheduler] Pipeline failed for user={user_id}: {e}")
-            user_results[user_id] = {"error": str(e)}
-
-    # All users run concurrently — safe because each user's pipeline is fully
-    # isolated (their own resume embeddings, their own DB rows, their own locks).
-    # The shared pool is read-only — no writes, no contention.
-    await asyncio.gather(*[_run_one_user(u) for u in active_users])
-
     elapsed = round((datetime.now(timezone.utc) - t0).total_seconds())
-
-    # ── Clean run summary ─────────────────────────────────────────────
-    logger.info("━" * 60)
-    logger.info(f"[Scheduler] ✓ Run complete in {elapsed}s — {len(raw_pool)} jobs in pool")
-    for user in active_users:
-        uid = str(user.id)
-        s = user_results.get(uid, {})
-        if "error" in s:
-            logger.warning(f"[Scheduler]   ✗ {user.email or uid[:8]}: ERROR — {s['error']}")
-        elif s.get("from_cache"):
-            logger.info(f"[Scheduler]   ↩ {user.email or uid[:8]}: served from cache")
-        else:
-            new_j  = s.get("new_jobs", 0)
-            llm_ok = s.get("llm_scored", 0)
-            stored = s.get("new_processed", 0)
-            logger.info(
-                f"[Scheduler]   ✓ {user.email or uid[:8]}: "
-                f"{new_j} new jobs → {llm_ok} LLM-scored → {stored} stored"
-            )
-    logger.info("━" * 60)
+    logger.info(f"[Scheduler] ✓ Pool refresh complete in {elapsed}s — {len(raw_pool)} jobs upserted")
 
 
 async def run_pipeline_for_new_user(user_id: str) -> None:

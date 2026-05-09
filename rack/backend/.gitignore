@@ -1,2 +1,7 @@
 .env
 uploads/resumes_metadata.json
+
+# Local ops scripts
+run_matching.py
+com.rack.matching.plist
+logs/
