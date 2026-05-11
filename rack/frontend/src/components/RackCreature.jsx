@@ -221,6 +221,62 @@ function blinkify(base) {
   paint(g, [[7,3],[7,4],[7,10],[7,11]], 'B'); return g
 }
 
+// ─── Yawn face overlay ────────────────────────────────────────────────────────
+// phase 0→1→0 : mouth goes dash → small oval → wide open oval, eyes squint
+// Mouth row 9, cols 5–10 is the pixel budget.
+// Eye zone: L=[6-7,3-4]  R=[6-7,10-11]
+function withYawnFace(base, phase) {
+  const g = cloneGrid(base)
+
+  // Wipe face zone to white first
+  for (let r = 6; r <= 10; r++)
+    for (let c = 3; c <= 11; c++)
+      if (g[r] && g[r][c] === 'B') g[r][c] = 'W'
+
+  // Eyes: squint proportionally — at phase 0 full 2×2, at phase 1 just bottom row
+  if (phase < 0.4) {
+    // Full open eyes
+    paint(g, [[6,3],[6,4],[7,3],[7,4],[6,10],[6,11],[7,10],[7,11]], 'B')
+  } else if (phase < 0.75) {
+    // Half-squint: only bottom row of each eye
+    paint(g, [[7,3],[7,4],[7,10],[7,11]], 'B')
+  } else {
+    // Nearly shut: single pixel each eye (very cute sleepy squint)
+    paint(g, [[7,3],[7,10]], 'B')
+  }
+
+  // Mouth: 5 stages of opening
+  if (phase < 0.12) {
+    // Tiny — normal dash
+    paint(g, [[9,6],[9,7],[9,8]], 'B')
+  } else if (phase < 0.3) {
+    // Slightly open — wider dash
+    paint(g, [[9,5],[9,6],[9,7],[9,8],[9,9]], 'B')
+  } else if (phase < 0.55) {
+    // Small oval — 2-row mouth with interior
+    paint(g, [[9,5],[9,6],[9,7],[9,8],[9,9],[10,6],[10,7],[10,8]], 'B')
+    // interior dark (already black from paint)
+  } else if (phase < 0.8) {
+    // Wide oval — 2 rows, 6 wide, dark interior
+    paint(g, [[9,5],[9,6],[9,7],[9,8],[9,9],[9,10]], 'B')
+    paint(g, [[10,5],[10,6],[10,7],[10,8],[10,9],[10,10]], 'B')
+    // Interior pixels are W by default — paint them as a dark cavity colour
+    // We use G (grey) to suggest the inside of the open mouth
+    paint(g, [[9,6],[9,7],[9,8],[9,9],[10,6],[10,7],[10,8],[10,9]], 'G')
+    // Re-outline the border
+    paint(g, [[9,5],[9,10],[10,5],[10,10]], 'B')
+  } else {
+    // Full yawn — tallest 3-row oval, wide open
+    paint(g, [[9,5],[9,6],[9,7],[9,8],[9,9],[9,10]], 'B')
+    paint(g, [[10,5],[10,10]], 'B')
+    paint(g, [[10,6],[10,7],[10,8],[10,9]], 'G')  // mouth cavity
+    // row 11 — bottom lip
+    if (g[11]) paint(g, [[11,6],[11,7],[11,8],[11,9]], 'B')
+  }
+
+  return g
+}
+
 // ─── Canvas ───────────────────────────────────────────────────────────────────
 function usePixelCanvas(grid, flip, scale = PX) {
   const ref = useRef(null)
@@ -266,13 +322,19 @@ function Particles({ burst, cx, cy, type }) {
     if (burst === 0 || burst === prev.current) return
     prev.current = burst
     const COLS_MAP = {
-      tickle: ['#f9a8d4','#fb7185','#fda4af','#fbbf24','#fff','#e8ff6b'],
-      bonk:   ['#fbbf24','#fde68a','#fff','#fb923c'],
-      happy:  ['#e8ff6b','#a3e635','#fff','#fbbf24'],
+      tickle:    ['#f9a8d4','#fb7185','#fda4af','#fbbf24','#fff','#e8ff6b'],
+      bonk:      ['#fbbf24','#fde68a','#fff','#fb923c'],
+      happy:     ['#e8ff6b','#a3e635','#fff','#fbbf24'],
+      rejection: ['#fb923c','#f87171','#fbbf24','#fff','#ef4444'],
+      game:      ['#e8ff6b','#a3e635','#93c5fd','#f9a8d4','#fff'],
+      checkin:   ['#93c5fd','#bfdbfe','#fff','#e8ff6b'],
     }
     const cols = COLS_MAP[type] || ['#e8ff6b']
-    const count = type === 'tickle' ? 14 : 10
-    const chars = type === 'tickle' ? ['♥','★','!','~','♡','✦'] : ['★','✦','!','✧']
+    const count = type === 'tickle' ? 14 : type === 'rejection' ? 18 : type === 'game' ? 16 : 10
+    const chars = type === 'tickle'    ? ['♥','★','!','~','♡','✦']
+                : type === 'rejection' ? ['✕','!','!!','→','NEXT','💢','★']
+                : type === 'game'      ? ['★','✦','♥','!','~','✧','♡']
+                : ['★','✦','!','✧']
     const newPs = Array.from({ length: count }, () => {
       const angle = Math.random() * Math.PI * 2
       const spd = 2.5 + Math.random() * 4
@@ -382,8 +444,36 @@ const MESSAGES = {
   startle:   ['woah!!','big one!!','👀!!','thats a lot!','omg omg!!','so many words','😱!!','hold on!!'],
   sleepHover:["don't. you. dare.",'i sense u...','go away...','im warning u...','not now fren','...i can hear u','leave me alone','shhhhhh!!','im SLEEPING','😤 zz'],
   bonk:      ['OW!!','BONK!','*crash*','oof!','💥','MY HEAD!!','wall!!'],
+  yawn:      ['*yaaawn*','so sleepy~','haAAHH~','mmMMhh~','yawn~','zzz soon...','so tired~'],
+  checkin:   ['hey. you okay?','take a breath fren','ur doing great actually','still here with u','proud of u fr','u got this, i promise','how u holding up?','remember to drink water','this is hard. u r doing it.','u r not alone in this','one step at a time fren','the right job is out there'],
+  rejection: ["their loss!!","NEXT!!","they don't deserve u","onward!!","more for someone better","not ur team anyway","their bad!!","u dodged a bullet","on to better things!!","NEXT NEXT NEXT","honestly? good riddance","u r too good for them"],
+  affirmation: ['today could be the day','you built something real','the right one is reading ur resume rn','every application is practice','ur more qualified than u think','someone out there needs exactly u','keep going. seriously.','ur resume is better than u think','belief is part of the strategy','ur effort is not invisible'],
+  gameCatch:   ['gotcha!!','too slow!!','hehe found me','u win this round','nice reflexes!!','okay okay u got me','♥ u found me','peek-a-boo!!'],
+  gameMiss:    ['missed me!!','too fast for u!!','try again fren','bzzzt! nope!!','hehe!!','so close tho!!'],
+  timeNight:   ['why r u awake rn','go to sleep fren','no good emails after midnight','rest is productive too','ur brain needs sleep','seriously go to bed','the jobs will still be there tomorrow','ur eyes r tired, i can tell'],
+  timeMorning: ['early bird!!','fresh start energy','morning fren!!','new day new opportunity','i believe in ur morning','the early applicant gets the job... maybe','rise and grind fren','good morning!! let\'s go!!'],
+  timeAfternoon: ['afternoon grind!!','peak hours fren','recruiters r online rn','good time to apply!!','keeping u company','how many apps today?','u r in the zone','afternoon energy!!'],
+  timeFriday:  ['nobody\'s hiring today lol... but also u never know','it\'s friday!! apply anyway','friday energy different','weekend soon!! but first: apply','TGIF but also apply','friday apps hit different'],
+  timeWeekend: ['job hunting on a weekend??','ur dedicated fr','even weekends count','hustle mode activated','rest is valid too fren','sunday scaries?? i got u'],
 }
 function pickMsg(mood) { const l = MESSAGES[mood] || MESSAGES.idle; return l[Math.floor(Math.random() * l.length)] }
+
+// ─── Time-aware greeting ──────────────────────────────────────────────────────
+function getTimeMsg() {
+  const now = new Date()
+  const h = now.getHours()
+  const day = now.getDay() // 0=Sun, 6=Sat
+  const isFri = day === 5
+  const isWeekend = day === 0 || day === 6
+  if (isWeekend) return { key: 'timeWeekend', color: '#c4b5fd' }
+  if (isFri && h >= 12) return { key: 'timeFriday', color: '#fbbf24' }
+  if (h >= 22 || h < 5)  return { key: 'timeNight',   color: '#93c5fd' }
+  if (h >= 5  && h < 11) return { key: 'timeMorning', color: '#d4f04a' }
+  return { key: 'timeAfternoon', color: 'rgba(255,255,255,0.75)' }
+}
+
+// Particle color palette for rejection
+const REJECTION_COLS = ['#fb923c','#f87171','#fbbf24','#fff','#ef4444']
 
 function Bubble({ text, color, shake }) {
   return (
@@ -431,7 +521,7 @@ function Scanlines() {
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
-export default function RackCreature({ mood = 'idle', startle = 0, forceBubble = null }) {
+export default function RackCreature({ mood = 'idle', startle = 0, forceBubble = null, rejection = 0, onGameScore = null }) {
   const wrapRef = useRef(null)
   const [maxX, setMaxX] = useState(0)
   useEffect(() => {
@@ -461,6 +551,32 @@ export default function RackCreature({ mood = 'idle', startle = 0, forceBubble =
   const [burst, setBurst]         = useState(0)
   const [burstType, setBurstType] = useState('tickle')
   const [burstPos, setBurstPos]   = useState({ x: 20, y: 20 })
+  // Yawn animation
+  const [yawnPhase, setYawnPhase] = useState(0)  // 0=closed, 1=wide open
+  const [yawning, setYawning]     = useState(false)
+  const yawnRafRef   = useRef(null)
+  const yawnTimerRef = useRef(null)
+  const yawnBubbleFiredRef = useRef(false)
+
+  // Feature: daily affirmation (once per session)
+  const affirmationDoneRef = useRef(false)
+
+  // Feature: idle check-in
+  const lastActivityRef   = useRef(Date.now())
+  const checkinTimerRef   = useRef(null)
+  const checkinDoneRef    = useRef(false)   // one check-in per idle stretch
+
+  // Feature: mini catch game
+  const [gameActive, setGameActive]     = useState(false)
+  const [gameTarget, setGameTarget]     = useState(null)   // { x, y } creature position to catch
+  const [gameScore, setGameScore]       = useState(0)
+  const [showGameScore, setShowGameScore] = useState(false)
+  const gameTimerRef  = useRef(null)
+  const gameRoundRef  = useRef(0)
+  const clickCountRef = useRef(0)         // rapid clicks to trigger game
+
+  // Feature: rejection ritual
+  const prevRejection = useRef(0)
 
   const tickleRef  = useRef(null)
   const startleRef = useRef(null)
@@ -530,21 +646,16 @@ export default function RackCreature({ mood = 'idle', startle = 0, forceBubble =
     setSleepHov(false)
     hoverRef.current = setTimeout(() => setBubble(null), 600)
   }
-  const handleTickle = () => {
-    if (tickleRef.current) clearTimeout(tickleRef.current)
-    if (hoverRef.current) clearTimeout(hoverRef.current)
-    setSleepHov(false); setTickled(true)
-    squash(1.12, 0.82, 0.92, 1.1, 80, 1, 1, 220)
-    setBubble({ text: pickMsg('tickle'), color: '#f9a8d4' })
-    setBurstType('tickle'); setBurstPos({ x: (COLS * PX) / 2, y: (ROWS * PX) / 2 }); setBurst(n => n + 1)
-    tickleRef.current = setTimeout(() => { setTickled(false); setBubble(null) }, 900)
-  }
 
-  const effectiveMood = (startled || tickled) ? 'happy' : mood
+  const effectiveMood = (startled || tickled || gameActive) ? (gameActive ? 'happy' : 'happy') : mood
   useEffect(() => {
     const base = SPRITES[effectiveMood]?.[frame] ?? MAME_IDLE_A
-    setGrid(blink ? blinkify(base) : withMoodFace(base, effectiveMood))
-  }, [effectiveMood, frame, blink])
+    if (yawning && effectiveMood === 'idle') {
+      setGrid(withYawnFace(base, yawnPhase))
+    } else {
+      setGrid(blink ? blinkify(base) : withMoodFace(base, effectiveMood))
+    }
+  }, [effectiveMood, frame, blink, yawning, yawnPhase])
 
   const prevMood = useRef(mood)
   useEffect(() => {
@@ -568,6 +679,253 @@ export default function RackCreature({ mood = 'idle', startle = 0, forceBubble =
     const go = () => { t = setTimeout(() => { setBlink(true); setTimeout(() => { setBlink(false); go() }, 120) }, 1800 + Math.random() * 3200) }
     go(); return () => clearTimeout(t)
   }, [])
+
+  // Yawn — fires randomly during idle only
+  // Curve: ease-in to peak (0→1 over 1.4s), hold 0.5s, ease-out (1→0 over 1.0s)
+  const YAWN_IN  = 1400   // ms to open
+  const YAWN_HOLD = 500   // ms held open
+  const YAWN_OUT  = 1000  // ms to close
+  useEffect(() => {
+    if (mood !== 'idle') {
+      // Cancel any in-progress yawn when mood changes
+      cancelAnimationFrame(yawnRafRef.current)
+      clearTimeout(yawnTimerRef.current)
+      setYawning(false); setYawnPhase(0)
+      return
+    }
+    const schedule = () => {
+      yawnTimerRef.current = setTimeout(() => {
+        // Don't yawn if already doing something exciting
+        if (tickleRef.current || startleRef.current || bonkRef.current) { schedule(); return }
+        yawnBubbleFiredRef.current = false
+        setYawning(true)
+        const startTs = performance.now()
+        const animate = (now) => {
+          const elapsed = now - startTs
+          let phase
+          if (elapsed < YAWN_IN) {
+            // ease-in-out open
+            const t = elapsed / YAWN_IN
+            phase = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+          } else if (elapsed < YAWN_IN + YAWN_HOLD) {
+            phase = 1
+          } else {
+            const t = Math.min(1, (elapsed - YAWN_IN - YAWN_HOLD) / YAWN_OUT)
+            phase = 1 - (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t)
+          }
+          setYawnPhase(phase)
+
+          // Fire bubble once when mouth starts opening
+          if (!yawnBubbleFiredRef.current && elapsed > 200) {
+            yawnBubbleFiredRef.current = true
+            setBubble({ text: pickMsg('yawn'), color: '#93c5fd' })
+            setTimeout(() => setBubble(null), YAWN_IN + YAWN_HOLD)
+          }
+
+          // Subtle stretch at peak — scaleY handled via yawnPhase → body scaleY below
+          if (elapsed < YAWN_IN + YAWN_HOLD + YAWN_OUT) {
+            yawnRafRef.current = requestAnimationFrame(animate)
+          } else {
+            setYawnPhase(0); setYawning(false)
+            schedule()  // schedule the next one
+          }
+        }
+        yawnRafRef.current = requestAnimationFrame(animate)
+      }, 14000 + Math.random() * 12000)
+    }
+    schedule()
+    return () => {
+      cancelAnimationFrame(yawnRafRef.current)
+      clearTimeout(yawnTimerRef.current)
+    }
+  }, [mood]) // eslint-disable-line
+
+  // ── Feature 1: Daily affirmation — fires once per session, 1.5s after mount ──
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (affirmationDoneRef.current) return
+      affirmationDoneRef.current = true
+      // Time-aware greeting first, then affirmation
+      const { key, color } = getTimeMsg()
+      setBubble({ text: pickMsg(key), color })
+      setTimeout(() => {
+        setBubble(null)
+        setTimeout(() => {
+          setBubble({ text: pickMsg('affirmation'), color: '#e8ff6b' })
+          squash(0.92, 1.1, 1.04, 0.97, 100, 1, 1, 220)
+          setTimeout(() => setBubble(null), 3800)
+        }, 600)
+      }, 2800)
+    }, 1500)
+    return () => clearTimeout(t)
+  }, []) // eslint-disable-line
+
+  // ── Feature 2: Idle check-in — fires after 3 min of no activity ──
+  // Track activity: reset timer on any user event
+  useEffect(() => {
+    const bump = () => {
+      lastActivityRef.current = Date.now()
+      checkinDoneRef.current = false   // reset so next idle stretch can check in again
+    }
+    window.addEventListener('mousemove', bump, { passive: true })
+    window.addEventListener('keydown', bump, { passive: true })
+    window.addEventListener('click', bump, { passive: true })
+    return () => {
+      window.removeEventListener('mousemove', bump)
+      window.removeEventListener('keydown', bump)
+      window.removeEventListener('click', bump)
+    }
+  }, [])
+
+  useEffect(() => {
+    const CHECKIN_MS = 3 * 60 * 1000  // 3 minutes
+    const poll = () => {
+      checkinTimerRef.current = setTimeout(() => {
+        const idle = Date.now() - lastActivityRef.current
+        if (idle >= CHECKIN_MS && !checkinDoneRef.current && mood === 'idle') {
+          checkinDoneRef.current = true
+          // Walk to center, stop, deliver message
+          const centerX = Math.max(0, (maxX / 2))
+          xRef.current = centerX; setX(centerX)
+          dirRef.current = 1; setFlip(false)
+          setTimeout(() => {
+            setBubble({ text: pickMsg('checkin'), color: '#93c5fd' })
+            squash(0.96, 1.06, 1.02, 0.98, 120, 1, 1, 280)
+            setBurstType('checkin')
+            setBurstPos({ x: (COLS * PX) / 2, y: ROWS * PX * 0.7 })
+            setBurst(n => n + 1)
+            setTimeout(() => setBubble(null), 4000)
+          }, 400)
+        }
+        poll()  // reschedule
+      }, 30000)  // check every 30s
+    }
+    poll()
+    return () => clearTimeout(checkinTimerRef.current)
+  }, [mood, maxX]) // eslint-disable-line
+
+  // ── Feature 3: Rejection ritual ──
+  useEffect(() => {
+    if (rejection === 0 || rejection === prevRejection.current) return
+    prevRejection.current = rejection
+    // Rage shake + particles + bubble
+    setStartled(false)  // clear any existing
+    if (startleRef.current) clearTimeout(startleRef.current)
+    // Custom rage animation: violent shake using squash sequence
+    squash(1.18, 0.78, 0.82, 1.22, 60, 1.14, 0.86, 130)
+    setTimeout(() => squash(0.88, 1.14, 1.06, 0.95, 80, 1, 1, 200), 220)
+    setBubble({ text: pickMsg('rejection'), color: '#fb923c' })
+    setBurstType('rejection')
+    setBurstPos({ x: (COLS * PX) / 2, y: ROWS * PX * 0.4 })
+    setBurst(n => n + 1)
+    // Second burst slightly offset
+    setTimeout(() => {
+      setBurstPos({ x: (COLS * PX) * 0.3, y: ROWS * PX * 0.6 })
+      setBurst(n => n + 1)
+    }, 180)
+    startleRef.current = setTimeout(() => {
+      setBubble(null)
+      // Follow-up comfort message after the rage
+      setTimeout(() => {
+        setBubble({ text: pickMsg('checkin'), color: '#93c5fd' })
+        setTimeout(() => setBubble(null), 2800)
+      }, 400)
+    }, 2200)
+  }, [rejection]) // eslint-disable-line
+
+  // ── Feature 4: Mini catch game ──
+  // Triggered by 3 rapid clicks (within 1.2s)
+  const lastClickRef = useRef(0)
+  const handleTickle = () => {
+    if (tickleRef.current) clearTimeout(tickleRef.current)
+    if (hoverRef.current) clearTimeout(hoverRef.current)
+
+    // Rapid click counter for game trigger
+    const now = Date.now()
+    if (now - lastClickRef.current < 1200) {
+      clickCountRef.current += 1
+    } else {
+      clickCountRef.current = 1
+    }
+    lastClickRef.current = now
+
+    if (clickCountRef.current >= 3 && !gameActive && mood === 'idle') {
+      clickCountRef.current = 0
+      startGame()
+      return
+    }
+
+    // Check if this click catches the creature during game
+    if (gameActive) {
+      handleGameCatch()
+      return
+    }
+
+    setSleepHov(false); setTickled(true)
+    squash(1.12, 0.82, 0.92, 1.1, 80, 1, 1, 220)
+    setBubble({ text: pickMsg('tickle'), color: '#f9a8d4' })
+    setBurstType('tickle'); setBurstPos({ x: (COLS * PX) / 2, y: (ROWS * PX) / 2 }); setBurst(n => n + 1)
+    tickleRef.current = setTimeout(() => { setTickled(false); setBubble(null) }, 900)
+  }
+
+  const startGame = () => {
+    setGameActive(true)
+    setGameScore(0)
+    gameRoundRef.current = 0
+    setBubble({ text: 'CATCH ME if u can!! 🏃', color: '#e8ff6b' })
+    squash(0.85, 1.18, 1.08, 0.94, 90, 1, 1, 220)
+    setTimeout(() => { setBubble(null); runGameRound() }, 1400)
+  }
+
+  const runGameRound = () => {
+    if (gameRoundRef.current >= 5) { endGame(); return }
+    gameRoundRef.current += 1
+    // Teleport to a random position
+    const newX = Math.floor(Math.random() * Math.max(1, maxX))
+    xRef.current = newX; setX(newX)
+    setFlip(Math.random() > 0.5)
+    setGameTarget({ x: newX })
+    // Wiggle to announce location
+    squash(1.15, 0.85, 0.9, 1.12, 70, 1, 1, 180)
+    // Auto-miss timer: if not caught in 2s, move again
+    clearTimeout(gameTimerRef.current)
+    gameTimerRef.current = setTimeout(() => {
+      if (gameActive) {
+        setBubble({ text: pickMsg('gameMiss'), color: '#fb923c' })
+        squash(1.0, 1.0, 1.0, 1.0, 50, 1, 1, 100) // tiny taunt shake via tickle
+        setTimeout(() => { setBubble(null); runGameRound() }, 800)
+      }
+    }, 2200)
+  }
+
+  const handleGameCatch = () => {
+    clearTimeout(gameTimerRef.current)
+    setGameScore(s => s + 1)
+    setBubble({ text: pickMsg('gameCatch'), color: '#e8ff6b' })
+    setBurstType('game')
+    setBurstPos({ x: (COLS * PX) / 2, y: (ROWS * PX) / 2 })
+    setBurst(n => n + 1)
+    squash(0.8, 1.2, 1.1, 0.9, 70, 1, 1, 200)
+    setTimeout(() => { setBubble(null); runGameRound() }, 900)
+  }
+
+  const endGame = () => {
+    setGameActive(false)
+    setGameTarget(null)
+    clearTimeout(gameTimerRef.current)
+    const score = gameScore
+    setShowGameScore(true)
+    const finalMsg = score >= 4 ? `${score}/5 u r incredible!!`
+                   : score >= 2 ? `${score}/5 not bad fren!!`
+                   : `${score}/5 ...i let u win a little`
+    setBubble({ text: finalMsg, color: '#e8ff6b' })
+    squash(0.88, 1.15, 1.06, 0.96, 100, 1, 1, 240)
+    setBurstType('game')
+    setBurstPos({ x: (COLS * PX) / 2, y: (ROWS * PX) / 2 })
+    setBurst(n => n + 1)
+    if (onGameScore) onGameScore(score)
+    setTimeout(() => { setBubble(null); setShowGameScore(false) }, 3000)
+  }
 
   // Movement
   useEffect(() => {
@@ -696,6 +1054,10 @@ export default function RackCreature({ mood = 'idle', startle = 0, forceBubble =
           0%,100%{ opacity:0.3; }
           50%    { opacity:0.65; }
         }
+        @keyframes rackGameRing {
+          0%  { opacity:0.5; transform:scale(1);    box-shadow:0 0 8px #e8ff6b66; }
+          100%{ opacity:1;   transform:scale(1.06); box-shadow:0 0 18px #e8ff6baa; }
+        }
       `}</style>
 
       <div ref={wrapRef} style={{ position:'absolute', top:-(SH+2), left:0, right:0, height:SH, pointerEvents:'none', overflow:'visible', zIndex:10 }}>
@@ -732,16 +1094,38 @@ export default function RackCreature({ mood = 'idle', startle = 0, forceBubble =
           onMouseLeave={handleSleepHoverLeave}
           style={{
             position:'absolute', left:8+x, bottom:0, width:SW,
-            transform:`translateY(${offY}px) scaleX(${flip ? -sx : sx}) scaleY(${sy})`,
+            transform:`translateY(${offY + (yawning ? -yawnPhase * 3 : 0)}px) scaleX(${flip ? -(sx * (yawning ? 1 - yawnPhase * 0.04 : 1)) : sx * (yawning ? 1 - yawnPhase * 0.04 : 1)}) scaleY(${sy * (yawning ? 1 + yawnPhase * 0.06 : 1)})`,
             transformOrigin:'bottom center',
             pointerEvents:'auto',
-            cursor: mood === 'sleeping' ? 'default' : 'pointer',
+            cursor: gameActive ? 'crosshair' : mood === 'sleeping' ? 'default' : 'pointer',
             animation: startled ? 'rackJump 0.6s cubic-bezier(0.36,0.07,0.19,0.97) both'
               : tickled ? 'rackTickle 0.55s ease both' : 'none',
             willChange:'transform',
           }}
         >
           <Stars active={effectiveMood === 'happy' && !startled && !tickled} />
+          {/* Game mode: pulsing catch ring around creature */}
+          {gameActive && (
+            <div style={{
+              position: 'absolute',
+              top: -6, left: -6, right: -6, bottom: -6,
+              border: '2px solid #e8ff6b',
+              borderRadius: 4,
+              animation: 'rackGameRing 0.55s ease-in-out infinite alternate',
+              pointerEvents: 'none',
+              boxShadow: '0 0 14px #e8ff6b88, inset 0 0 8px #e8ff6b22',
+            }} />
+          )}
+          {/* Game score badge */}
+          {showGameScore && (
+            <div style={{
+              position: 'absolute', top: -28, left: '50%', transform: 'translateX(-50%)',
+              background: '#e8ff6b', color: '#0a0a0a', borderRadius: 3,
+              padding: '1px 6px', fontSize: 9, fontWeight: 900,
+              fontFamily: '"Courier New", monospace', whiteSpace: 'nowrap',
+              animation: 'rackPop 0.15s steps(3) both',
+            }}>score: {gameScore}/5</div>
+          )}
           {bubble && <Bubble text={bubble.text} color={bubble.color} shake={bonking} />}
           {mood === 'sleeping' && !tickled && !startled && <ZZZ />}
           <div style={{ position:'relative', width:SW, height:SH }}>
