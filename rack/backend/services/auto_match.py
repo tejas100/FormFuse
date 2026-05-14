@@ -1251,15 +1251,16 @@ async def _run_auto_pipeline_inner(
 
 
 # ── APScheduler entry point ───────────────────────────────────────────
-async def run_pipeline_for_all_users() -> None:
+async def run_pipeline_for_all_users() -> int:
     """
-    Called by APScheduler every 60 minutes on Render.
+    Called by run_fetching.py every 2 hours on MacBook via launchd.
 
     Phase A ONLY — fetch job pool from all job boards, upsert to Postgres,
     prune stale listings. No user scoring happens here.
 
-    Per-user matching (Phase B) runs on the local MacBook via
-    run_matching.py — 3x per day, concurrent, no Render load.
+    Per-user matching (Phase B) runs via run_matching.py — 8am/1pm/8pm.
+
+    Returns the number of jobs fetched (used by run_fetching.py for notifications).
     """
     from services.job_fetcher import fetch_all_auto_match
 
@@ -1273,10 +1274,11 @@ async def run_pipeline_for_all_users() -> None:
         _save_pool_to_disk(raw_pool)
     except Exception as e:
         logger.error(f"[Scheduler] Job pool fetch failed: {e}")
-        return
+        return 0
 
     elapsed = round((datetime.now(timezone.utc) - t0).total_seconds())
     logger.info(f"[Scheduler] ✓ Pool refresh complete in {elapsed}s — {len(raw_pool)} jobs upserted")
+    return len(raw_pool)
 
 
 async def run_pipeline_for_new_user(user_id: str) -> None:

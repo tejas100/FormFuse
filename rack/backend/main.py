@@ -40,47 +40,13 @@ from contextlib import asynccontextmanager
 from routers import resumes, match, tracking, account, auth, chat, admin, apply, voice
 
 
-# ── Scheduler setup ───────────────────────────────────────────────────────────
-async def _start_scheduler():
-    try:
-        from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from services.auto_match import run_pipeline_for_all_users
-
-        scheduler = AsyncIOScheduler(timezone="UTC")
-        scheduler.add_job(
-            run_pipeline_for_all_users,
-            trigger="interval",
-            minutes=60,
-            id="auto_pipeline",
-            replace_existing=True,
-            max_instances=1,          # Never run two scheduler jobs concurrently
-            misfire_grace_time=120,   # If server was down, skip missed fires > 2 min late
-        )
-        scheduler.start()
-
-        # NOTE: No immediate fire on startup.
-        # Pipeline runs on its 60-min schedule only.
-        # To trigger manually: visit /admin and use the Run Now button,
-        # or promote a user to pro and hit Refresh in the Tracking tab.
-
-        logging.getLogger(__name__).info("[Scheduler] APScheduler started — 60-min pipeline interval")
-        return scheduler
-    except ImportError:
-        logging.getLogger(__name__).warning(
-            "[Scheduler] APScheduler not installed — background pipeline disabled. "
-            "Run: pip install apscheduler"
-        )
-        return None
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    scheduler = await _start_scheduler()
+    # Job board fetching and user scoring both run on MacBook via launchd.
+    # run_fetching.py  — every 2 hours  (com.rack.fetching.plist)
+    # run_matching.py  — 8am/1pm/8pm    (com.rack.matching.plist)
+    # Render is a pure API server — no background jobs.
     yield
-    # Shutdown
-    if scheduler:
-        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
