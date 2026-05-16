@@ -226,6 +226,7 @@ class ChatResponse(BaseModel):
     jobs: Optional[list] = None         # populated for show_matched_jobs
     filter_label: Optional[str] = None  # human-readable label for the job table header
     apply_jobs: Optional[list] = None   # populated for route_to_apply — jobs to apply to
+    resumes: Optional[list] = None      # populated for show_user_resumes
 
 
 # ── Unified router system prompt ──────────────────────────────────────────────
@@ -241,6 +242,8 @@ route_to_tailor: User wants a tailored PDF resume for a job. Triggers on: "tailo
 route_to_refine: User wants to refine/modify a PREVIOUSLY TAILORED resume. Only fires when the immediately prior message was a tailor result. Triggers on follow-up instructions like "make it more concise", "add X to the experience section", "remove Y", "focus more on Z".
 
 answer_career_question: User asked a career-related question (about their resumes, job search strategy, interview prep, skills gaps, salary, matched jobs). NOT a routing decision — you'll use DB tools to answer.
+
+show_user_resumes: User wants to SEE their uploaded resumes as a list/gallery. Triggers on "show me my resumes", "show my resumes", "list my resumes", "what resumes do I have", "my uploaded resumes", "view my resumes", "which resumes have I uploaded", "show all my resumes", "my active resumes". Distinct from answer_career_question — use this when the user just wants to see/browse their resumes, not ask a question about them.
 
 show_matched_jobs: User wants to SEE their matched jobs as a list/table. Triggers on "show me my matches", "what jobs did you find", "top jobs for me", "85%+ matches". Distinct from answer_career_question which gives a text answer.
   RECENCY — when the user says "recent", "recently matched", "latest", "new matches", "past few days", "yesterday", "jobs from today", "newly matched", "what's new" → set sort_by="recent". Also set hours based on time frame: "today" or "yesterday" → hours=48, "past 3 days" → hours=72, "past week" → hours=168, "recently" with no specific time → hours=72. Always combine sort_by="recent" with the appropriate hours value.
@@ -258,6 +261,13 @@ _CAREER_SYSTEM = """You are RACK's personal job search assistant — sharp, dire
 RACK is an AI-powered resume matching platform. You have access to the user's real resume data and matched jobs via tools.
 
 When answering questions about the user's resumes, skills, or matched jobs — ALWAYS call the relevant tool first to get their actual data. Never guess or give generic answers when you can fetch real data.
+
+RESUME COMPARISON RULE — CRITICAL: If the user asks which resume is strongest/best/most powerful for a role or skill set (e.g. "which resume is best for AI Engineer", "which is strongest for ML", "rank my resumes for data science"):
+1. Call ONLY get_user_resumes — do NOT call get_matched_jobs. Job match data is irrelevant for comparing resumes against each other.
+2. Read each resume's titles, skills, domains, and content_preview carefully.
+3. Pick a clear winner and explain WHY it's strongest for that specific role — reference specific skills or experience from that resume.
+4. Briefly note what the runner-up is missing or could improve.
+5. Never say "no matched jobs available" — that's irrelevant to this question.
 
 CRITICAL RULE — Apply questions: If the user asks HOW to apply, WHERE to apply, or anything about the process of applying ("how do I apply", "how can I apply for these", "how do I submit", "where do I apply", "what's the process to apply", "how do I apply for these jobs") — do NOT write generic step-by-step advice. Instead respond with EXACTLY this token and nothing else:
 REDIRECT_TO_TRACKING
@@ -325,6 +335,14 @@ _ROUTER_TOOLS = [
         "function": {
             "name": "answer_career_question",
             "description": "User asked a career-related question. Will use DB tools to answer with real user data.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_user_resumes",
+            "description": "User wants to see their uploaded resumes as a visual list. Use when they say 'show my resumes', 'list my resumes', 'what resumes do I have', 'my active resumes', 'view my resumes'.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -452,12 +470,17 @@ async def _tool_get_user_resumes(user_uuid, db) -> dict:
         "count": len(resumes),
         "resumes": [
             {
+                "id": str(r.id),
                 "name": r.display_name,
+                "file_ext": r.file_ext or "pdf",
                 "years_experience": r.years_exp,
                 "titles": (r.titles or [])[:5],
                 "skills": (r.skills or [])[:20],
                 "domains": (r.domains or [])[:5],
                 "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
+                # First 800 chars of full text gives LLM enough context to differentiate
+                # resumes when answering "which is most powerful for X role" questions.
+                "content_preview": (r.full_text or "")[:800] if r.full_text else None,
             }
             for r in resumes
         ],
@@ -858,6 +881,20 @@ Call exactly ONE routing tool now."""
                 tool="route_off_topic", intent="OFF_TOPIC",
                 reply=_off_topic_reply,
             )
+
+        # show_user_resumes — fetch resume list and return structured cards
+        if selected_tool == "show_user_resumes":
+            resumes_data = await _execute_tool("get_user_resumes", {}, user_id, db)
+            resumes_parsed = _json.loads(resumes_data)
+            resumes_list = resumes_parsed.get("resumes", [])
+            if resumes_list:
+                return ChatResponse(
+                    tool="show_user_resumes", intent="RESUME_LIST",
+                    resumes=resumes_list,
+                    reply=f"You have {len(resumes_list)} resume{'s' if len(resumes_list) != 1 else ''} uploaded.",
+                )
+            # No resumes — fall through to career question so LLM can guide them
+            selected_tool = "answer_career_question"
 
         # show_matched_jobs — run the DB tool and return structured rows
         if selected_tool == "show_matched_jobs":

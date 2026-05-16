@@ -1661,6 +1661,10 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
           content: `Showed ${m.filterJobs?.length ?? 0} matched jobs (${m.filterLabel || ''})`,
           jd: m.jd,
         }
+        if (m.isResumeList) return {
+          role: 'rack', type: 'reply',
+          content: `Showed ${m.resumeList?.length ?? 0} uploaded resumes`,
+        }
         if (m.isAssistantReply) return {
           role: 'rack', type: 'reply',
           content: m.replyText || '',
@@ -1908,6 +1912,25 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
         m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
       ))
       startTypewriter(thinkingId, replyFull)
+      setLoading(false)
+      return
+    }
+
+    // ── show_user_resumes — display resume cards ───────────────────
+    if (tool === 'show_user_resumes') {
+      const resumesList = triage.resumes || []
+      const resumeListMsg = {
+        id: msgId,
+        jd: capturedJd,
+        isResumeList: true,
+        resumeList: resumesList,
+        results: null,
+        loading: false,
+        error: resumesList.length === 0
+          ? "No resumes uploaded yet. Head to the Resumes tab to add yours."
+          : null,
+      }
+      setMessages(prev => prev.filter(m => m.id !== thinkingId).concat([resumeListMsg]))
       setLoading(false)
       return
     }
@@ -2850,6 +2873,119 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                   <span style={{ fontSize: '13px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
                     ⚡ RACK is applying on your behalf — it will fill every field using your resume and profile, write answers to any custom questions, and submit. You won't need to do anything.
                   </span>
+                </div>
+              </div>
+            )
+          }
+
+          // ── Resume list — visual cards with download ───────────────────────
+          if (msg.isResumeList) {
+            return (
+              <div key={msg.id} className='rack-msg-container' style={{ margin: '0 auto', paddingBottom: 8 }}>
+                {/* User bubble */}
+                <div className="rack-msg-row user">
+                  <div className="rack-bubble-user">
+                    <div className="rack-bubble-user-label">You</div>
+                    {msg.jd}
+                  </div>
+                </div>
+                {/* RACK reply */}
+                <div className="rack-msg-row rack">
+                  <div className="rack-bubble-rack">
+                    <div className="rack-bubble-rack-label">
+                      <span className="rack-bubble-rack-label-dot" />
+                      Rack
+                    </div>
+                    {msg.error ? (
+                      <p style={{ margin: 0, fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.6 }}>{msg.error}</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <p style={{ margin: '0 0 4px', fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                          You have <strong style={{ color: 'var(--text)' }}>{msg.resumeList.length}</strong> resume{msg.resumeList.length !== 1 ? 's' : ''} uploaded. You can ask me to rank them against any role, or tailor the best one.
+                        </p>
+                        {msg.resumeList.map((r, i) => (
+                          <div key={r.id || i} style={{
+                            display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
+                            padding: '14px 16px', borderRadius: 12,
+                            background: 'var(--surface)', border: '1px solid var(--border)',
+                            animation: `bubbleIn 0.25s ease ${i * 0.07}s both`,
+                          }}>
+                            {/* Left — resume info */}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{
+                                fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 600,
+                                color: 'var(--text)', letterSpacing: '-0.2px',
+                                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                marginBottom: 4,
+                              }}>
+                                {r.name}
+                              </div>
+                              {/* Meta row */}
+                              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+                                {r.years_experience != null && (
+                                  <span style={{
+                                    fontSize: 11, padding: '2px 8px', borderRadius: 20,
+                                    background: 'rgba(232,255,107,0.08)', border: '1px solid rgba(232,255,107,0.15)',
+                                    color: 'var(--accent)', fontWeight: 600,
+                                  }}>
+                                    {r.years_experience}y exp
+                                  </span>
+                                )}
+                                {(r.titles || []).slice(0, 2).map(t => (
+                                  <span key={t} style={{
+                                    fontSize: 11, padding: '2px 8px', borderRadius: 20,
+                                    background: 'var(--surface2)', border: '1px solid var(--border)',
+                                    color: 'var(--text-dim)',
+                                  }}>{t}</span>
+                                ))}
+                              </div>
+                              {/* Top skills */}
+                              {(r.skills || []).length > 0 && (
+                                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                                  {(r.skills || []).slice(0, 6).map(s => (
+                                    <span key={s} style={{
+                                      fontSize: 10, padding: '1px 7px', borderRadius: 20,
+                                      background: 'var(--surface2)', border: '1px solid var(--border)',
+                                      color: 'var(--text-dim)',
+                                    }}>{s}</span>
+                                  ))}
+                                  {(r.skills || []).length > 6 && (
+                                    <span style={{ fontSize: 10, color: 'var(--text-dim)', alignSelf: 'center' }}>
+                                      +{r.skills.length - 6} more
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            {/* Right — download button */}
+                            {r.id && isAuthed && (
+                              <button
+                                onClick={e => handleDownload(e, r.id, r.name)}
+                                title="Download resume"
+                                style={{
+                                  flexShrink: 0,
+                                  width: 32, height: 32,
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  borderRadius: 8, border: '1px solid var(--border)',
+                                  background: 'var(--surface2)', cursor: 'pointer',
+                                  color: 'var(--text-dim)', fontSize: 14,
+                                  transition: 'all 0.15s',
+                                }}
+                                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.1)'; e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.3)' }}
+                                onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface2)'; e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border)' }}
+                              >
+                                ↓
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                        {/* Follow-up nudge */}
+                        <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2, lineHeight: 1.5 }}>
+                          💡 Try: <em>"which is most powerful for an AI Engineer role?"</em> or <em>"tailor my top resume for this job…"</em>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )
