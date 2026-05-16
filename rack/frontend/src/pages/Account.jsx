@@ -572,75 +572,6 @@ function AuthenticatedAccount({ user, onSignOut }) {
           <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4 }}>{user.email}</div>
         </div>
 
-        {/* ── Account info row ── */}
-        <div style={{
-          display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap',
-          animation: 'fadeUp 0.4s ease 0.05s both',
-        }}>
-          {[
-            { icon: '✉️', label: 'Email', value: user.email },
-            { icon: '🔗', label: 'Provider', value: 'Google' },
-          ].map((row) => (
-            <div key={row.label} style={{
-              flex: 1, minWidth: 140, padding: '12px 16px', borderRadius: 12,
-              background: 'var(--surface)', border: '1px solid var(--border)',
-              display: 'flex', flexDirection: 'column', gap: 4,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--text-mid)', fontWeight: 500 }}>
-                <span style={{ fontSize: 14 }}>{row.icon}</span>{row.label}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-dim)', wordBreak: 'break-all' }}>{row.value}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* ── Appearance ── */}
-        <div style={{
-          fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700,
-          textTransform: 'uppercase', letterSpacing: '0.1em',
-          color: 'var(--text-dim)', marginBottom: 12, marginTop: 8,
-          paddingLeft: 4, animation: 'fadeUp 0.4s ease 0.07s both',
-        }}>Appearance</div>
-
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '16px 20px', borderRadius: 'var(--radius)',
-          background: 'var(--surface)', border: '1px solid var(--border)',
-          marginBottom: 24, animation: 'fadeUp 0.4s ease 0.09s both',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{ fontSize: 20 }}>{theme === 'dark' ? '🌙' : '☀️'}</span>
-            <div>
-              <div style={{ fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.2px' }}>
-                {theme === 'dark' ? 'Dark mode' : 'Light mode'}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 1 }}>
-                {theme === 'dark' ? 'Switch to the cream light theme' : 'Switch to the dark theme'}
-              </div>
-            </div>
-          </div>
-          {/* Toggle pill */}
-          <button
-            onClick={toggleTheme}
-            style={{
-              width: 52, height: 28, borderRadius: 14, border: 'none',
-              background: theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'var(--accent)',
-              position: 'relative', cursor: 'pointer', flexShrink: 0,
-              transition: 'background 0.25s ease',
-              padding: 0,
-            }}
-          >
-            <span style={{
-              position: 'absolute', top: 3,
-              left: theme === 'dark' ? 3 : 25,
-              width: 22, height: 22, borderRadius: '50%',
-              background: theme === 'dark' ? 'rgba(255,255,255,0.6)' : '#000',
-              transition: 'left 0.25s cubic-bezier(0.34,1.56,0.64,1)',
-              display: 'block',
-            }} />
-          </button>
-        </div>
-
         {/* ── Application Profile Header ── */}
         <div style={{
           fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700,
@@ -671,6 +602,32 @@ function AuthenticatedAccount({ user, onSignOut }) {
                 value={profile.phone || ''}
                 onChange={e => updateField('phone', e.target.value)}
                 placeholder="+1 (555) 000-0000"
+                style={{
+                  width: 160, padding: '8px 14px', borderRadius: 30,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text)', fontFamily: 'var(--font-body)',
+                  fontSize: 13, outline: 'none', textAlign: 'right',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Current City */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px' }}>
+                  📍 Current location
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  City, State — filled into location fields
+                </div>
+              </div>
+              <input
+                type="text"
+                value={profile.current_location || ''}
+                onChange={e => updateField('current_location', e.target.value)}
+                placeholder="New York, NY"
                 style={{
                   width: 160, padding: '8px 14px', borderRadius: 30,
                   border: '1px solid var(--border)', background: 'var(--bg)',
@@ -867,7 +824,7 @@ function AuthenticatedAccount({ user, onSignOut }) {
           </div>
 
           {/* Disability */}
-          <div style={{ padding: '14px 20px' }}>
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>Disability status</div>
               <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -883,6 +840,32 @@ function AuthenticatedAccount({ user, onSignOut }) {
                     fontFamily: 'var(--font-body)', fontSize: 11, fontWeight: 500,
                     cursor: 'pointer', transition: 'all 0.15s',
                     borderColor: profile.disability_status === opt.value ? 'rgba(232,255,107,0.3)' : 'var(--border)',
+                  }}>{opt.label}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Ethnicity */}
+          <div style={{ padding: '14px 20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>Race / Ethnicity</div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {[
+                  { label: 'Asian', value: 'asian' },
+                  { label: 'Black', value: 'black' },
+                  { label: 'Hispanic', value: 'hispanic' },
+                  { label: 'White', value: 'white' },
+                  { label: 'Two or more', value: 'two_or_more' },
+                  { label: 'Decline', value: 'decline' },
+                ].map(opt => (
+                  <button key={opt.value} onClick={() => updateField('ethnicity_eeo', opt.value)} style={{
+                    padding: '5px 12px', borderRadius: 20, border: '1px solid var(--border)',
+                    background: profile.ethnicity_eeo === opt.value ? 'rgba(232,255,107,0.12)' : 'transparent',
+                    color: profile.ethnicity_eeo === opt.value ? 'var(--accent)' : 'var(--text-dim)',
+                    fontFamily: 'var(--font-body)', fontSize: 11, fontWeight: 500,
+                    cursor: 'pointer', transition: 'all 0.15s',
+                    borderColor: profile.ethnicity_eeo === opt.value ? 'rgba(232,255,107,0.3)' : 'var(--border)',
                   }}>{opt.label}</button>
                 ))}
               </div>
@@ -1018,6 +1001,52 @@ function AuthenticatedAccount({ user, onSignOut }) {
               <span key={s} style={{ fontSize: 10, fontWeight: 600, padding: '3px 9px', borderRadius: 20, background: i === 5 ? 'rgba(232,255,107,0.12)' : 'var(--surface2)', color: i === 5 ? 'var(--accent)' : 'var(--text-dim)', border: i === 5 ? '1px solid rgba(232,255,107,0.2)' : '1px solid var(--border)' }}>{s}</span>
             ))}
           </div>
+        </div>
+
+        {/* ── Appearance ── */}
+        <div style={{
+          fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700,
+          textTransform: 'uppercase', letterSpacing: '0.1em',
+          color: 'var(--text-dim)', marginBottom: 12, marginTop: 8,
+          paddingLeft: 4, animation: 'fadeUp 0.4s ease 0.3s both',
+        }}>Appearance</div>
+
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '16px 20px', borderRadius: 'var(--radius)',
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          marginBottom: 24, animation: 'fadeUp 0.4s ease 0.31s both',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 20 }}>{theme === 'dark' ? '🌙' : '☀️'}</span>
+            <div>
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.2px' }}>
+                {theme === 'dark' ? 'Dark mode' : 'Light mode'}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 1 }}>
+                {theme === 'dark' ? 'Switch to the cream light theme' : 'Switch to the dark theme'}
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={toggleTheme}
+            style={{
+              width: 52, height: 28, borderRadius: 14, border: 'none',
+              background: theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'var(--accent)',
+              position: 'relative', cursor: 'pointer', flexShrink: 0,
+              transition: 'background 0.25s ease',
+              padding: 0,
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3,
+              left: theme === 'dark' ? 3 : 25,
+              width: 22, height: 22, borderRadius: '50%',
+              background: theme === 'dark' ? 'rgba(255,255,255,0.6)' : '#000',
+              transition: 'left 0.25s cubic-bezier(0.34,1.56,0.64,1)',
+              display: 'block',
+            }} />
+          </button>
         </div>
 
         {/* ── Sign out ── */}

@@ -1320,11 +1320,11 @@ export default function Home() {
           const doneId   = Date.now()
           const doneText = `You're all set! 🎯
 
-I've got your ${finalCount} resume${plural2 ? 's' : ''} — you can add up to ${slotsLeft} more anytime in the **Resumes tab**.
+I've got your ${finalCount} resume${plural2 ? 's' : ''}, you can add up to ${slotsLeft} more anytime in the **Resumes tab.**
 
 I'm now hunting for roles that match your profile across hundreds of companies. This runs automatically every 60 minutes in the background.
 
-Check the **Tracking tab** in a couple of minutes for your first matches — or paste a job description or a job URL below and I'll rank your resumes against it right now.`
+Check the **Tracking tab** in a couple of minutes for your first matches, or paste a job description or a job URL below and I'll rank your resumes against it right now.`
           const doneMsg  = {
             id: doneId,
             isRackMessage: true,
@@ -2601,7 +2601,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches — or 
               setOnboardingStep('resume')
               // Inject Turn 5 resume upload message into text thread
               const resId   = Date.now()
-              const resText = `Okay, last thing I need from you — drop your resume below. Even one version works, you can always add more later in the **Resumes tab**!`
+              const resText = `Okay, last thing I need from you, drop your resume below. Even one version works, you can always add more later in the **Resumes tab!**`
               const resMsg  = { id: resId, isRackMessage: true, isOnboarding: true, onboardingTurn: 'resume', isThinking: false, text: '' }
               setMessages([resMsg])
               startTypewriter(resId, resText)
