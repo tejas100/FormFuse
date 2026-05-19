@@ -124,7 +124,7 @@ function SignInScreen({ onSignIn }) {
       display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'flex-start',
       padding: '24px 24px',
-      paddingTop: 'var(--page-padding-top)',
+      paddingTop: 'calc(var(--page-padding-top) + 32px)',
       paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
       overflowY: 'auto',
       overflowX: 'hidden',
@@ -244,22 +244,18 @@ function SignInScreen({ onSignIn }) {
     style={{ textDecoration: 'none', display: 'inline-block' }}
   >
   <span style={{
-    background: 'linear-gradient(90deg, #666 0%, #fff 40%, #bebebe 60%, #666666 100%)',
-    backgroundSize: '200% auto',
+    background: 'linear-gradient(90deg, #555 0%, #aaa 35%, #fff 50%, #aaa 65%, #555 100%)',
+    backgroundSize: '300% auto',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
     backgroundClip: 'text',
-    animation: 'shimmer 2.5s linear infinite',
+    animation: 'shimmer 6s ease-in-out infinite',
     display: 'inline-block',
     opacity: 1,
     fontWeight: '900'
   }}>
-    Built by a jobless AI/ML Engineer, Tejas B K
+    Built by a Tejas B K
   </span> </a>
-   <br />
-    <br />
-     <br />
-     <br />
         </div>
       </div>
     </div>
@@ -433,6 +429,10 @@ function AuthenticatedAccount({ user, onSignOut }) {
         animation: 'fadeUp 0.3s ease both',
       }}>
         <style>{`
+          @keyframes shimmer {
+            0%   { background-position: 100% 0; }
+            100% { background-position: -100% 0; }
+          }
           @media (max-width: 600px) {
             .account-scroll-view {
               position: fixed !important;

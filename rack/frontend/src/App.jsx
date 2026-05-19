@@ -255,7 +255,7 @@ function AppInner() {
           align-items: center;
           justify-content: flex-start;
           padding: 40px 24px;
-          padding-top: calc(var(--page-padding-top, 100px) + 16px);
+          padding-top: calc(var(--page-padding-top, 100px) + 40px);
           overflow-y: auto;
           overflow-x: hidden;
           -webkit-overflow-scrolling: touch;
@@ -265,7 +265,7 @@ function AppInner() {
         @media (max-width: 600px) {
           .gate-screen {
             padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
-            padding-top: calc(65px + 16px);
+            padding-top: calc(65px + 40px);
             justify-content: flex-start;
           }
         }
@@ -435,7 +435,7 @@ function GateScreen({ tab, onSignIn }) {
       position: 'absolute', inset: 0,
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start',
       padding: '24px 20px',
-      paddingTop: 'calc(65px + 24px)',
+      paddingTop: 'calc(var(--page-padding-top, 100px) + 40px)',
       paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
       overflowY: 'auto',
       overflowX: 'hidden',

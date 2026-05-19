@@ -159,6 +159,8 @@ async def auto_refresh(
                     job["score"]       = slot.score
                     job["rank_reason"] = slot.rank_reason
                     job["is_new"]      = (slot.slot_date == today)
+                    job["applied"]     = row.applied or False
+                    job["applied_at"]  = row.applied_at.isoformat() if row.applied_at else None
                     matches.append(job)
 
         return {
@@ -266,6 +268,8 @@ async def auto_matches(
         job["rank_reason"] = slot.rank_reason
         job["is_new"]      = (slot.slot_date == today)
         job["served_at"]   = slot.served_at.isoformat() if slot.served_at else None
+        job["applied"]     = row.applied or False
+        job["applied_at"]  = row.applied_at.isoformat() if row.applied_at else None
         matches.append(job)
 
     return {"matches": matches, "total": len(matches), "is_slot_view": True}

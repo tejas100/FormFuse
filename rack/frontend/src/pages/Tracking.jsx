@@ -106,11 +106,12 @@ async function downloadResume(resumeId, resumeName, fileExt) {
 /* ══════════════════════════════════════════════════════════════════
    TAB BAR — subtle two-tab switcher
    ══════════════════════════════════════════════════════════════════ */
-function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, isPowerUser }) {
+function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, appliedCount, isPowerUser }) {
   const allTabs = [
-    { id: "auto",   label: "Auto Matches", icon: "✦", count: autoCount,   power: false },
-    { id: "fresh",  label: "Fresh Jobs",   icon: "◈", count: freshCount,  power: true  },
-    { id: "custom", label: "Custom Search", icon: "⚙", count: customCount, power: true  },
+    { id: "auto",    label: "Auto Matches",  icon: "✦", count: autoCount,    power: false },
+    { id: "applied", label: "Applied",        icon: "✓", count: appliedCount, power: false },
+    { id: "fresh",   label: "Fresh Jobs",    icon: "◈", count: freshCount,   power: true  },
+    { id: "custom",  label: "Custom Search", icon: "⚙", count: customCount,  power: true  },
   ];
   const tabs = allTabs.filter(t => !t.power || isPowerUser);
   return (
@@ -1335,8 +1336,276 @@ function FreshJobsTab() {
 
 
 /* ══════════════════════════════════════════════════════════════════
-   AUTO MATCHES TAB
+   APPLIED JOBS TAB — jobs the user has marked as applied
    ══════════════════════════════════════════════════════════════════ */
+function AppliedJobsTab() {
+  const [jobs, setJobs]               = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState(null);
+  const [expandedId, setExpandedId]   = useState(null);
+  const [titleFilter, setTitleFilter] = useState("");
+  const [sortBy, setSortBy]           = useState("applied_desc");
+  const [page, setPage]               = useState(1);
+  const PAGE_SIZE_A = 10;
+  const mono = { fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" };
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const headers = await getAuthHeaders();
+        const r = await fetch(`${API}/auto/matches`, { headers });
+        if (!r.ok) throw new Error("Failed to load matches");
+        const d = await r.json();
+        const all = Array.isArray(d) ? d : (d.matches || []);
+        setJobs(all.filter(m => m.applied === true));
+      } catch (e) {
+        setError("Could not load applied jobs.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const filtered = jobs.filter(m =>
+    !titleFilter.trim() || m.job_title?.toLowerCase().includes(titleFilter.toLowerCase())
+  );
+
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortBy === "applied_desc") return new Date(b.applied_at || 0) - new Date(a.applied_at || 0);
+    if (sortBy === "applied_asc")  return new Date(a.applied_at || 0) - new Date(b.applied_at || 0);
+    if (sortBy === "score_desc")   return (b.llm_score ?? b.score ?? 0) - (a.llm_score ?? a.score ?? 0);
+    return 0;
+  });
+
+  useEffect(() => { setPage(1); }, [titleFilter, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE_A));
+  const paginated  = sorted.slice((page - 1) * PAGE_SIZE_A, page * PAGE_SIZE_A);
+
+  function formatAppliedAt(iso) {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+        " at " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    } catch { return null; }
+  }
+
+  const inputStyle = {
+    background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8,
+    padding: "7px 12px", fontSize: 12, color: "var(--text)", outline: "none",
+    fontFamily: "'JetBrains Mono',monospace",
+  };
+
+  if (loading) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center", padding: "60px 0" }}>
+        <div style={{ width: 20, height: 20, border: "2px solid var(--border)", borderTopColor: "var(--accent3)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.15)", borderRadius: 14, padding: "16px 20px", fontSize: 13, color: "var(--danger)" }}>
+        {error}
+      </div>
+    );
+  }
+
+  if (jobs.length === 0) {
+    return (
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent3)", opacity: 0.6, marginBottom: 16 }}>✓ applied</div>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>No applications yet</div>
+        <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 360, margin: "0 auto", lineHeight: 1.6 }}>
+          When you hit "apply" on a matched job, it will appear here with the date and time you applied.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ animation: "fadeUp 0.3s ease both" }}>
+
+      {/* Summary bar */}
+      <div style={{ marginBottom: 16, fontSize: 13, color: "var(--text-dim)", ...mono }}>
+        <span style={{ color: "var(--accent3)", fontWeight: 500 }}>{jobs.length}</span>
+        {" "}job{jobs.length !== 1 ? "s" : ""} applied
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          type="text"
+          value={titleFilter}
+          onChange={e => setTitleFilter(e.target.value)}
+          placeholder="Search by title…"
+          style={{ ...inputStyle, flex: "1 1 180px" }}
+        />
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value)}
+            style={{ ...inputStyle, paddingRight: 32, appearance: "none", WebkitAppearance: "none", cursor: "pointer", minWidth: 200 }}
+          >
+            <option value="applied_desc">↓ Applied: Newest first</option>
+            <option value="applied_asc">↑ Applied: Oldest first</option>
+            <option value="score_desc">↓ Score: High → Low</option>
+          </select>
+          <span style={{ position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", fontSize: 10, color: "var(--text-dim)" }}>▾</span>
+        </div>
+        <span style={{ fontSize: 11, color: "var(--text-dim)", ...mono, flexShrink: 0 }}>
+          {sorted.length} job{sorted.length !== 1 ? "s" : ""} · p.{page}/{totalPages}
+        </span>
+      </div>
+
+      {/* No filtered results */}
+      {sorted.length === 0 && (
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "36px 24px", textAlign: "center" }}>
+          <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 14 }}>No matches for the current filter.</div>
+          <button onClick={() => setTitleFilter("")} style={{ padding: "7px 18px", borderRadius: 8, border: "1px solid var(--border-bright)", background: "transparent", color: "var(--text)", fontFamily: "var(--font-display)", fontSize: 11, cursor: "pointer" }}>
+            clear filter
+          </button>
+        </div>
+      )}
+
+      {/* Job cards */}
+      {paginated.map((m, i) => {
+        const appliedAtStr  = formatAppliedAt(m.applied_at);
+        const isExpanded    = expandedId === m.job_id;
+        const displayScore  = m.llm_score ?? m.score ?? 0;
+
+        return (
+          <div
+            key={m.job_id}
+            onClick={() => setExpandedId(isExpanded ? null : m.job_id)}
+            style={{
+              background: "var(--surface)",
+              border: isExpanded ? "1px solid var(--border-bright)" : "1px solid rgba(52,211,153,0.2)",
+              borderLeft: "3px solid #34d399",
+              borderRadius: 16, marginBottom: 6, cursor: "pointer",
+              transition: "border 0.2s", overflow: "hidden",
+              opacity: 0, animation: `fadeUp 0.4s ease ${Math.min(i * 0.04, 0.3)}s forwards`,
+            }}
+          >
+            {/* Score bar */}
+            <div style={{ height: 3, background: scoreGradient(displayScore), width: `${Math.min(displayScore, 100)}%`, transition: "width 0.8s cubic-bezier(0.22,1,0.36,1)" }} />
+
+            <div style={{ padding: "14px 18px" }}>
+              {/* Row 1 */}
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+
+                {/* Score */}
+                <div style={{ flexShrink: 0, width: 52, textAlign: "left" }}>
+                  <div style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 500, color: "var(--text)", letterSpacing: "-0.02em", lineHeight: 1 }}>
+                    {displayScore}<span style={{ color: "var(--text-dim)", fontSize: 13, fontWeight: 400 }}>%</span>
+                  </div>
+                  {m.llm_recommendation === "Strong Match" && (
+                    <div style={{ fontFamily: "var(--font-display)", fontSize: 9, fontWeight: 500, marginTop: 4, color: "var(--accent3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>● strong</div>
+                  )}
+                </div>
+
+                {/* Divider */}
+                <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
+
+                {/* Title + meta */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: "var(--font-body)", fontSize: 15, fontWeight: 500, color: "var(--text)", letterSpacing: "-0.01em", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.job_title}</span>
+                    <span style={{ fontFamily: "var(--font-display)", fontSize: 9, fontWeight: 500, color: "var(--accent3)", letterSpacing: "0.12em", textTransform: "uppercase", flexShrink: 0 }}>applied</span>
+                  </div>
+                  <div style={{ fontFamily: "var(--font-display)", fontSize: 11, color: "var(--text-dim)", marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    {m.company && <span style={{ color: "var(--text-mid)" }}>{m.company.charAt(0).toUpperCase() + m.company.slice(1)}</span>}
+                    {m.location && m.location !== "Not specified" && <><span>·</span><span>{m.location.length > 35 ? m.location.slice(0, 35) + "…" : m.location}</span></>}
+                    {m.posted_at && <><span>·</span><span>posted {timeAgo(m.posted_at)}</span></>}
+                    {m.source && <span style={{ marginLeft: "auto", opacity: 0.6, textTransform: "lowercase" }}>via {m.source}</span>}
+                  </div>
+                </div>
+
+                {/* Applied-at badge */}
+                <div style={{ flexShrink: 0, textAlign: "right" }}>
+                  {appliedAtStr ? (
+                    <div style={{ fontFamily: "var(--font-display)", fontSize: 10, color: "var(--accent3)", lineHeight: 1.5 }}>
+                      <div style={{ opacity: 0.55, marginBottom: 1, letterSpacing: "0.06em" }}>applied</div>
+                      <div style={{ fontWeight: 500 }}>{appliedAtStr}</div>
+                    </div>
+                  ) : (
+                    <span style={{ height: 28, padding: "0 10px", borderRadius: 8, border: "1px solid rgba(52,211,153,0.3)", display: "inline-flex", alignItems: "center", fontFamily: "var(--font-display)", fontSize: 11, color: "var(--accent3)", background: "rgba(52,211,153,0.06)" }}>✓ applied</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Skills pills */}
+              {((m.matched_skills || []).length > 0 || (m.missing_skills || []).length > 0) && (
+                <div style={{ display: "flex", gap: 4, marginTop: 10, paddingLeft: 68, flexWrap: "wrap" }}>
+                  {(m.matched_skills || []).slice(0, 3).map(s => (
+                    <span key={s} style={{ fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 6, background: "rgba(52,211,153,0.08)", color: "var(--accent3)", fontFamily: "var(--font-display)" }}>{s}</span>
+                  ))}
+                  {(m.missing_skills || []).slice(0, 2).map(s => (
+                    <span key={s} style={{ fontSize: 10, fontWeight: 500, padding: "2px 8px", borderRadius: 6, background: "rgba(248,113,113,0.08)", color: "var(--danger)", fontFamily: "var(--font-display)" }}>{s}</span>
+                  ))}
+                  {m.resume_name && (
+                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, background: "var(--surface2)", color: "var(--text-dim)", fontFamily: "var(--font-display)", marginLeft: "auto" }}>
+                      best: {m.resume_name} ↓
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Expanded detail */}
+              {isExpanded && (
+                <div style={{ marginTop: 14, paddingLeft: 68, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+                  {m.llm_recommendation && (
+                    <span style={{ ...recommendationStyle(m.llm_recommendation), fontSize: 11, padding: "3px 10px", borderRadius: 20, fontFamily: "var(--font-display)", fontWeight: 500 }}>
+                      {m.llm_recommendation}
+                    </span>
+                  )}
+                  {m.llm_summary && (
+                    <p style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.65, marginTop: 10, marginBottom: 0 }}>{m.llm_summary}</p>
+                  )}
+                  {m.job_url && (
+                    <a href={m.job_url} target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 12, height: 28, padding: "0 12px", borderRadius: 8, border: "1px solid var(--border-bright)", background: "var(--surface2)", color: "var(--text)", fontFamily: "var(--font-display)", fontSize: 11, textDecoration: "none", letterSpacing: "0.02em" }}>
+                      view job
+                      <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 1h6v6M9 1L1 9" strokeLinecap="round"/></svg>
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div style={{ display: "flex", justifyContent: "center", gap: 6, marginTop: 16 }}>
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+            style={{ padding: "5px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === 1 ? "var(--text-dim)" : "var(--text)", cursor: page === 1 ? "default" : "pointer", fontFamily: "var(--font-display)", fontSize: 11 }}>
+            ←
+          </button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+            <button key={p} onClick={() => setPage(p)}
+              style={{ padding: "5px 10px", borderRadius: 8, border: p === page ? "1px solid var(--accent3)" : "1px solid var(--border)", background: p === page ? "rgba(52,211,153,0.1)" : "transparent", color: p === page ? "var(--accent3)" : "var(--text-dim)", cursor: "pointer", fontFamily: "var(--font-display)", fontSize: 11, minWidth: 30 }}>
+              {p}
+            </button>
+          ))}
+          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+            style={{ padding: "5px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: page === totalPages ? "var(--text-dim)" : "var(--text)", cursor: page === totalPages ? "default" : "pointer", fontFamily: "var(--font-display)", fontSize: 11 }}>
+            →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   AUTO MATCHES TAB
+   ══════════════════════════════════════════════════════════════ */
 const PAGE_SIZE = 10;
 
 function AutoMatchesTab({ profile, isPowerUser }) {
@@ -2416,6 +2685,7 @@ export default function Tracking() {
   const [profile, setProfile] = useState(null);
   const [userRole, setUserRole] = useState(null); // null = loading
   const [autoMatches, setAutoMatches] = useState([]);
+  const [appliedCount, setAppliedCount] = useState(0);
   const [freshCount, setFreshCount] = useState(0);
   const [customMatches, setCustomMatches] = useState([]);
 
@@ -2438,7 +2708,9 @@ export default function Tracking() {
         else setUserRole("free");
         if (am.ok) {
           const d = await am.json();
-          setAutoMatches(Array.isArray(d) ? d : (d.matches || []));
+          const allMatches = Array.isArray(d) ? d : (d.matches || []);
+          setAutoMatches(allMatches);
+          setAppliedCount(allMatches.filter(m => m.applied === true).length);
         }
         if (fr.ok) { const d = await fr.json(); setFreshCount(d.total || 0); }
         if (cm.ok) { const d = await cm.json(); setCustomMatches(Array.isArray(d) ? d : []); }
@@ -2446,9 +2718,9 @@ export default function Tracking() {
     })();
   }, []);
 
-  // Force tab back to "auto" if user is free and somehow on a gated tab
+  // Force tab back to "auto" if user is free and somehow on a power-only tab
   useEffect(() => {
-    if (userRole && !isPowerUser && activeTab !== "auto") {
+    if (userRole && !isPowerUser && activeTab !== "auto" && activeTab !== "applied") {
       setActiveTab("auto");
     }
   }, [userRole]);
@@ -2469,12 +2741,13 @@ export default function Tracking() {
           </div>
         </div>
 
-        {/* ── Tab switcher — power users only. Free users see no tab bar. */}
-        {isPowerUser && (
+        {/* ── Tab switcher — shown for all authenticated users */}
+        {userRole !== null && (
           <TabSwitcher
             activeTab={activeTab}
             onSwitch={setActiveTab}
             autoCount={autoMatches.length}
+            appliedCount={appliedCount}
             freshCount={isPowerUser ? freshCount : 0}
             customCount={isPowerUser ? customMatches.length : 0}
             isPowerUser={isPowerUser}
@@ -2495,6 +2768,9 @@ export default function Tracking() {
               We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
             </div>
           </div>
+        )}
+        {activeTab === "applied" && userRole !== null && (
+          <AppliedJobsTab />
         )}
         {activeTab === "fresh" && isPowerUser && (
           <FreshJobsTab />
