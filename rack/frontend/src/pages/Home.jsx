@@ -295,6 +295,93 @@ const mobileCardStyles = `
     animation: smoothExpand 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
+  /* ── Profile completeness banner — centered above input, matches textarea width ── */
+  .rack-fix-pill-wrap {
+    padding: 0 24px 8px;
+    flex-shrink: 0;
+  }
+  .rack-fix-pill {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 9px 12px 9px 16px;
+    background: rgba(18, 18, 18, 0.95);
+    border: 1px solid rgba(232,255,107,0.35);
+    border-radius: 12px;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.4);
+  }
+  /* Warning icon */
+  .rack-fix-pill-icon {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: rgba(232,255,107,0.15);
+    border: 1px solid rgba(232,255,107,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: rgba(232,255,107,0.9);
+    font-weight: 700;
+  }
+  /* Text block — fills remaining space, truncates with ellipsis */
+  .rack-fix-pill-text {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.45;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rack-fix-pill-text strong {
+    color: rgba(232,255,107,0.9);
+    font-weight: 600;
+  }
+  /* "Fix now" CTA */
+  .rack-fix-pill-btn {
+    flex-shrink: 0;
+    padding: 5px 13px;
+    background: var(--accent);
+    color: #111;
+    border: none;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity 0.15s;
+    letter-spacing: 0.2px;
+  }
+  .rack-fix-pill-btn:hover { opacity: 0.82; }
+  /* X dismiss button */
+  .rack-fix-pill-close {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 13px;
+    border-radius: 4px;
+    opacity: 0.6;
+    transition: opacity 0.15s;
+    padding: 0;
+  }
+  .rack-fix-pill-close:hover { opacity: 1; }
+  @media (max-width: 600px) {
+    .rack-fix-pill-wrap { padding: 0 12px 8px; }
+    .rack-fix-pill-text { font-size: 11px; }
+  }
+
   /* ── Bottom chat input bar — floats on the background, no dark box ── */
   .rack-chat-input-bar {
     flex-shrink: 0;
@@ -981,6 +1068,11 @@ export default function Home() {
   const [onboardingLoading, setOnboardingLoading] = useState(false) // LLM extracting answer
   // voice onboarding mode: null = choice screen not shown yet, "voice" = Nova active, "text" = text fallback chosen
   const [voiceMode, setVoiceMode]                 = useState(null)
+  // Profile completeness nudge state
+  // nudgeCount persisted in localStorage — escalates message tone across visits
+  // missingProfileFields drives both the chat bubble and the persistent banner
+  const [missingProfileFields, setMissingProfileFields] = useState([])  // [] = all good
+  const [bannerOpen, setBannerOpen]                     = useState(false) // true = user dismissed banner for this session
 
   // ── Slash command / tool mode ────────────────────────────────────
   const [activeMode, setActiveMode]       = useState(null)   // null | 'tailor'
@@ -1390,6 +1482,33 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
     }, 900)
     return () => clearTimeout(t)
   }, [isAuthed, authChecked, onboardingStep, voiceMode])  // eslint-disable-line
+
+  // ── Profile completeness nudge — escalating, fires every visit until fixed ──
+  // ── Profile completeness — compute missing fields for banner only ─────────────
+  // No chat bubble. The banner above the input bar is the only UI affordance.
+  useEffect(() => {
+    if (!isAuthed || !authChecked) return
+    if (onboardingStep !== 'done') return
+    if (!userPreferences) return
+
+    const REQUIRED_FIELDS = [
+      { key: 'phone',                label: 'phone number' },
+      { key: 'current_location',     label: 'current location' },
+      { key: 'linkedin',             label: 'LinkedIn URL' },
+      { key: 'work_auth',            label: 'work authorization' },
+      { key: 'requires_sponsorship', label: 'sponsorship status' },
+    ]
+
+    const missing = REQUIRED_FIELDS.filter(f => {
+      const v = userPreferences[f.key]
+      return !v || (typeof v === 'string' && v.trim() === '')
+    })
+
+    setMissingProfileFields(missing)
+  }, [isAuthed, authChecked, onboardingStep, userPreferences])  // eslint-disable-line
+
+
+
 
     // ── Onboarding reply handler ────────────────────────────────────
   // Intercepts user sends during active onboarding steps.
@@ -3867,6 +3986,32 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
           )
         })}
       </div>{/* end chat-scroll */}
+
+      {/* ── Profile completeness banner — centered above input, matches textarea width ── */}
+      {isAuthed && missingProfileFields.length > 0 && onboardingStep === 'done' && !bannerOpen && (
+        <div className="rack-fix-pill-wrap">
+          <div className="rack-fix-pill">
+            <span className="rack-fix-pill-icon">!</span>
+            <span className="rack-fix-pill-text">
+              <strong>Auto-apply is off.</strong>{' '}
+              Missing: {missingProfileFields.map(f => f.label).join(', ')}.
+            </span>
+            <button
+              className="rack-fix-pill-btn"
+              onClick={() => window.dispatchEvent(new CustomEvent('rack:navigate', { detail: { tab: 'Account' } }))}
+            >
+              Fix now →
+            </button>
+            <button
+              className="rack-fix-pill-close"
+              onClick={() => setBannerOpen(true)}
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Bottom input bar ── */}
       <div className="rack-chat-input-bar">
