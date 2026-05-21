@@ -25,11 +25,13 @@ SETUP:
   Password: whatever you set in ADMIN_SECRET
 """
 
+import asyncio
 import os
 import secrets
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import func, select, text
@@ -37,6 +39,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from models.orm import AutoMatchResult, Resume, User
+
+# ── Log file paths (MacBook local only) ───────────────────────────────────────
+_BACKEND_DIR = Path(__file__).resolve().parent
+_LOG_DIR = _BACKEND_DIR / "logs"
+_LOG_FILES = {
+    "fetching_stdout": _LOG_DIR / "fetching_stdout.log",
+    "fetching_stderr": _LOG_DIR / "fetching_stderr.log",
+    "matching_stdout": _LOG_DIR / "matching_stdout.log",
+    "matching_stderr": _LOG_DIR / "matching_stderr.log",
+}
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 security = HTTPBasic()
@@ -327,15 +339,116 @@ def _html_page(title: str, body: str) -> str:
       padding: 10px 16px;
       margin-bottom: 20px;
     }}
+
+    /* ── User detail page ───────────────────── */
+    .detail-grid {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 28px;
+    }}
+    .detail-card {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 18px;
+    }}
+    .detail-card h3 {{
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }}
+    .kv {{ display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }}
+    .kv:last-child {{ border-bottom: none; }}
+    .kv .k {{ color: var(--muted); }}
+    .kv .v {{ color: var(--text); text-align: right; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .score-hist {{ display: flex; gap: 10px; align-items: flex-end; height: 60px; padding: 8px 0; }}
+    .hist-bar-wrap {{ display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }}
+    .hist-bar {{ width: 100%; border-radius: 3px 3px 0 0; min-height: 3px; }}
+    .hist-label {{ font-size: 9px; color: var(--muted); }}
+    .hist-count {{ font-size: 10px; font-weight: 700; }}
+    .tag-list {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }}
+    .tag {{ background: #1e1e1e; border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 11px; color: var(--text); }}
+    .tag.missing {{ border-color: #4a0000; color: var(--red); font-style: italic; }}
+
+    /* ── Email compose panel ────────────────── */
+    .compose-panel {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      margin-top: 16px;
+    }}
+    .compose-panel label {{ font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; margin-top: 10px; }}
+    .compose-panel input[type=text],
+    .compose-panel textarea {{
+      width: 100%;
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      padding: 8px 10px;
+    }}
+    .compose-panel textarea {{ min-height: 100px; resize: vertical; line-height: 1.6; }}
+    .compose-panel input:focus,
+    .compose-panel textarea:focus {{ outline: 1px solid var(--accent); }}
+
+    /* ── Log viewer ─────────────────────────── */
+    .log-wrap {{
+      background: #050505;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin-bottom: 20px;
+      max-height: 460px;
+      overflow-y: auto;
+    }}
+    .log-line {{ font-size: 11px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }}
+    .log-error   {{ color: #ff6b6b; }}
+    .log-warn    {{ color: #ffcc55; }}
+    .log-info    {{ color: #8be8a0; }}
+    .log-debug   {{ color: #556677; }}
+    .log-default {{ color: #888; }}
+    .log-tabs {{ display: flex; gap: 0; margin-bottom: 0; }}
+    .log-tab {{
+      padding: 6px 16px;
+      font-size: 11px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 6px 6px 0 0;
+      color: var(--muted);
+      text-decoration: none;
+      background: #0d0d0d;
+      margin-right: 2px;
+    }}
+    .log-tab.active {{ background: #050505; color: var(--accent); border-bottom: 1px solid #050505; }}
+    .log-controls {{ display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }}
+
+    /* ── Pool page ──────────────────────────── */
+    .pool-source-row {{ display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }}
+    .pool-source-row:last-child {{ border-bottom: none; }}
+    .pool-bar-bg {{ flex: 1; background: #1a1a1a; border-radius: 3px; height: 6px; }}
+    .pool-bar-fill {{ height: 6px; border-radius: 3px; background: var(--accent); }}
+    .stale-warn {{ color: #ffaa33; }}
   </style>
 </head>
 <body>
   <h1>⚡ RACK Admin</h1>
   <p class="subtitle">localhost only · {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</p>
-  <nav style="margin-bottom:24px;display:flex;gap:12px;font-size:11px;">
+  <nav style="margin-bottom:24px;display:flex;gap:12px;font-size:11px;flex-wrap:wrap;">
     <a href="/admin" style="color:var(--accent);text-decoration:none;">Dashboard</a>
     <span style="color:var(--muted);">·</span>
     <a href="/admin/scoring-audit" style="color:var(--muted);text-decoration:none;">Scoring Audit</a>
+    <span style="color:var(--muted);">·</span>
+    <a href="/admin/pool" style="color:var(--muted);text-decoration:none;">Job Pool</a>
+    <span style="color:var(--muted);">·</span>
+    <a href="/admin/logs" style="color:var(--muted);text-decoration:none;">Cron Logs</a>
   </nav>
   {body}
 </body>
@@ -490,14 +603,14 @@ async def admin_dashboard(
             </form>"""
 
         rows_html += f"""
-        <tr>
+        <tr style="cursor:pointer;" onclick="location.href='/admin/users/{uid}'">
           <td>
             <div class="email" title="{email}">{email}</div>
             <div class="muted" style="font-size:11px">{name}</div>
           </td>
           <td>{role_badge}</td>
-          <td>{role_ctrl}</td>
-          <td>{restrict_ctrl}</td>
+          <td onclick="event.stopPropagation();">{role_ctrl}</td>
+          <td onclick="event.stopPropagation();">{restrict_ctrl}</td>
           <td class="muted">{resumes}</td>
           <td class="muted">{matches}</td>
           <td class="mono">{joined}</td>
@@ -601,7 +714,516 @@ async def unrestrict_user(
     return RedirectResponse(url=f"/admin?msg={user.email}+unrestricted", status_code=303)
 
 
-# ── Scoring Audit ──────────────────────────────────────────────────────────────
+
+# ── User Detail Page ──────────────────────────────────────────────────────────
+
+@router.get("/users/{user_id}", response_class=HTMLResponse)
+async def user_detail(
+    request: Request,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth),
+    msg: str = "",
+    err: str = "",
+):
+    _check_localhost(request)
+
+    # Fetch user row
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return RedirectResponse(url="/admin?err=User+not+found", status_code=303)
+
+    prefs = user.preferences or {}
+
+    # Fetch resumes
+    res_rows = await db.execute(
+        select(Resume).where(Resume.user_id == user_id).order_by(Resume.uploaded_at.desc())
+    )
+    resumes = res_rows.scalars().all()
+
+    # Fetch match stats from DB
+    match_stats_row = await db.execute(text("""
+        SELECT
+            COUNT(*)                                                     AS total,
+            COUNT(*) FILTER (WHERE score >= 85)                         AS strong,
+            COUNT(*) FILTER (WHERE score >= 75 AND score < 85)          AS good,
+            COUNT(*) FILTER (WHERE score >= 55 AND score < 75)          AS partial,
+            COUNT(*) FILTER (WHERE score < 55)                          AS weak,
+            AVG(score)                                                   AS avg_score,
+            MAX(matched_at)                                              AS last_matched,
+            COUNT(*) FILTER (WHERE applied = true)                      AS applied_count
+        FROM auto_match_results
+        WHERE user_id = :uid
+    """), {"uid": user_id})
+    ms = dict(match_stats_row.mappings().one())
+
+    total_m      = ms["total"] or 0
+    strong_m     = ms["strong"] or 0
+    good_m       = ms["good"] or 0
+    partial_m    = ms["partial"] or 0
+    weak_m       = ms["weak"] or 0
+    avg_score    = round(ms["avg_score"]) if ms["avg_score"] else 0
+    last_matched = ms["last_matched"]
+    applied_cnt  = ms["applied_count"] or 0
+
+    # Pipeline status
+    if last_matched:
+        last_matched_str = last_matched.strftime("%Y-%m-%d %H:%M UTC")
+        hours_ago = (datetime.now(timezone.utc) - last_matched.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+        if hours_ago < 6:
+            pipeline_status = f'<span style="color:var(--green)">✓ ran {int(hours_ago)}h ago</span>'
+        elif hours_ago < 24:
+            pipeline_status = f'<span style="color:#ffaa33">⚠ {int(hours_ago)}h ago</span>'
+        else:
+            pipeline_status = f'<span style="color:var(--red)">✗ {int(hours_ago / 24)}d ago — stale</span>'
+    else:
+        last_matched_str = "never"
+        pipeline_status = '<span style="color:var(--red)">✗ pipeline has never run</span>'
+
+    # Score histogram bars
+    hist_max = max(strong_m, good_m, partial_m, weak_m, 1)
+    def _hist_bar(count, color, label):
+        pct = int((count / hist_max) * 50)
+        return f"""
+        <div class="hist-bar-wrap">
+          <span class="hist-count" style="color:{color}">{count}</span>
+          <div class="hist-bar" style="height:{max(pct,3)}px;background:{color};"></div>
+          <span class="hist-label">{label}</span>
+        </div>"""
+
+    hist_html = (
+        f'<div class="score-hist">'
+        + _hist_bar(strong_m,  "var(--green)", "≥85")
+        + _hist_bar(good_m,    "var(--blue)",  "75–84")
+        + _hist_bar(partial_m, "#ffaa33",      "55–74")
+        + _hist_bar(weak_m,    "var(--red)",   "<55")
+        + f'</div>'
+    )
+
+    # Profile completeness
+    def _field(label, val, required=False):
+        if val and val != [] and val != "":
+            display = ", ".join(val) if isinstance(val, list) else str(val)
+            return f'<div class="kv"><span class="k">{label}</span><span class="v" title="{display}">{display}</span></div>'
+        cls = "missing" if required else ""
+        return f'<div class="kv"><span class="k">{label}</span><span class="v {cls}" style="color:{"var(--red)" if required else "var(--muted)"}">{"⚠ missing" if required else "—"}</span></div>'
+
+    profile_html = (
+        _field("target_roles", prefs.get("target_roles", []), required=True)
+        + _field("preferred_locations", prefs.get("preferred_locations", []))
+        + _field("experience_level", prefs.get("experience_level", ""))
+        + _field("current_location", prefs.get("current_location", ""))
+        + _field("keywords_include", prefs.get("keywords_include", []))
+        + _field("keywords_exclude", prefs.get("keywords_exclude", []))
+        + _field("work_authorization", "✓" if prefs.get("authorized_to_work") else "")
+        + _field("require_sponsorship", "yes" if prefs.get("require_sponsorship") else "no")
+        + _field("linkedin_url", prefs.get("linkedin_url", ""))
+        + _field("github_url", prefs.get("github_url", ""))
+    )
+
+    # Resume rows
+    resume_rows = ""
+    for r in resumes:
+        skills_preview = ", ".join((r.skills or [])[:6])
+        uploaded = r.uploaded_at.strftime("%Y-%m-%d") if r.uploaded_at else "—"
+        resume_rows += f"""
+        <div class="kv">
+          <span class="k" style="max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{r.display_name or r.filename}">{r.display_name or r.filename}</span>
+          <span class="v" style="color:var(--muted);font-size:10px;">{r.years_exp or '?'}yr · {uploaded} · {skills_preview or '—'}</span>
+        </div>"""
+    if not resume_rows:
+        resume_rows = '<div class="kv"><span class="k" style="color:var(--red)">⚠ no resumes uploaded</span><span class="v">—</span></div>'
+
+    flash = ""
+    if msg:
+        flash = f'<div class="flash">✓ {msg}</div>'
+    if err:
+        flash = f'<div class="flash error">✗ {err}</div>'
+
+    # Email compose form
+    email_form = f"""
+    <div class="compose-panel">
+      <p style="font-size:11px;color:var(--muted);margin-bottom:8px;">Send custom email to <strong style="color:var(--text)">{user.email}</strong> via Resend</p>
+      <form method="POST" action="/admin/users/{user_id}/send-email">
+        <label>Subject</label>
+        <input type="text" name="subject" value="A note from RACK" />
+        <label>Body (plain text — supports line breaks)</label>
+        <textarea name="body" placeholder="Write your message here..."></textarea>
+        <div style="margin-top:10px;">
+          <button type="submit" class="btn-primary">Send Email</button>
+        </div>
+      </form>
+    </div>"""
+
+    # Pipeline trigger form
+    pipeline_form = f"""
+    <form method="POST" action="/admin/users/{user_id}/run-pipeline" style="margin-top:12px;">
+      <button type="submit" class="btn-safe">▶ Run Pipeline Now</button>
+      <span style="font-size:11px;color:var(--muted);margin-left:8px;">fires in background — refresh in ~60s to see results</span>
+    </form>"""
+
+    # Audit shortcut
+    audit_link = f'<a href="/admin/scoring-audit?user_id={user_id}" style="color:var(--blue);text-decoration:none;font-size:11px;">→ View full scoring audit for this user</a>'
+
+    body = f"""
+    {flash}
+    <div style="margin-bottom:20px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:18px;font-weight:700;">{user.display_name or '—'}</div>
+        <div style="color:var(--muted);font-size:12px;">{user.email} · <span class="badge badge-{user.role or 'free'}">{user.role or 'free'}</span>
+        {'<span class="badge badge-locked" style="margin-left:4px;">restricted</span>' if user.is_restricted else ''}
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">joined {user.created_at.strftime('%Y-%m-%d') if user.created_at else '—'} · id: <span class="mono">{user_id}</span></div>
+      </div>
+      <div style="margin-left:auto;text-align:right;">
+        <div style="font-size:11px;color:var(--muted);">pipeline</div>
+        <div>{pipeline_status}</div>
+        <div style="font-size:10px;color:var(--muted);">{last_matched_str}</div>
+      </div>
+    </div>
+
+    <div class="detail-grid">
+      <div class="detail-card">
+        <h3>Match stats</h3>
+        <div class="kv"><span class="k">total results</span><span class="v">{total_m}</span></div>
+        <div class="kv"><span class="k">avg score</span><span class="v">{avg_score}</span></div>
+        <div class="kv"><span class="k">applied</span><span class="v">{applied_cnt}</span></div>
+        <div class="kv"><span class="k">score distribution</span><span class="v"></span></div>
+        {hist_html}
+        <div style="margin-top:12px;">{audit_link}</div>
+      </div>
+
+      <div class="detail-card">
+        <h3>Profile</h3>
+        {profile_html}
+      </div>
+
+      <div class="detail-card">
+        <h3>Resumes ({len(resumes)})</h3>
+        {resume_rows}
+      </div>
+
+      <div class="detail-card">
+        <h3>Pipeline control</h3>
+        <div class="kv"><span class="k">last run</span><span class="v">{last_matched_str}</span></div>
+        <div class="kv"><span class="k">status</span><span class="v">{pipeline_status}</span></div>
+        {pipeline_form}
+      </div>
+    </div>
+
+    <p class="section-title" style="margin-bottom:8px;">Send email</p>
+    {email_form}
+
+    <div style="margin-top:20px;">
+      <a href="/admin" style="color:var(--muted);font-size:11px;text-decoration:none;">← Back to dashboard</a>
+    </div>
+    """
+
+    return HTMLResponse(_html_page(f"User — {user.email}", body))
+
+
+# ── Manual pipeline trigger ───────────────────────────────────────────────────
+
+@router.post("/users/{user_id}/run-pipeline", response_class=RedirectResponse)
+async def trigger_pipeline(
+    request: Request,
+    user_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth),
+):
+    _check_localhost(request)
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return RedirectResponse(url=f"/admin/users/{user_id}?err=User+not+found", status_code=303)
+
+    def _run():
+        from services.auto_match import run_pipeline_for_new_user
+        import asyncio
+        asyncio.run(run_pipeline_for_new_user(user_id))
+
+    background_tasks.add_task(_run)
+
+    email_short = (user.email or user_id)[:40].replace(" ", "+")
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}?msg=Pipeline+triggered+for+{email_short}+—+refresh+in+60s",
+        status_code=303,
+    )
+
+
+# ── Manual email send ─────────────────────────────────────────────────────────
+
+@router.post("/users/{user_id}/send-email", response_class=RedirectResponse)
+async def send_admin_email(
+    request: Request,
+    user_id: str,
+    subject: str = Form(...),
+    body: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth),
+):
+    _check_localhost(request)
+
+    import httpx
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.email:
+        return RedirectResponse(url=f"/admin/users/{user_id}?err=User+not+found+or+no+email", status_code=303)
+
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+    if not RESEND_API_KEY:
+        return RedirectResponse(url=f"/admin/users/{user_id}?err=RESEND_API_KEY+not+set", status_code=303)
+
+    # Convert plain newlines to <br> for HTML email
+    body_html = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+
+    html_email = f"""
+    <div style="background:#0d0d0d;color:#e8e8e8;font-family:Georgia,serif;padding:40px 32px;max-width:560px;margin:0 auto;">
+      <div style="color:#e8ff6b;font-size:18px;font-weight:700;margin-bottom:24px;">⚡ RACK</div>
+      <div style="font-size:15px;line-height:1.8;color:#d0d0d0;">{body_html}</div>
+      <div style="margin-top:36px;font-size:12px;color:#555;border-top:1px solid #222;padding-top:16px;">
+        Sent by <a href="https://tejasbk.dev" style="color:#888;text-decoration:none;">Tejas</a>, founder of RACK
+      </div>
+    </div>"""
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "from": "Tejas from RACK <tejas@rackx.app>",
+                    "to": [user.email],
+                    "subject": subject,
+                    "html": html_email,
+                    "text": body,
+                },
+                timeout=10.0,
+            )
+        if resp.status_code in (200, 201):
+            return RedirectResponse(url=f"/admin/users/{user_id}?msg=Email+sent+to+{user.email.replace('@', '%40')}", status_code=303)
+        else:
+            err_short = resp.text[:80].replace(" ", "+")
+            return RedirectResponse(url=f"/admin/users/{user_id}?err=Resend+error:+{err_short}", status_code=303)
+    except Exception as e:
+        return RedirectResponse(url=f"/admin/users/{user_id}?err={str(e)[:80].replace(' ', '+')}", status_code=303)
+
+
+# ── Job Pool Health Page ──────────────────────────────────────────────────────
+
+@router.get("/pool", response_class=HTMLResponse)
+async def pool_page(
+    request: Request,
+    _: None = Depends(_check_auth),
+):
+    _check_localhost(request)
+
+    import psycopg2
+    DATABASE_URL_DIRECT = os.getenv("DATABASE_URL_DIRECT", "")
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL_DIRECT)
+        cur  = conn.cursor()
+
+        # Overall stats
+        cur.execute("""
+            SELECT
+                COUNT(*)                                        AS total,
+                COUNT(*) FILTER (WHERE is_active = TRUE)       AS active,
+                COUNT(*) FILTER (WHERE is_active = FALSE)      AS inactive,
+                MIN(fetched_at)                                AS oldest_fetch,
+                MAX(fetched_at)                                AS newest_fetch,
+                COUNT(DISTINCT source)                         AS sources
+            FROM job_pool
+        """)
+        ov = dict(zip([d[0] for d in cur.description], cur.fetchone()))
+
+        # Per-source breakdown (active only)
+        cur.execute("""
+            SELECT source,
+                   COUNT(*) AS cnt,
+                   MAX(fetched_at) AS last_fetch,
+                   COUNT(*) FILTER (WHERE posted_at IS NOT NULL) AS dated,
+                   AVG(EXTRACT(EPOCH FROM (NOW() - posted_at))/86400)
+                       FILTER (WHERE posted_at IS NOT NULL) AS avg_age_days
+            FROM job_pool
+            WHERE is_active = TRUE
+            GROUP BY source
+            ORDER BY cnt DESC
+        """)
+        sources = [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+
+        # Staleness of last fetch
+        newest_fetch = ov.get("newest_fetch")
+        if newest_fetch:
+            from datetime import timezone as _tz
+            if newest_fetch.tzinfo is None:
+                newest_fetch = newest_fetch.replace(tzinfo=timezone.utc)
+            minutes_stale = (datetime.now(timezone.utc) - newest_fetch).total_seconds() / 60
+        else:
+            minutes_stale = 9999
+
+        conn.close()
+        error_html = ""
+    except Exception as e:
+        ov = {}
+        sources = []
+        minutes_stale = 9999
+        error_html = f'<div class="flash error">✗ DB error: {e}</div>'
+
+    total_active = ov.get("active", 0) or 0
+    newest_str   = ov.get("newest_fetch", "—")
+    if hasattr(newest_str, "strftime"):
+        newest_str = newest_str.strftime("%Y-%m-%d %H:%M UTC")
+
+    stale_class = "stale-warn" if minutes_stale > 120 else ""
+    stale_label = (
+        f'<span class="{stale_class}">{int(minutes_stale)}m ago</span>'
+        if minutes_stale < 9999 else
+        '<span class="stale-warn">never fetched</span>'
+    )
+
+    stats_html = f"""
+    <div class="stats-row">
+      <div class="stat-card"><span class="num">{ov.get('total',0)}</span><span class="label">Total jobs</span></div>
+      <div class="stat-card"><span class="num" style="color:var(--green)">{total_active}</span><span class="label">Active</span></div>
+      <div class="stat-card"><span class="num" style="color:var(--muted)">{ov.get('inactive',0)}</span><span class="label">Inactive</span></div>
+      <div class="stat-card"><span class="num">{ov.get('sources',0)}</span><span class="label">Sources</span></div>
+      <div class="stat-card"><span class="num" style="font-size:14px;">{stale_label}</span><span class="label">Last fetch</span></div>
+    </div>"""
+
+    source_rows = ""
+    for s in sources:
+        cnt      = s["cnt"]
+        src      = s["source"] or "unknown"
+        last_f   = s["last_fetch"]
+        last_str = last_f.strftime("%Y-%m-%d %H:%M") if hasattr(last_f, "strftime") else "—"
+        avg_age  = f'{int(s["avg_age_days"])}d' if s.get("avg_age_days") else "—"
+        dated_pct = int(s["dated"] / cnt * 100) if cnt else 0
+        bar_w    = int(cnt / max(total_active, 1) * 240)
+
+        source_rows += f"""
+        <div class="pool-source-row">
+          <span style="width:100px;color:var(--text);">{src}</span>
+          <div class="pool-bar-bg" style="width:260px;flex:none;">
+            <div class="pool-bar-fill" style="width:{bar_w}px;"></div>
+          </div>
+          <span style="width:50px;text-align:right;font-weight:700;">{cnt}</span>
+          <span style="width:50px;text-align:right;color:var(--muted);font-size:11px;">{dated_pct}% dated</span>
+          <span style="width:60px;text-align:right;color:var(--muted);font-size:11px;">avg {avg_age}</span>
+          <span style="color:var(--muted);font-size:10px;margin-left:auto;">{last_str}</span>
+        </div>"""
+
+    pool_card = f"""
+    <div class="detail-card" style="max-width:700px;">
+      <h3>Active jobs by source</h3>
+      {source_rows or '<span class="muted">No data</span>'}
+    </div>"""
+
+    body = error_html + stats_html + pool_card
+    return HTMLResponse(_html_page("Job Pool", body))
+
+
+# ── Cron Logs Page ────────────────────────────────────────────────────────────
+
+@router.get("/logs", response_class=HTMLResponse)
+async def logs_page(
+    request: Request,
+    file: str = "fetching_stdout",
+    lines: int = 150,
+    _: None = Depends(_check_auth),
+):
+    _check_localhost(request)
+
+    log_path = _LOG_FILES.get(file)
+    log_content = ""
+    log_error   = ""
+
+    if not log_path:
+        log_error = f"Unknown log file: {file}"
+    elif not log_path.exists():
+        log_error = f"Log file not found: {log_path}"
+    else:
+        try:
+            all_lines = log_path.read_text(errors="replace").splitlines()
+            tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            log_content = "\n".join(tail)
+        except Exception as e:
+            log_error = str(e)
+
+    def _colorize(line: str) -> str:
+        escaped = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        low = line.lower()
+        if "error" in low or "exception" in low or "traceback" in low or "critical" in low:
+            return f'<div class="log-line log-error">{escaped}</div>'
+        if "warning" in low or "warn" in low:
+            return f'<div class="log-line log-warn">{escaped}</div>'
+        if "info" in low or "✓" in line or "complete" in low or "success" in low:
+            return f'<div class="log-line log-info">{escaped}</div>'
+        if "debug" in low:
+            return f'<div class="log-line log-debug">{escaped}</div>'
+        return f'<div class="log-line log-default">{escaped}</div>'
+
+    colored_lines = "".join(_colorize(l) for l in log_content.splitlines()) if log_content else ""
+    if colored_lines:
+        log_html = f'<div class="log-wrap" id="log-content">{colored_lines}</div>'
+    else:
+        warn_msg = f"⚠ {log_error}" if log_error else "Log is empty."
+        log_html = f'<div class="log-wrap"><span class="log-warn">{warn_msg}</span></div>'
+
+    # Tab bar
+    def _tab(key, label):
+        active = "active" if key == file else ""
+        return f'<a class="log-tab {active}" href="/admin/logs?file={key}&lines={lines}">{label}</a>'
+
+    tabs = (
+        f'<div class="log-tabs">'
+        + _tab("fetching_stdout", "fetch · stdout")
+        + _tab("fetching_stderr", "fetch · stderr")
+        + _tab("matching_stdout", "match · stdout")
+        + _tab("matching_stderr", "match · stderr")
+        + f'</div>'
+    )
+
+    # Line count selector
+    line_opts = "".join(
+        f'<option value="{n}" {"selected" if n == lines else ""}>{n} lines</option>'
+        for n in [50, 100, 150, 300, 500, 1000]
+    )
+    controls = f"""
+    <div class="log-controls" style="margin-top:0;border:1px solid var(--border);border-top:none;
+         border-radius:0 0 6px 6px;padding:8px 12px;background:#0d0d0d;margin-bottom:16px;">
+      <form method="GET" action="/admin/logs" style="display:flex;gap:8px;align-items:center;">
+        <input type="hidden" name="file" value="{file}" />
+        <label style="font-size:11px;color:var(--muted);">Show</label>
+        <select name="lines" onchange="this.form.submit()" style="font-size:11px;padding:2px 6px;">
+          {line_opts}
+        </select>
+        <button type="submit" style="font-size:11px;padding:3px 10px;">Reload</button>
+        <span style="color:var(--muted);font-size:10px;margin-left:auto;">
+          {log_path} {'(exists)' if log_path and log_path.exists() else '(not found)'}
+        </span>
+      </form>
+    </div>"""
+
+    # Auto-scroll to bottom JS
+    autoscroll_js = """
+    <script>
+      var el = document.getElementById('log-content');
+      if (el) el.scrollTop = el.scrollHeight;
+    </script>"""
+
+    body = tabs + controls + log_html + autoscroll_js
+    return HTMLResponse(_html_page("Cron Logs", body))
+
+
+# ── Add user links to dashboard table ─────────────────────────────────────────
+
+
 
 def _score_bar_html(score) -> str:
     """Render a score as a number + mini color bar for the audit table."""
