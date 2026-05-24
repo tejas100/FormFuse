@@ -1281,7 +1281,7 @@ async def run_pipeline_for_all_users() -> int:
     return len(raw_pool)
 
 
-async def run_pipeline_for_new_user(user_id: str) -> None:
+async def run_pipeline_for_new_user(user_id: str, force_pool: bool = False, force: bool = False) -> None:
     """
     On-demand pipeline trigger for new users completing onboarding.
 
@@ -1335,12 +1335,13 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
     # broad ILIKE filter to Postgres, reducing 14k → ~2-3k rows in RAM.
     # Stage 2 precision (_role_matches_title) is unchanged — runs on the
     # smaller set inside _run_auto_pipeline_inner as always.
-    if _is_pool_cache_fresh():
+    if force_pool or _is_pool_cache_fresh():
         raw_pool = _load_pool_from_disk(
             target_roles=profile["target_roles"],
             role_aliases=profile["role_aliases"],
         )
-        logger.info(f"[NewUser] Using cached pool: {len(raw_pool)} jobs (SQL pre-filtered for this user)")
+        source = "forced (admin)" if force_pool else "cached"
+        logger.info(f"[NewUser] Using {source} pool: {len(raw_pool)} jobs (SQL pre-filtered for this user)")
     else:
         logger.warning("[NewUser] Pool empty or stale — skipping. Scheduler populates within 60 min.")
         return
@@ -1356,7 +1357,7 @@ async def run_pipeline_for_new_user(user_id: str) -> None:
                 user_id=user_id,
                 profile=profile,
                 job_pool=raw_pool,
-                force=False,
+                force=force,
                 db=db,
             )
         logger.info(f"[NewUser] Pipeline complete for user={user_id}")

@@ -26,6 +26,8 @@ SETUP:
 """
 
 import asyncio
+import collections as _collections
+import logging as _logging
 import os
 import secrets
 from datetime import datetime, timezone
@@ -41,7 +43,7 @@ from db.database import get_db
 from models.orm import AutoMatchResult, Resume, User
 
 # ── Log file paths (MacBook local only) ───────────────────────────────────────
-_BACKEND_DIR = Path(__file__).resolve().parent
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 _LOG_DIR = _BACKEND_DIR / "logs"
 _LOG_FILES = {
     "fetching_stdout": _LOG_DIR / "fetching_stdout.log",
@@ -98,7 +100,13 @@ def _admin_deps(request: Request, _: None = Depends(_check_auth)) -> None:
 
 # ── HTML shell ────────────────────────────────────────────────────────────────
 
-def _html_page(title: str, body: str) -> str:
+def _html_page(title: str, body: str, page: str = "dashboard") -> str:
+    def _nav_link(label: str, href: str, key: str) -> str:
+        active = key == page
+        color  = "var(--accent)" if active else "var(--muted)"
+        weight = "font-weight:700;" if active else ""
+        return f'<a href="{href}" style="color:{color};text-decoration:none;{weight}">{label}</a>'
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -442,13 +450,15 @@ def _html_page(title: str, body: str) -> str:
   <h1>⚡ RACK Admin</h1>
   <p class="subtitle">localhost only · {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</p>
   <nav style="margin-bottom:24px;display:flex;gap:12px;font-size:11px;flex-wrap:wrap;">
-    <a href="/admin" style="color:var(--accent);text-decoration:none;">Dashboard</a>
+    {_nav_link("Dashboard",     "/admin",               "dashboard")}
     <span style="color:var(--muted);">·</span>
-    <a href="/admin/scoring-audit" style="color:var(--muted);text-decoration:none;">Scoring Audit</a>
+    {_nav_link("Scoring Audit", "/admin/scoring-audit", "scoring-audit")}
     <span style="color:var(--muted);">·</span>
-    <a href="/admin/pool" style="color:var(--muted);text-decoration:none;">Job Pool</a>
+    {_nav_link("Job Pool",      "/admin/pool",          "pool")}
     <span style="color:var(--muted);">·</span>
-    <a href="/admin/logs" style="color:var(--muted);text-decoration:none;">Cron Logs</a>
+    {_nav_link("Cron Logs",     "/admin/logs",          "logs")}
+    <span style="color:var(--muted);">·</span>
+    {_nav_link("▶ Run Matching", "/admin/run-matching",  "run-matching")}
   </nav>
   {body}
 </body>
@@ -638,7 +648,7 @@ async def admin_dashboard(
     </table>"""
 
     body = stats_html + flash + table_html
-    return HTMLResponse(_html_page("Dashboard", body))
+    return HTMLResponse(_html_page("Dashboard", body, page="dashboard"))
 
 
 @router.post("/users/{user_id}/role", response_class=RedirectResponse)
@@ -891,7 +901,10 @@ async def user_detail(
         <div class="kv"><span class="k">applied</span><span class="v">{applied_cnt}</span></div>
         <div class="kv"><span class="k">score distribution</span><span class="v"></span></div>
         {hist_html}
-        <div style="margin-top:12px;">{audit_link}</div>
+        <div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap;">
+          {audit_link}
+          <a href="/admin/users/{user_id}/funnel" style="color:var(--accent);text-decoration:none;font-size:11px;font-weight:700;">→ Pipeline funnel breakdown</a>
+        </div>
       </div>
 
       <div class="detail-card">
@@ -920,7 +933,7 @@ async def user_detail(
     </div>
     """
 
-    return HTMLResponse(_html_page(f"User — {user.email}", body))
+    return HTMLResponse(_html_page(f"User — {user.email}", body, page="dashboard"))
 
 
 # ── Manual pipeline trigger ───────────────────────────────────────────────────
@@ -940,10 +953,9 @@ async def trigger_pipeline(
     if not user:
         return RedirectResponse(url=f"/admin/users/{user_id}?err=User+not+found", status_code=303)
 
-    def _run():
+    async def _run():
         from services.auto_match import run_pipeline_for_new_user
-        import asyncio
-        asyncio.run(run_pipeline_for_new_user(user_id))
+        await run_pipeline_for_new_user(user_id, force_pool=True)
 
     background_tasks.add_task(_run)
 
@@ -1018,32 +1030,24 @@ async def send_admin_email(
 @router.get("/pool", response_class=HTMLResponse)
 async def pool_page(
     request: Request,
+    db: AsyncSession = Depends(get_db),
     _: None = Depends(_check_auth),
 ):
     _check_localhost(request)
 
-    import psycopg2
-    DATABASE_URL_DIRECT = os.getenv("DATABASE_URL_DIRECT", "")
-
     try:
-        conn = psycopg2.connect(DATABASE_URL_DIRECT)
-        cur  = conn.cursor()
-
-        # Overall stats
-        cur.execute("""
+        ov_row = await db.execute(text("""
             SELECT
-                COUNT(*)                                        AS total,
-                COUNT(*) FILTER (WHERE is_active = TRUE)       AS active,
-                COUNT(*) FILTER (WHERE is_active = FALSE)      AS inactive,
-                MIN(fetched_at)                                AS oldest_fetch,
-                MAX(fetched_at)                                AS newest_fetch,
-                COUNT(DISTINCT source)                         AS sources
+                COUNT(*)                                   AS total,
+                COUNT(*) FILTER (WHERE is_active = TRUE)  AS active,
+                COUNT(*) FILTER (WHERE is_active = FALSE) AS inactive,
+                MAX(fetched_at)                            AS newest_fetch,
+                COUNT(DISTINCT source)                     AS sources
             FROM job_pool
-        """)
-        ov = dict(zip([d[0] for d in cur.description], cur.fetchone()))
+        """))
+        ov = dict(ov_row.mappings().one())
 
-        # Per-source breakdown (active only)
-        cur.execute("""
+        src_rows = await db.execute(text("""
             SELECT source,
                    COUNT(*) AS cnt,
                    MAX(fetched_at) AS last_fetch,
@@ -1054,20 +1058,17 @@ async def pool_page(
             WHERE is_active = TRUE
             GROUP BY source
             ORDER BY cnt DESC
-        """)
-        sources = [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+        """))
+        sources = [dict(r) for r in src_rows.mappings().all()]
 
-        # Staleness of last fetch
         newest_fetch = ov.get("newest_fetch")
         if newest_fetch:
-            from datetime import timezone as _tz
             if newest_fetch.tzinfo is None:
                 newest_fetch = newest_fetch.replace(tzinfo=timezone.utc)
             minutes_stale = (datetime.now(timezone.utc) - newest_fetch).total_seconds() / 60
         else:
             minutes_stale = 9999
 
-        conn.close()
         error_html = ""
     except Exception as e:
         ov = {}
@@ -1125,7 +1126,7 @@ async def pool_page(
     </div>"""
 
     body = error_html + stats_html + pool_card
-    return HTMLResponse(_html_page("Job Pool", body))
+    return HTMLResponse(_html_page("Job Pool", body, page="pool"))
 
 
 # ── Cron Logs Page ────────────────────────────────────────────────────────────
@@ -1134,14 +1135,16 @@ async def pool_page(
 async def logs_page(
     request: Request,
     file: str = "fetching_stdout",
-    lines: int = 150,
+    lines: int = 25,
     _: None = Depends(_check_auth),
 ):
     _check_localhost(request)
 
-    log_path = _LOG_FILES.get(file)
-    log_content = ""
-    log_error   = ""
+    import re as _re
+
+    log_path  = _LOG_FILES.get(file)
+    all_lines: list = []
+    log_error = ""
 
     if not log_path:
         log_error = f"Unknown log file: {file}"
@@ -1150,79 +1153,872 @@ async def logs_page(
     else:
         try:
             all_lines = log_path.read_text(errors="replace").splitlines()
-            tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            log_content = "\n".join(tail)
         except Exception as e:
             log_error = str(e)
 
-    def _colorize(line: str) -> str:
-        escaped = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    _ts_full_re  = _re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")    # 2026-05-16 12:00:42
+    _ts_millis_re = _re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+") # 2026-05-16 12:00:42,993
+    _ts_time_re  = _re.compile(r"^(\d{2}:\d{2}:\d{2})\s+\[")                   # 08:03:05 [INFO]
+
+    # For time-only logs use the log file's modification date as the base date
+    _base_date = None
+    if log_path and log_path.exists():
+        _base_date = datetime.fromtimestamp(log_path.stat().st_mtime).date()
+
+    # Markers that always mean "a new pipeline run is starting"
+    _run_start_re = _re.compile(
+        r"Starting (pipeline|auto.?match|matching|fetching)|"
+        r"\[Scheduler\].*Pool fetch|"
+        r"run_fetching.*\[Fetching\]|"
+        r"run_matching.*\[Matching\]|"
+        r"\[AutoMatch\] Starting",
+        _re.I,
+    )
+
+    def _extract_ts(line):
+        # Full datetime with millis
+        m = _ts_millis_re.match(line)
+        if m:
+            try:
+                return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+        # Full datetime without millis
+        m = _ts_full_re.match(line)
+        if m:
+            try:
+                return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+        # Time-only HH:MM:SS [INFO] — anchor to log file's mtime date
+        m = _ts_time_re.match(line)
+        if m and _base_date:
+            try:
+                t = datetime.strptime(m.group(1), "%H:%M:%S")
+                return datetime(_base_date.year, _base_date.month, _base_date.day,
+                                t.hour, t.minute, t.second)
+            except ValueError:
+                pass
+        return None
+
+    def _colorize_line(line):
+        esc = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         low = line.lower()
-        if "error" in low or "exception" in low or "traceback" in low or "critical" in low:
-            return f'<div class="log-line log-error">{escaped}</div>'
-        if "warning" in low or "warn" in low:
-            return f'<div class="log-line log-warn">{escaped}</div>'
-        if "info" in low or "✓" in line or "complete" in low or "success" in low:
-            return f'<div class="log-line log-info">{escaped}</div>'
-        if "debug" in low:
-            return f'<div class="log-line log-debug">{escaped}</div>'
-        return f'<div class="log-line log-default">{escaped}</div>'
+        if any(k in low for k in ("error", "exception", "traceback", "critical")):
+            return f'<div class="log-line log-error">{esc}</div>'
+        if any(k in low for k in ("warning", "warn")):
+            return f'<div class="log-line log-warn">{esc}</div>'
+        if "complete in" in low or "upserted" in low or "pool fetch complete" in low or "✓" in line:
+            return f'<div class="log-line log-info" style="color:#a8f0be;">{esc}</div>'
+        if "[info]" in low:
+            return f'<div class="log-line log-info">{esc}</div>'
+        if "[debug]" in low:
+            return f'<div class="log-line log-debug">{esc}</div>'
+        return f'<div class="log-line log-default">{esc}</div>'
 
-    colored_lines = "".join(_colorize(l) for l in log_content.splitlines()) if log_content else ""
-    if colored_lines:
-        log_html = f'<div class="log-wrap" id="log-content">{colored_lines}</div>'
+    # Detect whether this log has timestamps at all
+    has_timestamps = any(_extract_ts(l) for l in all_lines[:50])
+
+    runs = []
+    current = None
+    prev_ts = None
+
+    if has_timestamps:
+        # Primary split: >90s gap between consecutive timestamped lines
+        for raw_line in all_lines:
+            ts  = _extract_ts(raw_line)
+            gap = (ts - prev_ts).total_seconds() if (ts and prev_ts) else 0
+            is_new = (gap > 90) or (current is None) or _run_start_re.search(raw_line)
+
+            if is_new:
+                if current and current["lines"]:
+                    runs.append(current)
+                current = {"start_ts": ts, "end_ts": ts, "lines": [],
+                           "errors": 0, "warnings": 0,
+                           "jobs_upserted": None, "jobs_pruned": None, "duration": None}
+
+            if current:
+                current["lines"].append(raw_line)
+                if ts:
+                    current["end_ts"] = ts
+                low = raw_line.lower()
+                if any(k in low for k in ("error", "exception", "traceback", "critical")):
+                    current["errors"] += 1
+                if any(k in low for k in ("warning", "warn")):
+                    current["warnings"] += 1
+                m_ups   = _re.search(r"(\d[\d,]*)\s+jobs?\s+upserted", raw_line, _re.I)
+                m_prune = _re.search(r"(\d[\d,]*)\s+stale\s+jobs?\s+removed", raw_line, _re.I)
+                m_dur   = _re.search(r"complete\s+in\s+(\d+)s", raw_line, _re.I)
+                if m_ups:   current["jobs_upserted"] = int(m_ups.group(1).replace(",", ""))
+                if m_prune: current["jobs_pruned"]   = int(m_prune.group(1).replace(",", ""))
+                if m_dur:   current["duration"]       = int(m_dur.group(1))
+            if ts:
+                prev_ts = ts
     else:
-        warn_msg = f"⚠ {log_error}" if log_error else "Log is empty."
-        log_html = f'<div class="log-wrap"><span class="log-warn">{warn_msg}</span></div>'
+        # No timestamps — split on blank lines OR explicit run-start markers
+        # Each blank-line-separated block = one pipeline invocation
+        for raw_line in all_lines:
+            is_blank   = raw_line.strip() == ""
+            is_marker  = _run_start_re.search(raw_line) is not None
 
-    # Tab bar
+            if is_blank or is_marker or current is None:
+                if current and current["lines"]:
+                    runs.append(current)
+                if is_blank:
+                    current = None
+                    continue
+                current = {"start_ts": None, "end_ts": None, "lines": [],
+                           "errors": 0, "warnings": 0,
+                           "jobs_upserted": None, "jobs_pruned": None, "duration": None}
+
+            if current:
+                current["lines"].append(raw_line)
+                low = raw_line.lower()
+                if any(k in low for k in ("error", "exception", "traceback", "critical")):
+                    current["errors"] += 1
+                if any(k in low for k in ("warning", "warn")):
+                    current["warnings"] += 1
+                m_ups  = _re.search(r"(\d[\d,]*)\s+(?:resumes?\s+scored|jobs?\s+upserted)", raw_line, _re.I)
+                m_dur  = _re.search(r"(?:scored|complete)\s+in\s+(\d+)(?:ms|s)", raw_line, _re.I)
+                m_ms   = _re.search(r"in\s+(\d+)ms", raw_line, _re.I)
+                if m_ups: current["jobs_upserted"] = int(m_ups.group(1).replace(",", ""))
+                if m_ms:  current["duration_ms"] = int(m_ms.group(1))
+
+        # For no-timestamp logs, group consecutive non-blank blocks into
+        # runs of ~reasonable size (matching fires per user per job batch)
+        # Re-merge tiny single-line blocks into groups of ≤30 lines
+        merged = []
+        bucket = None
+        for r in runs:
+            if bucket is None:
+                bucket = dict(r)
+            else:
+                bucket["lines"].extend(r["lines"])
+                bucket["errors"]   += r["errors"]
+                bucket["warnings"] += r["warnings"]
+                if r.get("jobs_upserted"): bucket["jobs_upserted"] = r["jobs_upserted"]
+                if r.get("duration_ms"):   bucket["duration_ms"]   = r.get("duration_ms")
+                if len(bucket["lines"]) >= 20:
+                    merged.append(bucket)
+                    bucket = None
+        if bucket and bucket["lines"]:
+            merged.append(bucket)
+        runs = merged
+
+    if current and current["lines"]:
+        runs.append(current)
+
+    runs = list(reversed(runs))[:lines]
+
+    def _run_card(run, idx):
+        start     = run["start_ts"]
+        start_str = start.strftime("%Y-%m-%d  %H:%M:%S") if start else f"{len(run['lines'])} lines (no timestamp)"
+        dur_s = run.get("duration")
+        dur_ms = run.get("duration_ms")
+        if dur_s:
+            dur_str = f"{dur_s}s"
+        elif dur_ms:
+            dur_str = f"{dur_ms}ms"
+        elif run.get("start_ts") and run.get("end_ts") and run["start_ts"] != run["end_ts"]:
+            dur_str = f"{int((run['end_ts']-run['start_ts']).total_seconds())}s"
+        else:
+            dur_str = "—"
+        errors, warnings = run["errors"], run["warnings"]
+        upserted, pruned = run["jobs_upserted"], run["jobs_pruned"]
+
+        if errors:
+            badge = f'<span style="background:#4a0000;color:#ff6b6b;border-radius:4px;padding:1px 7px;font-size:10px;">✗ {errors} error{"s" if errors>1 else ""}</span>'
+        elif upserted is not None:
+            badge = '<span style="background:#0d2a0d;color:#5fff8a;border-radius:4px;padding:1px 7px;font-size:10px;">✓ ok</span>'
+        else:
+            badge = '<span style="background:#1a1a1a;color:#666;border-radius:4px;padding:1px 7px;font-size:10px;">—</span>'
+
+        parts = []
+        if upserted is not None: parts.append(f'<span style="color:#5fff8a;">{upserted:,} upserted</span>')
+        if pruned   is not None: parts.append(f'<span style="color:#ffaa33;">{pruned:,} pruned</span>')
+        if warnings:              parts.append(f'<span style="color:#ffcc55;">{warnings} warn</span>')
+        stats = " · ".join(parts) if parts else '<span style="color:#444;">no summary data</span>'
+
+        body_html = "".join(_colorize_line(l) for l in run["lines"])
+        cid = f"run-{idx}"
+        return f"""
+        <div style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px;overflow:hidden;">
+          <div onclick="toggleRun('{cid}')" id="{cid}-hdr"
+               style="display:flex;align-items:center;gap:14px;padding:10px 16px;
+                      background:var(--surface);cursor:pointer;user-select:none;border-bottom:1px solid transparent;">
+            <span style="color:var(--muted);font-size:10px;width:16px;" id="{cid}-arrow">▶</span>
+            <span style="font-weight:700;font-size:12px;white-space:nowrap;">{start_str}</span>
+            <span style="color:var(--muted);font-size:11px;">{dur_str}</span>
+            {badge}
+            <span style="margin-left:8px;font-size:11px;">{stats}</span>
+            <span style="margin-left:auto;color:#444;font-size:10px;">{len(run['lines'])} lines</span>
+          </div>
+          <div id="{cid}" style="display:none;">
+            <div class="log-wrap" style="border:none;border-radius:0;margin:0;max-height:500px;">{body_html}</div>
+          </div>
+        </div>"""
+
+    if not runs:
+        warn_msg = f"⚠ {log_error}" if log_error else "Log is empty or no runs found."
+        log_html = f'<div class="log-wrap"><span class="log-warn">{warn_msg}</span></div>'
+    else:
+        log_html = "\n".join(_run_card(r, i) for i, r in enumerate(runs))
+
     def _tab(key, label):
         active = "active" if key == file else ""
         return f'<a class="log-tab {active}" href="/admin/logs?file={key}&lines={lines}">{label}</a>'
 
-    tabs = (
-        f'<div class="log-tabs">'
-        + _tab("fetching_stdout", "fetch · stdout")
-        + _tab("fetching_stderr", "fetch · stderr")
-        + _tab("matching_stdout", "match · stdout")
-        + _tab("matching_stderr", "match · stderr")
-        + f'</div>'
-    )
+    tabs = (f'<div class="log-tabs">'
+            + _tab("fetching_stdout", "fetch · stdout")
+            + _tab("fetching_stderr", "fetch · stderr")
+            + _tab("matching_stdout", "match · stdout")
+            + _tab("matching_stderr", "match · stderr")
+            + '</div>')
 
-    # Line count selector
-    line_opts = "".join(
-        f'<option value="{n}" {"selected" if n == lines else ""}>{n} lines</option>'
-        for n in [50, 100, 150, 300, 500, 1000]
-    )
+    run_opts = "".join(
+        f'<option value="{n}" {"selected" if n == lines else ""}>{n} runs</option>'
+        for n in [10, 25, 50, 100])
+    path_exists = log_path and log_path.exists()
     controls = f"""
-    <div class="log-controls" style="margin-top:0;border:1px solid var(--border);border-top:none;
-         border-radius:0 0 6px 6px;padding:8px 12px;background:#0d0d0d;margin-bottom:16px;">
-      <form method="GET" action="/admin/logs" style="display:flex;gap:8px;align-items:center;">
-        <input type="hidden" name="file" value="{file}" />
-        <label style="font-size:11px;color:var(--muted);">Show</label>
-        <select name="lines" onchange="this.form.submit()" style="font-size:11px;padding:2px 6px;">
-          {line_opts}
-        </select>
-        <button type="submit" style="font-size:11px;padding:3px 10px;">Reload</button>
-        <span style="color:var(--muted);font-size:10px;margin-left:auto;">
-          {log_path} {'(exists)' if log_path and log_path.exists() else '(not found)'}
-        </span>
-      </form>
+    <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;
+         padding:8px 14px;background:#0d0d0d;margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <label style="font-size:11px;color:var(--muted);">Show</label>
+      <select onchange="location.href='/admin/logs?file={file}&lines='+this.value"
+              style="font-size:11px;padding:2px 6px;">{run_opts}</select>
+      <span style="color:var(--muted);font-size:10px;">runs</span>
+      <span style="margin-left:auto;color:{'#5fff8a' if path_exists else 'var(--red)'};font-size:10px;">
+        {log_path} ({'exists' if path_exists else 'NOT FOUND'})
+      </span>
     </div>"""
 
-    # Auto-scroll to bottom JS
-    autoscroll_js = """
-    <script>
-      var el = document.getElementById('log-content');
-      if (el) el.scrollTop = el.scrollHeight;
+    total_errors = sum(r["errors"] for r in runs)
+    total_ups    = sum(r["jobs_upserted"] or 0 for r in runs)
+    summary = f"""
+    <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
+      <div class="stat-card" style="padding:10px 18px;min-width:0;">
+        <span class="num" style="font-size:18px;">{len(runs)}</span><span class="label">runs shown</span></div>
+      <div class="stat-card" style="padding:10px 18px;min-width:0;">
+        <span class="num" style="font-size:18px;color:{'var(--red)' if total_errors else 'var(--green)'};">{total_errors}</span>
+        <span class="label">total errors</span></div>
+      <div class="stat-card" style="padding:10px 18px;min-width:0;">
+        <span class="num" style="font-size:18px;">{total_ups:,}</span><span class="label">jobs upserted</span></div>
+    </div>"""
+
+    toggle_js = """<script>
+    function toggleRun(id) {
+      var el=document.getElementById(id), arr=document.getElementById(id+'-arrow'), hdr=document.getElementById(id+'-hdr');
+      if(el.style.display==='none'){
+        el.style.display='block'; arr.textContent='▼'; hdr.style.borderBottomColor='var(--border)';
+        var w=el.querySelector('.log-wrap'); if(w) w.scrollTop=w.scrollHeight;
+      } else { el.style.display='none'; arr.textContent='▶'; hdr.style.borderBottomColor='transparent'; }
+    }
+    window.addEventListener('DOMContentLoaded',function(){ if(document.getElementById('run-0')) toggleRun('run-0'); });
     </script>"""
 
-    body = tabs + controls + log_html + autoscroll_js
-    return HTMLResponse(_html_page("Cron Logs", body))
+    body = tabs + controls + summary + log_html + toggle_js
+    return HTMLResponse(_html_page("Cron Logs", body, page="logs"))
 
 
 # ── Add user links to dashboard table ─────────────────────────────────────────
 
+# ── Global run state (in-process, single-server local only) ───────────────────
+import threading as _threading
+
+# ── In-memory ring buffer — captures auto_match live log output ───────────────
+class _RingBufferHandler(_logging.Handler):
+    def __init__(self, maxlen: int = 2000):
+        super().__init__()
+        self.records: _collections.deque = _collections.deque(maxlen=maxlen)
+        self.setFormatter(_logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+
+    def emit(self, record: _logging.LogRecord):
+        try:
+            self.records.append(self.format(record))
+        except Exception:
+            pass
+
+    def snapshot(self) -> list:
+        return list(self.records)
+
+    def clear(self):
+        self.records.clear()
+
+
+_ring = _RingBufferHandler(maxlen=2000)
+_ring.setLevel(_logging.DEBUG)
+for _ln in ("services.auto_match", "services.matcher", "services.llm_scorer",
+            "services.vector_store", "run_matching"):
+    _logging.getLogger(_ln).addHandler(_ring)
+_active_run  = {"running": False, "started_at": None, "user_filter": None}
+
+
+# ── Manual Run Page ───────────────────────────────────────────────────────────
+
+@router.get("/run-matching", response_class=HTMLResponse)
+async def run_matching_page(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth),
+    msg: str = "",
+):
+    _check_localhost(request)
+
+    # Fetch all users with preferences so we can show a user picker
+    result = await db.execute(
+        select(User).order_by(User.created_at.desc())
+    )
+    users = result.scalars().all()
+
+    user_opts = '<option value="">— All users with target roles —</option>'
+    for u in users:
+        prefs = u.preferences or {}
+        roles = prefs.get("target_roles", [])
+        role_preview = (", ".join(roles[:2]) + ("…" if len(roles) > 2 else "")) if roles else "no roles set"
+        warn = " ⚠" if not roles else ""
+        user_opts += f'<option value="{u.id}">{u.email}{warn} ({role_preview})</option>'
+
+    is_running = _active_run["running"]
+    started_at = _active_run.get("started_at")
+    started_str = started_at.strftime("%H:%M:%S") if started_at else "—"
+    user_filter = _active_run.get("user_filter") or "all users"
+
+    status_color = "var(--red)" if is_running else "var(--muted)"
+    status_dot   = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{status_color};margin-right:6px;{"animation:pulse 1s infinite;" if is_running else ""}"></span>'
+    status_label = f"Running since {started_str} · {user_filter}" if is_running else "Idle"
+
+    flash = f'<div class="flash">✓ {msg}</div>' if msg else ""
+
+    # Log file path indicator
+    log_path = _LOG_FILES.get("matching_stdout")
+    log_exists = log_path and log_path.exists()
+
+    body = f"""
+    {flash}
+    <div style="display:flex;align-items:baseline;gap:20px;margin-bottom:24px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:18px;font-weight:700;">Manual Match Run</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;">
+          Triggers the full scoring pipeline · streams live from <code style="color:#888;">services.auto_match</code> logger in real-time
+        </div>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;font-size:12px;">
+        {status_dot}<span id="status-label">{status_label}</span>
+      </div>
+    </div>
+
+    <!-- Trigger form -->
+    <div class="detail-card" style="max-width:560px;margin-bottom:24px;">
+      <h3>Pipeline trigger</h3>
+      <form method="POST" action="/admin/run-matching/start" id="trigger-form"
+            style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
+        <div>
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px;">Target user</label>
+          <select name="user_id" style="width:100%;font-size:12px;padding:6px 8px;background:#111;
+                  border:1px solid var(--border);border-radius:4px;color:var(--text);">
+            {user_opts}
+          </select>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <button type="submit" class="btn-primary" id="run-btn"
+                  {"disabled" if is_running else ""}
+                  style="{"opacity:0.5;cursor:not-allowed;" if is_running else ""}">
+            {"⏳ Pipeline running…" if is_running else "▶ Run Matching Now"}
+          </button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer;">
+            <input type="checkbox" name="force_rescore" value="1"
+                   style="accent-color:var(--accent);width:13px;height:13px;" />
+            Force re-score (ignore cache)
+          </label>
+          <span style="font-size:11px;color:var(--muted);">· starts in background · live log appears below</span>
+        </div>
+      </form>
+    </div>
+
+    <!-- Live log terminal -->
+    <div style="margin-bottom:8px;display:flex;align-items:center;gap:12px;">
+      <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);">Live log</span>
+      <span id="stream-status" style="font-size:10px;color:var(--muted);">
+        {"● connecting…" if is_running else "○ waiting for run"}
+      </span>
+      <button onclick="clearLog()" style="margin-left:auto;font-size:10px;padding:2px 8px;background:transparent;
+              border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;">Clear</button>
+      <button onclick="scrollBottom()" style="font-size:10px;padding:2px 8px;background:transparent;
+              border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;">↓ Bottom</button>
+    </div>
+    <div id="log-terminal" style="
+      background:#020408;
+      border:1px solid #1a2a1a;
+      border-radius:8px;
+      padding:16px;
+      height:520px;
+      overflow-y:auto;
+      font-family:'SF Mono','Fira Code',monospace;
+      font-size:11px;
+      line-height:1.7;
+      box-shadow: inset 0 0 40px rgba(0,255,80,0.02);
+    ">
+      <div id="log-lines" style="min-height:100%;"></div>
+      <div id="cursor" style="display:inline-block;width:8px;height:13px;background:#4aff7a;
+           opacity:0.7;vertical-align:middle;animation:blink 1s step-end infinite;margin-left:2px;"></div>
+    </div>
+
+    <style>
+      @keyframes blink {{ 0%,100%{{opacity:0.7}} 50%{{opacity:0}} }}
+      @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.3}} }}
+      @keyframes fadein {{ from{{opacity:0;transform:translateY(2px)}} to{{opacity:1;transform:none}} }}
+      .ll {{ animation: fadein 0.15s ease; }}
+      .ll-error   {{ color: #ff6b6b; }}
+      .ll-warn    {{ color: #ffcc55; }}
+      .ll-ok      {{ color: #7aff9e; }}
+      .ll-info    {{ color: #8ab8d4; }}
+      .ll-dim     {{ color: #3a5a4a; }}
+      .ll-default {{ color: #556655; }}
+      .ll-phase   {{ color: #e8ff6b; font-weight: 700; }}
+      .ll-user    {{ color: #c8a0ff; }}
+    </style>
+
+    <script>
+    var es = null;
+    var autoScroll = true;
+    var logEl = document.getElementById('log-terminal');
+    var linesEl = document.getElementById('log-lines');
+    var streamStatus = document.getElementById('stream-status');
+
+    logEl.addEventListener('scroll', function() {{
+      autoScroll = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 40;
+    }});
+
+    function scrollBottom() {{
+      logEl.scrollTop = logEl.scrollHeight;
+      autoScroll = true;
+    }}
+
+    function clearLog() {{
+      linesEl.innerHTML = '';
+    }}
+
+    function classifyLine(line) {{
+      var low = line.toLowerCase();
+      if (low.includes('error') || low.includes('exception') || low.includes('traceback') || low.includes('critical') || low.includes('[error]'))
+        return 'll-error';
+      if (low.includes('warning') || low.includes('warn') || low.includes('[warning]') || low.includes('skipping') || low.includes('stale'))
+        return 'll-warn';
+      if (line.includes('✓') || low.includes('pipeline complete for') || low.includes('complete in') || low.includes('stored') || low.includes('upserted'))
+        return 'll-ok';
+      if (low.includes('starting pipeline') || low.includes('run started') || low.includes('pool loaded') || low.includes('on-demand'))
+        return 'll-phase';
+      if (low.includes('user=') || low.includes('@gmail') || low.includes('@njit') || low.includes('tejas'))
+        return 'll-user';
+      if (low.includes('phase 1') || low.includes('phase 2') || low.includes('llm') || low.includes('scored') || low.includes('score') || low.includes('[info]') || low.includes('pool size'))
+        return 'll-info';
+      if (low.includes('no new jobs') || low.includes('returning') || low.includes('existing results') || low.includes('pgvector') || low.includes('[debug]'))
+        return 'll-dim';
+      return 'll-default';
+    }}
+
+    function appendLine(text) {{
+      var esc = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      var cls = classifyLine(text);
+      var div = document.createElement('div');
+      div.className = 'll ' + cls;
+      div.innerHTML = esc;
+      linesEl.appendChild(div);
+      if (autoScroll) scrollBottom();
+    }}
+
+    function startStream() {{
+      if (es) {{ es.close(); es = null; }}
+      streamStatus.textContent = '● connecting…';
+      streamStatus.style.color = '#ffcc55';
+
+      es = new EventSource('/admin/run-matching/stream');
+
+      es.addEventListener('line', function(e) {{
+        appendLine(e.data);
+      }});
+
+      es.addEventListener('status', function(e) {{
+        streamStatus.textContent = e.data;
+        streamStatus.style.color = e.data.includes('Complete') || e.data.includes('finished') ? '#7aff9e' :
+                                   e.data.includes('error')    ? '#ff6b6b' : '#ffcc55';
+      }});
+
+      es.addEventListener('done', function(e) {{
+        streamStatus.textContent = '✓ ' + e.data;
+        streamStatus.style.color = '#7aff9e';
+        document.getElementById('cursor').style.animation = 'none';
+        document.getElementById('cursor').style.opacity = '0';
+        var btn = document.getElementById('run-btn');
+        if (btn) {{ btn.disabled = false; btn.textContent = '▶ Run Matching Now'; btn.style.opacity = '1'; btn.style.cursor = 'pointer'; }}
+        document.getElementById('status-label').textContent = 'Idle';
+        es.close(); es = null;
+      }});
+
+      es.onerror = function() {{
+        streamStatus.textContent = '○ stream closed';
+        streamStatus.style.color = 'var(--muted)';
+        if (es) {{ es.close(); es = null; }}
+      }};
+    }}
+
+    // Auto-start stream if pipeline is already running
+    {"startStream();" if is_running else ""}
+
+    // After form submit, start stream
+    document.getElementById('trigger-form').addEventListener('submit', function() {{
+      var btn = document.getElementById('run-btn');
+      btn.disabled = true;
+      btn.textContent = '⏳ Pipeline running…';
+      btn.style.opacity = '0.5';
+      document.getElementById('status-label').textContent = 'Starting…';
+      clearLog();
+      appendLine('▶ Triggering pipeline…');
+      setTimeout(startStream, 100);
+    }});
+    </script>
+    """
+
+    return HTMLResponse(_html_page("Run Matching", body, page="run-matching"))
+
+
+# ── Trigger endpoint ──────────────────────────────────────────────────────────
+
+@router.post("/run-matching/start", response_class=RedirectResponse)
+async def start_matching(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    user_id: str = Form(default=""),
+    force_rescore: str = Form(default=""),
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth),
+):
+    _check_localhost(request)
+
+    if _active_run["running"]:
+        return RedirectResponse(url="/admin/run-matching?msg=Already+running", status_code=303)
+    _ring.clear()
+    _active_run["running"]     = True
+    _active_run["started_at"] = datetime.now(timezone.utc)
+    _active_run["user_filter"] = user_id or "all"
+
+    uid   = user_id.strip() or None
+    force = force_rescore == "1"
+
+    async def _do_run():
+        try:
+            from services.auto_match import run_pipeline_for_new_user
+            if uid:
+                await run_pipeline_for_new_user(uid, force_pool=True, force=force)
+            else:
+                try:
+                    from services.auto_match import run_pipeline_for_all_users
+                    await run_pipeline_for_all_users()
+                except ImportError:
+                    from db.database import AsyncSessionLocal
+                    from models.orm import User as _User
+                    from sqlalchemy import select as _sel
+                    async with AsyncSessionLocal() as session:
+                        rows = await session.execute(_sel(_User))
+                        users = rows.scalars().all()
+                    for u in users:
+                        prefs = u.preferences or {}
+                        if prefs.get("target_roles"):
+                            await run_pipeline_for_new_user(str(u.id), force_pool=True, force=force)
+        except Exception:
+            import traceback, logging
+            logging.getLogger("admin").error("Manual run failed:\n" + traceback.format_exc())
+        finally:
+            _active_run["running"]     = False
+            _active_run["started_at"] = None
+            _active_run["user_filter"] = None
+
+    background_tasks.add_task(_do_run)
+    return RedirectResponse(url="/admin/run-matching", status_code=303)
+
+
+# ── SSE log stream ────────────────────────────────────────────────────────────
+
+@router.get("/run-matching/stream")
+async def stream_matching_log(
+    request: Request,
+    _: None = Depends(_check_auth),
+):
+    _check_localhost(request)
+
+    from fastapi.responses import StreamingResponse
+
+    log_path = _LOG_FILES.get("matching_stdout")
+
+    async def _event_generator():
+        import asyncio
+
+        sent_index = 0   # how many ring buffer lines we've already sent
+
+        yield f"event: status\ndata: ● pipeline running — streaming live from auto_match logger\n\n"
+
+        idle_ticks  = 0
+        max_idle    = 240   # 120s timeout
+        done_marker = False
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            snap = _ring.snapshot()
+            new_lines = snap[sent_index:]
+
+            if new_lines:
+                idle_ticks = 0
+                for line in new_lines:
+                    safe = line.replace("\n", " ")
+                    yield f"event: line\ndata: {safe}\n\n"
+                    low = line.lower()
+                    if ("pipeline complete for user" in low or
+                        "✓ complete" in line or
+                        "complete in" in low and "newuser" in low):
+                        done_marker = True
+                sent_index = len(snap)
+            else:
+                idle_ticks += 1
+
+            # Done marker seen + 1.5s quiet
+            if done_marker and idle_ticks >= 3:
+                yield f"event: done\ndata: ✓ Complete — {sent_index} log lines captured\n\n"
+                break
+
+            # Pipeline flag cleared + quiet for 2s
+            if not _active_run["running"] and idle_ticks >= 4:
+                if sent_index == 0:
+                    yield f"event: line\ndata: (no log output captured — pipeline may have exited early)\n\n"
+                yield f"event: done\ndata: ✓ Pipeline finished — {sent_index} log lines\n\n"
+                break
+
+            if idle_ticks >= max_idle:
+                yield f"event: done\ndata: Timed out\n\n"
+                break
+
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ── Pipeline Funnel Diagnostic ────────────────────────────────────────────────
+
+@router.get("/users/{user_id}/funnel", response_class=HTMLResponse)
+async def funnel_page(
+    request: Request,
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_check_auth),
+):
+    _check_localhost(request)
+    import re as _re
+
+    # ── Load user ──────────────────────────────────────────────────────
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return RedirectResponse(url="/admin?err=User+not+found", status_code=303)
+
+    prefs        = user.preferences or {}
+    target_roles = prefs.get("target_roles", [])
+    role_aliases = prefs.get("role_aliases", {})
+    pref_locs    = prefs.get("preferred_locations", [])
+
+    if not target_roles:
+        body = f'<div class="flash error">✗ User has no target_roles set — funnel cannot run.</div>'
+        return HTMLResponse(_html_page(f"Funnel — {user.email}", body, page="dashboard"))
+
+    # ── Stage 0: Full pool size ────────────────────────────────────────
+    total_row = await db.execute(text("SELECT COUNT(*) FROM job_pool WHERE is_active = TRUE"))
+    total_pool = total_row.scalar()
+
+    # ── Stage 1: SQL ILIKE keyword pre-filter ─────────────────────────
+    from services.auto_match import _build_title_keywords, _role_matches_title
+    keywords = _build_title_keywords(target_roles, role_aliases)
+
+    if keywords:
+        ilike_clauses = " OR ".join(["title ILIKE :kw" + str(i) for i in range(len(keywords))])
+        kw_params = {f"kw{i}": f"%{kw}%" for i, kw in enumerate(keywords)}
+        sql1_count = await db.execute(
+            text(f"SELECT COUNT(*) FROM job_pool WHERE is_active = TRUE AND ({ilike_clauses})"),
+            kw_params,
+        )
+        after_sql = sql1_count.scalar()
+
+        # Pull sample jobs that passed SQL filter
+        sql1_sample = await db.execute(
+            text(f"SELECT job_id, title, company, location, source FROM job_pool WHERE is_active = TRUE AND ({ilike_clauses}) ORDER BY fetched_at DESC LIMIT 200"),
+            kw_params,
+        )
+        sql_jobs = [dict(r._mapping) for r in sql1_sample.fetchall()]
+    else:
+        after_sql = total_pool
+        sql_jobs  = []
+
+    # ── Stage 2: Role title word-overlap filter ────────────────────────
+    role_matched = [j for j in sql_jobs if _role_matches_title(j["title"], target_roles, role_aliases)]
+    after_role   = len(role_matched)
+
+    # Jobs DROPPED by role filter — sample
+    role_dropped = [j for j in sql_jobs if not _role_matches_title(j["title"], target_roles, role_aliases)]
+
+    # ── Stage 3: Location filter ───────────────────────────────────────
+    if pref_locs:
+        from services.user_profile import matches_any_preferred_location
+        loc_passed, loc_dropped = [], []
+        for j in role_matched:
+            loc = j.get("location", "").strip()
+            if not loc or loc.lower() in ("not specified", "n/a", "tbd", ""):
+                loc_passed.append(j)
+            elif matches_any_preferred_location(loc, pref_locs):
+                loc_passed.append(j)
+            else:
+                loc_dropped.append(j)
+        after_loc = len(loc_passed)
+    else:
+        loc_passed  = role_matched
+        loc_dropped = []
+        after_loc   = after_role
+
+    # ── Stage 4: seen_job_ids ─────────────────────────────────────────
+    seen_result = await db.execute(
+        text("SELECT job_id FROM seen_job_ids WHERE user_id = :uid"), {"uid": user_id}
+    )
+    seen_ids = {r[0] for r in seen_result.fetchall()}
+
+    archived_result = await db.execute(
+        text("SELECT job_id FROM archived_job_ids WHERE user_id = :uid"), {"uid": user_id}
+    )
+    archived_ids = {r[0] for r in archived_result.fetchall()}
+
+    truly_new   = [j for j in loc_passed if j["job_id"] not in seen_ids and j["job_id"] not in archived_ids]
+    after_new   = len(truly_new)
+    already_seen = len(loc_passed) - after_new
+
+    # ── Stage 5: stored results ────────────────────────────────────────
+    stored_row = await db.execute(
+        text("SELECT COUNT(*) FROM auto_match_results WHERE user_id = :uid"), {"uid": user_id}
+    )
+    stored_count = stored_row.scalar()
+
+    score_dist = await db.execute(text("""
+        SELECT
+            COUNT(*) FILTER (WHERE score >= 85) AS strong,
+            COUNT(*) FILTER (WHERE score >= 75 AND score < 85) AS good,
+            COUNT(*) FILTER (WHERE score >= 55 AND score < 75) AS partial,
+            AVG(score) AS avg_score,
+            MAX(score) AS max_score,
+            MIN(score) AS min_score
+        FROM auto_match_results WHERE user_id = :uid
+    """), {"uid": user_id})
+    sd = dict(score_dist.mappings().one())
+
+    # ── Build funnel visualization ─────────────────────────────────────
+    def _funnel_row(label, count, prev, color, detail=""):
+        pct     = int(count / max(prev, 1) * 100)
+        dropped = prev - count
+        bar_w   = int(count / max(total_pool, 1) * 500)
+        drop_html = f'<span style="color:var(--red);font-size:11px;">−{dropped:,} dropped ({100-pct}%)</span>' if dropped > 0 else ""
+        return f"""
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px;flex-wrap:wrap;">
+            <span style="font-size:11px;color:var(--muted);width:240px;flex-shrink:0;">{label}</span>
+            <span style="font-size:20px;font-weight:700;color:{color};">{count:,}</span>
+            <span style="font-size:11px;color:var(--muted);">{pct}% of prev</span>
+            {drop_html}
+          </div>
+          <div style="background:#1a1a1a;border-radius:3px;height:8px;width:520px;max-width:100%;">
+            <div style="height:8px;border-radius:3px;background:{color};width:{min(bar_w,500)}px;transition:width 0.3s;"></div>
+          </div>
+          {"<div style='font-size:10px;color:#555;margin-top:3px;'>"+detail+"</div>" if detail else ""}
+        </div>"""
+
+    funnel_html = (
+        _funnel_row("Total active jobs in pool", total_pool, total_pool, "#444",
+                    "All jobs across all sources in job_pool table")
+        + _funnel_row("After SQL keyword filter (ILIKE)", after_sql, total_pool, "#6688aa",
+                    f"Keywords: {', '.join(keywords) if keywords else 'none'}")
+        + _funnel_row("After role title match (60% word overlap)", after_role, after_sql, "#8899cc",
+                    f"Roles: {', '.join(target_roles)}")
+        + _funnel_row("After location filter", after_loc, after_role, "#aabbdd",
+                    f"Preferred: {', '.join(pref_locs) if pref_locs else 'none set — all locations pass'}")
+        + _funnel_row("Truly new (not in seen_job_ids)", after_new, after_loc, "#ffcc55",
+                    f"{already_seen:,} already seen, {len(archived_ids):,} archived")
+        + _funnel_row("Stored results (passed Phase 1+2 + MIN_SCORE≥55)", stored_count, after_loc, "var(--green)",
+                    f"avg score {round(sd['avg_score'] or 0)} · max {round(sd['max_score'] or 0)} · min {round(sd['min_score'] or 0)}")
+    )
+
+    # ── Sample dropped jobs ────────────────────────────────────────────
+    def _job_table(jobs, title, color, limit=15):
+        if not jobs:
+            return f'<p style="color:var(--muted);font-size:11px;">No jobs in this category.</p>'
+        rows = ""
+        for j in jobs[:limit]:
+            rows += f"""<tr>
+              <td style="color:var(--text);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                  title="{j['title']}">{j['title']}</td>
+              <td style="color:var(--muted);">{j.get('company','')}</td>
+              <td style="color:var(--muted);font-size:10px;">{j.get('location','')[:30]}</td>
+              <td style="color:var(--muted);font-size:10px;">{j.get('source','')}</td>
+            </tr>"""
+        more = f'<tr><td colspan="4" style="color:#555;font-size:10px;">…and {len(jobs)-limit} more</td></tr>' if len(jobs) > limit else ""
+        return f"""
+        <p style="font-size:11px;font-weight:700;color:{color};margin-bottom:6px;">{title} ({len(jobs):,})</p>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead><tr>
+            <th style="text-align:left;color:var(--muted);padding-bottom:4px;">Title</th>
+            <th style="text-align:left;color:var(--muted);">Company</th>
+            <th style="text-align:left;color:var(--muted);">Location</th>
+            <th style="text-align:left;color:var(--muted);">Source</th>
+          </tr></thead>
+          <tbody>{rows}{more}</tbody>
+        </table>"""
+
+    samples_html = f"""
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px;">
+      <div class="detail-card">
+        <h3>Jobs passing role filter ✓</h3>
+        {_job_table(role_matched[:15], "Sample matched titles", "var(--green)")}
+      </div>
+      <div class="detail-card">
+        <h3>Jobs dropped by role filter ✗</h3>
+        {_job_table(role_dropped, "Dropped — title didn't match 60% word overlap", "var(--red)")}
+      </div>
+      {"<div class='detail-card'><h3>Jobs dropped by location filter ✗</h3>" + _job_table(loc_dropped, "Location excluded", "#ffaa33") + "</div>" if loc_dropped else ""}
+    </div>"""
+
+    body = f"""
+    <div style="margin-bottom:20px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:18px;font-weight:700;">Pipeline Funnel — {user.display_name or user.email}</div>
+        <div style="font-size:11px;color:var(--muted);">
+          {user.email} · roles: {', '.join(target_roles)} · locations: {', '.join(pref_locs) if pref_locs else 'any'}
+        </div>
+      </div>
+      <a href="/admin/users/{user_id}" style="margin-left:auto;font-size:11px;color:var(--muted);text-decoration:none;">← Back to user</a>
+    </div>
+
+    <div class="detail-card" style="max-width:700px;margin-bottom:24px;">
+      <h3>Where the {total_pool:,} jobs go</h3>
+      <div style="margin-top:16px;">{funnel_html}</div>
+    </div>
+
+    {samples_html}
+    """
+
+    return HTMLResponse(_html_page(f"Funnel — {user.email}", body, page="dashboard"))
 
 
 def _score_bar_html(score) -> str:
@@ -1460,4 +2256,4 @@ async def scoring_audit_page(
         </table>"""
 
     body = stats_html + alert_html + user_switcher + filter_bar + table_html
-    return HTMLResponse(_html_page("Scoring Audit", body))
+    return HTMLResponse(_html_page("Scoring Audit", body, page="scoring-audit"))
