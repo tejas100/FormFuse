@@ -91,7 +91,7 @@ const mobileCardStyles = `
     overflow: hidden;
   }
 
-  /* Chat column — narrows when steel panel is open */
+  /* Chat column — phone-width sidebar when steel panel is open */
   .rack-chat-col {
     flex: 1;
     min-width: 0;
@@ -99,26 +99,71 @@ const mobileCardStyles = `
     flex-direction: column;
     height: 100%;
     overflow: hidden;
-    transition: flex 0.3s cubic-bezier(0.22,1,0.36,1);
+    transition: width 0.35s cubic-bezier(0.22,1,0.36,1),
+                flex  0.35s cubic-bezier(0.22,1,0.36,1);
+  }
+  /* Collapse chat to a narrow sidebar when agent is running */
+  .rack-chat-col.panel-open {
+    flex: 0 0 480px;
+    min-width: 480px;
+    max-width: 480px;
+  }
+  /* When steel panel open: transform desktop logo to match mobile header style —
+     centered, larger, with a gradient fade below so chat scrolls under it cleanly */
+  body.steel-panel-open .logo {
+    left: 0 !important;
+    right: 0 !important;
+    width: 480px !important;
+    justify-content: center !important;
+    font-size: 28px !important;
+    top: 0 !important;
+    padding: 22px 0 16px !important;
+    background: none !important;
+    pointer-events: none;
+    z-index: 101;
+  }
+  /* Single clean gradient behind the logo — separate pseudo on body so stacking is predictable */
+  body.steel-panel-open::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0;
+    width: 480px;
+    height: 90px;
+    background: linear-gradient(
+      to bottom,
+      rgba(8,8,8,1)    0%,
+      rgba(8,8,8,1)    45%,
+      rgba(8,8,8,0.75) 70%,
+      rgba(8,8,8,0.0)  100%
+    );
+    z-index: 100;
+    pointer-events: none;
+  }
+  body.steel-panel-open .logo-dot {
+    width: 7px !important; height: 7px !important;
+  }
+  /* Hide byline when panel open — too cluttered */
+  body.steel-panel-open .byline-link {
+    display: none !important;
   }
 
-  /* Steel live panel — slides in from right */
+  /* Steel live panel — takes all remaining space */
   .rack-steel-panel {
-    width: 0;
-    flex-shrink: 0;
+    flex: 0 0 0px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     height: 100%;
     background: #0a0a0a;
-    border-left: 1px solid rgba(255,255,255,0.07);
-    transition: width 0.3s cubic-bezier(0.22,1,0.36,1);
+    border-left: 4px solid rgba(255,255,255,0.06);
+    transition: flex 0.35s cubic-bezier(0.22,1,0.36,1);
   }
   .rack-steel-panel.open {
-    width: min(55vw, 780px);
+    flex: 1 1 0px;
+    min-width: 0;
   }
   @media (max-width: 900px) {
-    .rack-steel-panel.open { width: 100vw; }
+    .rack-steel-panel.open { flex: 0 0 100vw; }
     .rack-chat-col.panel-open { display: none; }
   }
 
@@ -522,6 +567,29 @@ const mobileCardStyles = `
     .rack-card-row { gap: 10px !important; }
     .rack-card-padding { padding: 13px 14px !important; border-radius: 12px !important; }
 
+  }
+  /* When steel panel is open, apply the exact same styles as mobile —
+     the chat column is the same ~420px width so the mobile rules fit perfectly */
+  .rack-chat-col.panel-open .rack-chat-scroll { padding: 16px 16px 12px 68px; padding-top: calc(80px + 12px); }
+  .rack-chat-col.panel-open .rack-greeting-title { font-size: clamp(24px, 7vw, 36px); letter-spacing: -1px; }
+  .rack-chat-col.panel-open .rack-greeting-sub { font-size: 14px; }
+  .rack-chat-col.panel-open .rack-bubble-user { max-width: 85%; font-size: 13px; }
+  .rack-chat-col.panel-open .rack-bubble-rack { max-width: 100%; }
+  .rack-chat-col.panel-open .rack-msg-container { width: 100% !important; max-width: 100% !important; }
+  .rack-chat-col.panel-open .rack-chat-input-bar { padding: 10px 16px 12px 68px; }
+  .rack-chat-col.panel-open .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 16px; }
+  .rack-chat-col.panel-open .rack-suggestion-chips { gap: 6px; flex-wrap: nowrap !important; overflow-x: auto !important; scrollbar-width: none !important; }
+  .rack-chat-col.panel-open .rack-suggestion-chips::-webkit-scrollbar { display: none !important; }
+  .rack-chat-col.panel-open .rack-suggestion-chip { font-size: 12px; padding: 7px 13px; }
+  .rack-chat-col.panel-open .rack-card-collapsed-skills { display: none !important; }
+  .rack-chat-col.panel-open .rack-card-rank { font-size: 16px !important; min-width: 28px !important; }
+  .rack-chat-col.panel-open .rack-card-name { font-size: 14px !important; }
+  .rack-chat-col.panel-open .rack-card-score-num { font-size: 22px !important; }
+  .rack-chat-col.panel-open .rack-card-score-label { font-size: 11px !important; }
+  .rack-chat-col.panel-open .rack-card-badges { gap: 5px !important; margin-bottom: 5px !important; }
+  .rack-chat-col.panel-open .rack-card-row { gap: 10px !important; }
+  .rack-chat-col.panel-open .rack-card-padding { padding: 13px 14px !important; border-radius: 12px !important; }
+  @media (max-width: 600px) {
     /* JD chips: horizontal scroll on mobile */
     .rack-jd-chips {
       flex-wrap: nowrap !important;
@@ -637,6 +705,76 @@ const TAILOR_STEP_DEFS = [
   { id: 'generate_resume',label: 'Tailoring resume for this role'},
   { id: 'generate_pdf',   label: 'Generating PDF'               },
 ]
+
+// ── ScaledLiveIframe ────────────────────────────────────────────────────────
+// "cover" zoom: like background-size:cover but for a cross-origin iframe.
+// Computes scale = max(panelW/nativeW, panelH/nativeContentH) so the content
+// always fills the panel with no black bars, cropping any overflow edges.
+// CHROME_CROP_TOP: native px to skip at top of the Steel viewer iframe
+// (browser chrome: tab strip + address bar). Tune if layout changes.
+const CHROME_CROP_TOP = 185
+// CHROME_CROP_BOTTOM: native px to skip at bottom (status bar / blank space)
+const CHROME_CROP_BOTTOM = 60
+
+function ScaledLiveIframe({ src, nativeWidth = 1280 }) {
+  const wrapperRef = useRef(null)
+  const [xform, setXform] = useState({ scale: 1, tx: 0, ty: 0 })
+
+  useEffect(() => {
+    const el = wrapperRef.current
+    if (!el) return
+    const update = () => {
+      const { width: panelW, height: panelH } = el.getBoundingClientRect()
+      if (panelW <= 0 || panelH <= 0) return
+
+      // Native content area after cropping top + bottom chrome
+      const nativeContentH = 900 - CHROME_CROP_TOP - CHROME_CROP_BOTTOM
+
+      // "cover" scale: pick whichever axis needs more zoom to fill the panel
+      const scaleX = panelW / nativeWidth
+      const scaleY = panelH / nativeContentH
+      const scale  = Math.max(scaleX, scaleY)
+
+      // After scaling, center the content in the panel
+      const scaledW = nativeWidth * scale
+      const scaledH = nativeContentH * scale
+      const tx = (panelW - scaledW) / 2          // center horizontally
+      const ty = -CHROME_CROP_TOP * scale         // shift chrome off the top
+
+      setXform({ scale, tx, ty })
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [nativeWidth])
+
+  const { scale, tx, ty } = xform
+
+  return (
+    <div
+      ref={wrapperRef}
+      style={{ position: 'absolute', inset: 0, overflow: 'hidden', background: '#000' }}
+    >
+      <iframe
+        src={src}
+        title="Live browser session"
+        allow="autoplay"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: nativeWidth,
+          height: 900,
+          border: 'none',
+          display: 'block',
+          transformOrigin: 'top left',
+          transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+        }}
+      />
+    </div>
+  )
+}
 
 function TailorStepsCard({ steps }) {
   // steps: [{ step, status, label }] — accumulated from SSE events
@@ -1158,8 +1296,11 @@ export default function Home() {
   useEffect(() => () => clearTimeout(filterRevealRef.current), []) // eslint-disable-line
 
   // Notify App.jsx when Steel panel opens or closes so TabBar can animate
+  // Also toggle body class so CSS can restyle the desktop header
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('rack:steel-panel', { detail: { open: !!steelViewer } }))
+    document.body.classList.toggle('steel-panel-open', !!steelViewer)
+    return () => document.body.classList.remove('steel-panel-open')
   }, [steelViewer])
 
   // Mood transitions
@@ -1917,7 +2058,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
   // ── Match handler — LLM router is the single truth, flat switch executes ───
   // No heuristics. No regex. No refs. The backend LLM picks the tool; we execute.
   const handleMatch = async () => {
-    if (!jd.trim() || loading || tailorLoading) return
+    if (!jd.trim() || loading || tailorLoading || applyLoading) return
 
     // ── Onboarding intercept — active steps consume the send ───────
     if (isAuthed && onboardingStep && onboardingStep !== 'done' && onboardingStep !== 'resume') {
@@ -2726,7 +2867,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
       <div className="rack-chat-scroll" ref={chatScrollRef}>
 
         {/* "new chat" pill — floats top-right inside scroll area when a convo is active */}
-        {hasConversation && (
+        {hasConversation && !steelViewer && (
           <button
             onClick={() => { setMessages([]); setJd(''); setExpandedIds(new Set()); localStorage.removeItem(_chatHistoryKey) }}
             style={{
@@ -3438,7 +3579,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                     {/* ⚡ Apply button — only for auth'd users with a URL */}
                                     {isAuthed && job.url && (
                                       <button
-                                        onClick={() => handleApply([job])}
+                                        onClick={(e) => { e.stopPropagation(); handleApply([job]) }}
                                         disabled={applyLoading}
                                         style={{
                                           display: 'flex', alignItems: 'center', gap: '4px',
@@ -3888,6 +4029,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                 <div className="rack-card-score-num" style={{ fontFamily:'var(--font-display)', fontSize:'28px', fontWeight:800, letterSpacing:'-1px', color: i===0 ? 'var(--accent)' : 'var(--text)' }}>{displayScore}</div>
                                 <div className="rack-card-score-label" style={{ fontSize:'14px', color:'var(--text-dim)', fontWeight:300 }}>match</div>
                                 <button
+                                  className="rack-card-download"
                                   onClick={(e) => handleDownload(e, r.resume_id, r.name)}
                                   title="Download resume"
                                   style={{
@@ -4217,8 +4359,6 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
 
     {/* ── Steel live panel — slides in alongside chat, no modal/overlay ── */}
     {(() => {
-      const applyMsg = messages.find(m => m.isApplyResult && (m.loading || (m.applySteps && m.applySteps.length > 0)))
-      const steps = applyMsg?.applySteps || []
       const hasLiveView = !!steelViewer?.liveViewUrl
       return (
         <div className={`rack-steel-panel${steelViewer ? ' open' : ''}`}>
@@ -4260,90 +4400,32 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               >×</button>
             </div>
 
-            {/* Panel body — iframe + step sidebar */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minHeight: 0 }}>
-
-              {/* Live browser iframe */}
-              <div style={{ flex: 1, position: 'relative', background: '#000', borderRight: '1px solid rgba(255,255,255,0.06)' }}>
-                {hasLiveView ? (
-                  <iframe
-                    src={`${steelViewer.liveViewUrl}?interactive=false`}
-                    style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
-                    title="Live browser session"
-                    allow="autoplay"
-                  />
-                ) : (
-                  <div style={{
-                    width: '100%', height: '100%',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    flexDirection: 'column', gap: 12,
-                    color: 'rgba(255,255,255,0.15)', fontSize: 13, fontFamily: 'var(--font-body)',
-                  }}>
-                    <div style={{
-                      width: 28, height: 28,
-                      border: '2px solid rgba(232,255,107,0.15)',
-                      borderTopColor: '#e8ff6b', borderRadius: '50%',
-                      animation: 'spin 0.8s linear infinite',
-                    }} />
-                    Connecting to browser…
-                  </div>
-                )}
-              </div>
-
-              {/* Step feed sidebar */}
-              <div style={{
-                width: 220, flexShrink: 0,
-                display: 'flex', flexDirection: 'column',
-                overflowY: 'auto', padding: '12px 10px', gap: 3,
-                background: '#0a0a0a',
-              }}>
-                {/* Status line */}
+            {/* Panel body — iframe only; steps live in ApplyAgentCard in the chat column */}
+            {/* Scale-to-fill: Steel sessions run at 1280px wide. We set the iframe to that
+                native width, then use CSS scale() to shrink it to the actual panel width,
+                anchored top-left. overflow:hidden on the wrapper clips the bottom black bar.
+                The panel is ~700px wide → scale ≈ 0.547 → fills edge-to-edge, no letterbox. */}
+            <div
+              style={{ flex: 1, position: 'relative', background: '#000', overflow: 'hidden', minHeight: 0 }}
+            >
+              {hasLiveView ? (
+                <ScaledLiveIframe src={`${steelViewer.liveViewUrl}?interactive=false`} nativeWidth={1280} />
+              ) : (
                 <div style={{
-                  display: 'flex', alignItems: 'center', gap: 7,
-                  marginBottom: 8, paddingBottom: 8,
-                  borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0,
+                  width: '100%', height: '100%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flexDirection: 'column', gap: 12,
+                  color: 'rgba(255,255,255,0.15)', fontSize: 13, fontFamily: 'var(--font-body)',
                 }}>
                   <div style={{
-                    width: 16, height: 16, flexShrink: 0,
-                    border: '2px solid rgba(232,255,107,0.2)',
-                    borderTopColor: steps.length === 0 ? '#e8ff6b' : 'transparent',
-                    borderRadius: '50%',
-                    animation: steps.length === 0 ? 'spin 0.8s linear infinite' : 'none',
+                    width: 28, height: 28,
+                    border: '2px solid rgba(232,255,107,0.15)',
+                    borderTopColor: '#e8ff6b', borderRadius: '50%',
+                    animation: 'spin 0.8s linear infinite',
                   }} />
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>
-                    {steps.length === 0
-                      ? 'Connecting…'
-                      : `${steps.filter(s => s.status === 'ok').length} field${steps.filter(s => s.status === 'ok').length !== 1 ? 's' : ''} filled`
-                    }
-                  </span>
+                  Connecting to browser…
                 </div>
-                {/* Steps */}
-                {steps.map((step, i) => {
-                  const icon  = step.status === 'ok' ? '✓' : step.status === 'skip' ? '–' : step.status === 'error' ? '✕' : step.status === 'writing' ? '✎' : '·'
-                  const color = step.status === 'ok' ? '#a3e635' : step.status === 'skip' ? 'rgba(255,255,255,0.2)' : step.status === 'error' ? '#f87171' : step.status === 'writing' ? '#e8ff6b' : 'var(--text-dim)'
-                  return (
-                    <div key={i} style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 6,
-                      padding: '4px 6px', borderRadius: 5,
-                      background: i === steps.length - 1 ? 'rgba(232,255,107,0.04)' : 'transparent',
-                    }}>
-                      <span style={{ fontSize: 10, fontWeight: 700, color, flexShrink: 0, width: 11, textAlign: 'center', marginTop: 2, fontFamily: 'monospace' }}>{icon}</span>
-                      <span style={{ fontSize: 11, color: step.status === 'skip' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.7)', fontFamily: 'var(--font-body)', lineHeight: 1.4, wordBreak: 'break-word' }}>{step.text}</span>
-                    </div>
-                  )
-                })}
-                {applyMsg?.loading && steps.length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px' }}>
-                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#e8ff6b', animation: 'pulse 1.2s ease-in-out infinite', flexShrink: 0, marginLeft: 3 }} />
-                    <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-body)' }}>working…</span>
-                  </div>
-                )}
-                {steps.length === 0 && (
-                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.12)', fontSize: 11, fontFamily: 'var(--font-body)', textAlign: 'center', padding: '16px 6px' }}>
-                    Steps appear here as the agent works
-                  </div>
-                )}
-              </div>
+              )}
             </div>
 
             {/* Panel footer */}
