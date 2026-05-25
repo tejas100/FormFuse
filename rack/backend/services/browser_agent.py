@@ -511,6 +511,84 @@ async def run_apply_agent(
             await asyncio.sleep(2)
             yield _step("ok", "Navigated to " + company + " application")
 
+            # -- Job-removed detection ----------------------------------------
+            # Check BEFORE any field detection. If the page is a job listing
+            # board (no application form) or explicitly says the job is gone,
+            # bail early with a job_removed event so the frontend can clean up.
+            try:
+                # Extra wait — Greenhouse renders its "no longer open" banner
+                # via JS after initial page load. 2s may not be enough.
+                await asyncio.sleep(1.5)
+
+                page_text_check = (await page.inner_text("body")).lower()
+                page_url_check  = page.url.lower()
+
+                # Explicit removal signals in page text.
+                # IMPORTANT: "no longer available" must come AFTER more specific
+                # phrases so it doesn't shadow them in the list, but since we
+                # use `any()` the order doesn't matter — all are checked.
+                _REMOVED_PHRASES = [
+                    # Greenhouse-specific (exact banner text)
+                    "the job you are looking for is no longer open",
+                    "job is no longer open",
+                    # Generic ATS phrases
+                    "no longer accepting applications",
+                    "job has been removed",
+                    "position has been filled",
+                    "this role is no longer available",
+                    "posting has expired",
+                    "posting has been removed",
+                    "this job is no longer available",
+                    "this position is no longer available",
+                    "this listing has expired",
+                    "position is closed",
+                    "job is closed",
+                    "application period has ended",
+                    "this job posting has been closed",
+                    "this job posting is closed",
+                    # Ashby / Lever
+                    "this role has been filled",
+                    "role is no longer available",
+                    "application is closed",
+                ]
+                text_signals_removed = any(p in page_text_check for p in _REMOVED_PHRASES)
+
+                # Detect landing on a job BOARD (listing page) instead of an application.
+                # Board pages have no <form> element but DO have filter/search inputs —
+                # so we check only for the absence of a form, not absence of all inputs.
+                has_form = await page.locator("form").count() > 0
+
+                # Board-root URL patterns — landed on company job listing, not a specific application
+                _BOARD_URL_PATTERNS = [
+                    "/jobs", "/careers", "/job-search", "/openings",
+                    "/positions", "/opportunities",
+                ]
+                url_looks_like_board = (
+                    not has_form
+                    and any(p in page_url_check for p in _BOARD_URL_PATTERNS)
+                )
+
+                if text_signals_removed or url_looks_like_board:
+                    reason = (
+                        "The job posting is no longer available — it may have been filled or removed."
+                        if text_signals_removed
+                        else "Could not reach the application form — the URL points to a job board rather than a specific opening."
+                    )
+                    logger.info(
+                        f"[browser_agent] Job-removed detected: "
+                        f"text_signal={text_signals_removed} board_url={url_looks_like_board} "
+                        f"url={page.url!r}"
+                    )
+                    yield {
+                        "type":    "job_removed",
+                        "text":    reason,
+                        "job_id":  job_id,
+                        "job_url": job_url,
+                    }
+                    return
+            except Exception as _jc_err:
+                logger.debug(f"[browser_agent] Job-removed check failed (continuing): {_jc_err}")
+
             # -- DOM snapshot -------------------------------------------------
             raw_html = await page.content()
 

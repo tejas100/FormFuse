@@ -169,7 +169,7 @@ async def apply_stream(
         from services.browser_agent import run_apply_agent
         from datetime import datetime, timezone
         from models.orm import AutoMatchResult
-        from sqlalchemy import update as sa_update
+        from sqlalchemy import update as sa_update, delete as sa_delete
 
         try:
             async for event in run_apply_agent(
@@ -183,6 +183,26 @@ async def apply_stream(
                 user_id     = str(current_user.id),
             ):
                 yield _sse(event)
+
+                # Job posting no longer exists — delete from auto_match_results
+                # so it never surfaces again for this user.
+                if event.get("type") == "job_removed" and event.get("job_id"):
+                    try:
+                        from db.database import AsyncSessionLocal
+                        async with AsyncSessionLocal() as rm_db:
+                            await rm_db.execute(
+                                sa_delete(AutoMatchResult).where(
+                                    AutoMatchResult.user_id == current_user.id,
+                                    AutoMatchResult.job_id  == event["job_id"],
+                                )
+                            )
+                            await rm_db.commit()
+                        logger.info(
+                            f"[apply] Deleted removed job {event['job_id']} "
+                            f"from auto_match_results for user {current_user.email}"
+                        )
+                    except Exception as db_err:
+                        logger.warning(f"[apply] DB delete after job_removed failed: {db_err}")
 
                 # On successful submit — mark applied in DB
                 if event.get("type") == "submitted" and event.get("job_id"):

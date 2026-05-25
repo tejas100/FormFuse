@@ -193,7 +193,7 @@ export function MobileMenu({ active, onSwitch }) {
   )
 }
 
-export default function TabBar({ active, onSwitch }) {
+export default function TabBar({ active, onSwitch, steelOpen = false }) {
   const [settled, setSettled] = useState(false)
 
   useEffect(() => {
@@ -204,19 +204,33 @@ export default function TabBar({ active, onSwitch }) {
   return (
     <>
       <style>{`
-        /* ── Desktop: floating pill at top (unchanged) ── */
+        /* ── Desktop: floating pill ── */
         .tabbar-wrap {
           position: fixed;
-          left: 50%;
-          transform: translateX(-50%);
           z-index: 200;
-          transition: top 0.9s cubic-bezier(0.34, 1.56, 0.64, 1);
+          /* Default: horizontally centred at top */
+          left: 50%;
+          top: 28px;
+          transform: translateX(-50%);
+          transition:
+            top          0.55s cubic-bezier(0.22, 1, 0.36, 1),
+            left         0.55s cubic-bezier(0.22, 1, 0.36, 1),
+            transform    0.55s cubic-bezier(0.22, 1, 0.36, 1);
         }
-        .tabbar-wrap.start  { top: 44%; }
+        .tabbar-wrap.start   { top: 44%; }
         .tabbar-wrap.settled { top: 28px; }
 
+        /* Steel open: move pill to vertical strip anchored to left edge, vertically centred */
+        .tabbar-wrap.steel-open {
+          left: 0;
+          top: 50%;
+          transform: translate(0, -50%);
+        }
+
+        /* The pill container — horizontal by default, vertical when steel is open */
         .tabbar {
           display: flex;
+          flex-direction: row;
           align-items: center;
           gap: 4px;
           background: var(--tabbar-bg);
@@ -226,17 +240,46 @@ export default function TabBar({ active, onSwitch }) {
           backdrop-filter: blur(28px);
           -webkit-backdrop-filter: blur(28px);
           box-shadow: var(--tabbar-shadow);
-          transition: box-shadow 0.9s ease;
+          transition:
+            flex-direction 0s,
+            border-radius  0.45s cubic-bezier(0.22, 1, 0.36, 1),
+            padding        0.45s cubic-bezier(0.22, 1, 0.36, 1),
+            box-shadow     0.9s ease;
         }
         .tabbar-wrap.settled .tabbar {
           box-shadow: var(--tabbar-settled-shadow);
+        }
+        /* Go vertical: pill becomes a slim left column */
+        .steel-open .tabbar {
+          flex-direction: column;
+          border-radius: 0 16px 16px 0;
+          padding: 10px 5px;
+          gap: 2px;
+        }
+
+        /* Tab label — collapses away when steel is open */
+        .tab-label {
+          display: inline-block;
+          max-width: 80px;
+          overflow: hidden;
+          white-space: nowrap;
+          opacity: 1;
+          transition:
+            max-width    0.35s cubic-bezier(0.22, 1, 0.36, 1),
+            opacity      0.2s  ease,
+            margin-left  0.35s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .steel-open .tab-label {
+          max-width: 0;
+          opacity: 0;
+          margin-left: 0;
         }
 
         .tab-btn {
           display: flex;
           align-items: center;
           gap: 7px;
-          padding: 10px 22px;
+          padding: 10px 16px;
           border-radius: 30px;
           border: none;
           background: transparent;
@@ -245,9 +288,19 @@ export default function TabBar({ active, onSwitch }) {
           font-size: 14px;
           font-weight: 500;
           cursor: pointer;
-          transition: all 0.25s ease;
+          transition:
+            all         0.25s ease,
+            padding     0.35s cubic-bezier(0.22, 1, 0.36, 1),
+            border-radius 0.35s cubic-bezier(0.22, 1, 0.36, 1);
           white-space: nowrap;
           letter-spacing: 0.01em;
+        }
+        /* Icon-only vertical buttons — square, centred icon */
+        .steel-open .tab-btn {
+          padding: 11px;
+          border-radius: 12px;
+          justify-content: center;
+          gap: 0;
         }
         .tab-btn:hover { color: var(--tab-inactive-hover); }
         .tab-btn.active {
@@ -256,23 +309,17 @@ export default function TabBar({ active, onSwitch }) {
           box-shadow: var(--tab-active-shadow);
         }
 
-        /* ── Mobile: hide both bars — hamburger menu handles nav ── */
+        /* ── Mobile: hide pill ── */
         @media (max-width: 600px) {
-          .tabbar-wrap {
-            display: none;
-          }
-          .tabbar-mobile {
-            display: none !important;
-          }
+          .tabbar-wrap { display: none; }
+          .tabbar-mobile { display: none !important; }
         }
 
         /* Hidden on desktop */
         .tabbar-mobile {
           display: none;
           position: fixed;
-          bottom: 0;
-          left: 0;
-          right: 0;
+          bottom: 0; left: 0; right: 0;
           z-index: 200;
           background: var(--mobile-bar-bg);
           border-top: 1px solid var(--mobile-bar-border);
@@ -304,46 +351,40 @@ export default function TabBar({ active, onSwitch }) {
           -webkit-tap-highlight-color: transparent;
           position: relative;
         }
-
         .tab-btn-mobile .mob-icon {
           font-size: 20px;
           line-height: 1;
           transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
-
-        .tab-btn-mobile.active {
-          color: var(--accent);
-        }
-
-        .tab-btn-mobile.active .mob-icon {
-          transform: translateY(-2px) scale(1.15);
-        }
-
-        /* Active indicator dot */
+        .tab-btn-mobile.active { color: var(--accent); }
+        .tab-btn-mobile.active .mob-icon { transform: translateY(-2px) scale(1.15); }
         .tab-btn-mobile.active::before {
           content: '';
           position: absolute;
-          top: 0;
-          left: 50%;
+          top: 0; left: 50%;
           transform: translateX(-50%);
-          width: 24px;
-          height: 2px;
+          width: 24px; height: 2px;
           background: var(--accent);
           border-radius: 0 0 4px 4px;
         }
       `}</style>
 
-      {/* Desktop: floating pill (existing behavior, untouched) */}
-      <div className={`tabbar-wrap ${settled ? 'settled' : 'start'}`}>
+      {/* Desktop: floating pill */}
+      <div className={[
+        'tabbar-wrap',
+        settled ? 'settled' : 'start',
+        steelOpen ? 'steel-open' : '',
+      ].filter(Boolean).join(' ')}>
         <div className="tabbar">
           {TABS.map(tab => (
             <button
               key={tab}
               className={`tab-btn ${active === tab ? 'active' : ''}`}
               onClick={() => onSwitch(tab)}
+              title={tab}
             >
-              <span>{TAB_ICONS[tab]}</span>
-              {tab}
+              <span style={{ flexShrink: 0 }}>{TAB_ICONS[tab]}</span>
+              <span className="tab-label">{tab}</span>
             </button>
           ))}
         </div>

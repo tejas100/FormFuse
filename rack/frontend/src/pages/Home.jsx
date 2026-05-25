@@ -1079,6 +1079,7 @@ export default function Home() {
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [tailorLoading, setTailorLoading] = useState(false)
   const [applyLoading, setApplyLoading]   = useState(false)
+  const applyInProgressRef               = useRef(false)  // sync guard — prevents double-stream on fast double-click
   // Steel live browser viewer — null when no session active
   // { liveViewUrl, sessionId, isOpen }
   const [steelViewer, setSteelViewer]     = useState(null)
@@ -1155,6 +1156,11 @@ export default function Home() {
     filterRevealRef.current = setTimeout(tick, CARD_INTERVAL)
   }
   useEffect(() => () => clearTimeout(filterRevealRef.current), []) // eslint-disable-line
+
+  // Notify App.jsx when Steel panel opens or closes so TabBar can animate
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('rack:steel-panel', { detail: { open: !!steelViewer } }))
+  }, [steelViewer])
 
   // Mood transitions
   useEffect(() => {
@@ -2282,6 +2288,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
     if (!applyJobs || applyJobs.length === 0) return
     if (!isAuthed) return   // apply router requires auth — enforced server-side too
 
+    // Synchronous ref guard — state setter is async across renders,
+    // so applyLoading alone can't block a rapid double-click
+    if (applyInProgressRef.current) return
+    applyInProgressRef.current = true
+
     setApplyLoading(true)
 
     // Show warning shimmer once per browser session before any apply fires
@@ -2312,6 +2323,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
         applySteps:   [],
         applyDone:    null,
         applyError:   null,
+        applyJobRemoved: null,
         applyJobTitle: jobTitle,
         applyCompany:  company,
         loading:       true,
@@ -2377,6 +2389,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                 ? { ...m, applySteps: [...(m.applySteps || []), event] }
                 : m
               ))
+            } else if (event.type === 'job_removed') {
+              setSteelViewer(null)
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applyJobRemoved: event.text || true, loading: false }
+                : m
+              ))
             } else if (event.type === 'submitted') {
               const { type, ...submittedData } = event
               setMessages(prev => prev.map(m => m.id === msgId
@@ -2411,6 +2429,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
     // Dismiss the Steel viewer pill/modal — agent is done
     setSteelViewer(null)
     setApplyLoading(false)
+    applyInProgressRef.current = false
   }
 
 
@@ -3607,6 +3626,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         error={msg.applyError || null}
                         done={msg.applyDone || null}
                         submitted={msg.applySubmitted || null}
+                        jobRemoved={msg.applyJobRemoved || null}
                         jobTitle={msg.applyJobTitle}
                         company={msg.applyCompany}
                       />

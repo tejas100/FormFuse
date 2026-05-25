@@ -39,6 +39,7 @@ const AUTH_REQUIRED_TABS = ['Tracking']
 function AppInner() {
   const [active, setActive] = useState('Home')
   const [pageKey, setPageKey] = useState(0)
+  const [steelPanelOpen, setSteelPanelOpen] = useState(false)
   const { user, authLoading, signInWithGoogle } = useAuth()
   const { theme } = useTheme()
   const { show: showWelcome, dismiss: dismissWelcome } = useFirstVisit()
@@ -57,6 +58,13 @@ function AppInner() {
     window.addEventListener('rack:navigate', handler)
     return () => window.removeEventListener('rack:navigate', handler)
   }, []) // eslint-disable-line
+
+  // ── rack:steel-panel — fired by Home.jsx when Steel viewer opens/closes ──
+  useEffect(() => {
+    const handler = (e) => setSteelPanelOpen(!!e.detail?.open)
+    window.addEventListener('rack:steel-panel', handler)
+    return () => window.removeEventListener('rack:steel-panel', handler)
+  }, [])
 
   const ActivePage = PAGE_MAP[active]
 
@@ -83,7 +91,7 @@ function AppInner() {
          / by Tejas BK
       </a>
 
-      <TabBar active={active} onSwitch={switchTab} />
+      <TabBar active={active} onSwitch={switchTab} steelOpen={steelPanelOpen} />
 
       {isGated ? (
         <GateScreen tab={active} onSignIn={signInWithGoogle} />
