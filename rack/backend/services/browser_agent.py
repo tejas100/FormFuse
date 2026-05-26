@@ -1304,19 +1304,63 @@ async def run_apply_agent(
                 await asyncio.sleep(0.35)
 
             # -- Resume file upload ------------------------------------------
-            # The LLM marks file fields as skip=True. We handle them here
-            # by downloading from Supabase Storage and using set_input_files().
-            resume_file_field = next(
-                (f for f in fields
-                 if f.get("field_type") == "file"
-                 or "resume" in (f.get("field_label") or "").lower()
-                 or "cv" in (f.get("field_label") or "").lower()),
-                None
+            # The LLM marks file fields as skip=True. We resolve the resume_id
+            # (from the request, or the best-match resume picked by apply.py),
+            # download the bytes from Supabase Storage, then attach the file
+            # using the Steel-native CDP pattern.
+            #
+            # Two-tier attachment strategy:
+            #
+            #   PRIMARY  — Steel session file upload + CDP DOM.setFileInputFiles
+            #              Upload bytes into the Steel VM filesystem first, then
+            #              bind the VM-side path to the <input type="file"> node
+            #              via CDP. This is what Steel's docs recommend because
+            #              Playwright's buffer-based set_input_files() over a
+            #              remote CDP connection can silently desync — the
+            #              change event fires but no real file exists on the VM
+            #              filesystem at submit time.
+            #
+            #   FALLBACK — JS unhide → Playwright set_input_files(buffer=...)
+            #              → dispatch change/input → re-hide. The legacy path,
+            #              kept as safety net because the CDP path is new and
+            #              auto-apply is unattended. If primary fails, we still
+            #              try the legacy path before giving up.
+            #
+            # We specifically target input[type="file"][id="resume"] so we
+            # never accidentally hit the cover_letter input.
+            #
+            # DOM probe, NOT LLM-derived: the LLM that builds `fields` is
+            # non-deterministic and has been observed silently dropping the
+            # skip=True file entries (form_filler returned 19 fields instead
+            # of 21, omitting both Attach inputs). The DOM is ground truth.
+            # If a resume file input exists on the page, attach. End of story.
+            try:
+                _has_file_input = await page.evaluate("""() => {
+                    const el = document.querySelector('input[type="file"]#resume')
+                            || document.querySelector('input[type="file"]');
+                    return !!el;
+                }""")
+            except Exception:
+                _has_file_input = False
+
+            # Keep `resume_file_field` for compatibility with later log lines,
+            # but it's now a boolean sourced from the DOM rather than from the
+            # LLM's field inventory.
+            resume_file_field = _has_file_input
+
+            # resolve resume_id: prefer explicit param, fall back to profile dict
+            _effective_resume_id = resume_id or profile.get("_resume_id") or ""
+
+            logger.info(
+                f"[browser_agent] resume upload preflight: "
+                f"has_file_input={_has_file_input} "
+                f"effective_resume_id={_effective_resume_id!r} "
+                f"user_id={user_id!r}"
             )
-            if resume_file_field and resume_id and user_id:
+
+            if resume_file_field and _effective_resume_id and user_id:
                 import os as _os, httpx as _httpx
                 try:
-                    # Get signed URL from our own resumes endpoint
                     from db.database import AsyncSessionLocal as _ASL
                     from models.orm import Resume as _ResumeORM
                     from sqlalchemy import select as _select
@@ -1324,7 +1368,7 @@ async def run_apply_agent(
                     async with _ASL() as _rdb:
                         _res = await _rdb.execute(
                             _select(_ResumeORM).where(
-                                _ResumeORM.id == _uuid2.UUID(resume_id),
+                                _ResumeORM.id == _uuid2.UUID(_effective_resume_id),
                                 _ResumeORM.user_id == _uuid2.UUID(user_id),
                             )
                         )
@@ -1336,41 +1380,179 @@ async def run_apply_agent(
                             _os.environ["SUPABASE_URL"],
                             _os.environ["SUPABASE_SERVICE_KEY"],
                         )
-                        _signed = _sb.storage.from_("resumes").create_signed_url(
+                        _signed_resp = _sb.storage.from_("resumes").create_signed_url(
                             _resume_row.storage_path, 120
                         )
-                        _signed_url = _signed.get("signedURL") or _signed.get("signedUrl") or ""
+                        # supabase-py v2 returns a Pydantic model with .signed_url,
+                        # NOT a plain dict — probe both forms for compatibility.
+                        _signed_url = (
+                            getattr(_signed_resp, "signed_url", None)
+                            or getattr(_signed_resp, "signedURL", None)
+                            or (isinstance(_signed_resp, dict) and (
+                                _signed_resp.get("signedURL")
+                                or _signed_resp.get("signedUrl")
+                                or _signed_resp.get("signed_url")
+                            ))
+                            or ""
+                        )
                         if _signed_url:
                             yield _step("ok", "Downloading resume for upload...")
                             async with _httpx.AsyncClient() as _hx:
                                 _r = await _hx.get(_signed_url, timeout=20)
-                            _ext = (_resume_row.file_ext or "pdf").lstrip(".")
+                            _ext  = (_resume_row.file_ext or "pdf").lstrip(".")
                             _fname = (_resume_row.filename or f"resume.{_ext}")
-                            _mime = "application/pdf" if _ext == "pdf" else "application/octet-stream"
+                            _mime  = "application/pdf" if _ext == "pdf" else "application/octet-stream"
+                            _resume_bytes = _r.content
 
-                            # Use bytes buffer directly — temp file paths won't work
-                            # because Playwright is connected over CDP to a Steel cloud
-                            # browser on a different machine that can't access our /tmp.
-                            _file_inp = page.locator('input[type="file"]').first
-                            if await _file_inp.count() > 0:
-                                await _file_inp.set_input_files(files=[{
-                                    "name":     _fname,
-                                    "mimeType": _mime,
-                                    "buffer":   _r.content,
-                                }])
-                                filled_count += 1
-                                yield _step("ok", f'Attached resume: {_fname}')
-                            else:
+                            # Confirm a file input exists on the page (used by
+                            # both primary and fallback paths).
+                            _resume_inp = page.locator('input[type="file"]#resume')
+                            if await _resume_inp.count() == 0:
+                                _resume_inp = page.locator('input[type="file"]').first
+
+                            if await _resume_inp.count() == 0:
                                 yield _step("skip", "No file input found on page")
+                            else:
+                                _attached = False
+                                _attach_method = None
+
+                                # ── PRIMARY: Steel VM upload + CDP setFileInputFiles ──
+                                # Per Steel docs (https://docs.steel.dev/overview/files-api/overview):
+                                # upload bytes into the Steel VM, then point
+                                # the input at the VM-side path via CDP.
+                                try:
+                                    from services.steel_client import upload_session_file
+                                    _vm_path = await upload_session_file(
+                                        session_id=steel_session_id,
+                                        file_bytes=_resume_bytes,
+                                        filename=_fname,
+                                        mime_type=_mime,
+                                    )
+                                    if _vm_path:
+                                        # Open a CDP session on the page and bind the
+                                        # uploaded VM-side file path to the input node.
+                                        _cdp = await context.new_cdp_session(page)
+                                        try:
+                                            _doc = await _cdp.send("DOM.getDocument")
+                                            _root_id = _doc["root"]["nodeId"]
+
+                                            # Try #resume first, then any file input.
+                                            _node = await _cdp.send("DOM.querySelector", {
+                                                "nodeId":   _root_id,
+                                                "selector": 'input[type="file"]#resume',
+                                            })
+                                            _node_id = _node.get("nodeId", 0)
+                                            if not _node_id:
+                                                _node = await _cdp.send("DOM.querySelector", {
+                                                    "nodeId":   _root_id,
+                                                    "selector": 'input[type="file"]',
+                                                })
+                                                _node_id = _node.get("nodeId", 0)
+
+                                            if _node_id:
+                                                await _cdp.send("DOM.setFileInputFiles", {
+                                                    "files":  [_vm_path],
+                                                    "nodeId": _node_id,
+                                                })
+                                                # Greenhouse/React listens on the
+                                                # synthetic change event — CDP sets
+                                                # the file property but doesn't
+                                                # always fire the listener chain.
+                                                await page.evaluate("""
+                                                    const inp = document.querySelector('input[type="file"]#resume')
+                                                              || document.querySelector('input[type="file"]');
+                                                    if (inp) {
+                                                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                                                        inp.dispatchEvent(new Event('input',  { bubbles: true }));
+                                                    }
+                                                """)
+                                                await asyncio.sleep(0.3)
+                                                _attached = True
+                                                _attach_method = "steel_cdp"
+                                                logger.info(
+                                                    f"[browser_agent] resume attached via Steel CDP "
+                                                    f"vm_path={_vm_path!r} node_id={_node_id}"
+                                                )
+                                            else:
+                                                logger.warning(
+                                                    "[browser_agent] CDP DOM.querySelector returned no nodeId for file input"
+                                                )
+                                        finally:
+                                            try:
+                                                await _cdp.detach()
+                                            except Exception:
+                                                pass
+                                    else:
+                                        logger.warning(
+                                            "[browser_agent] Steel session file upload returned no path"
+                                        )
+                                except Exception as _pe:
+                                    logger.warning(
+                                        f"[browser_agent] Steel CDP attach failed: {_pe}",
+                                        exc_info=True,
+                                    )
+
+                                # ── FALLBACK: legacy unhide + buffer-based set_input_files ──
+                                # Only runs if the CDP path didn't succeed. This is
+                                # the pre-Session-79 behaviour, kept as safety net.
+                                if not _attached:
+                                    try:
+                                        yield _step("ok", "Retrying resume attach via fallback...")
+                                        await page.evaluate("""
+                                            const inp = document.querySelector('input[type="file"]#resume')
+                                                      || document.querySelector('input[type="file"]');
+                                            if (inp) {
+                                                inp._rack_prev_style = inp.getAttribute('style') || '';
+                                                inp.style.cssText = 'position:fixed;top:0;left:0;width:100px;height:40px;opacity:1;z-index:99999;pointer-events:all;';
+                                                inp.classList.remove('visually-hidden','sr-only','hidden');
+                                            }
+                                        """)
+                                        await asyncio.sleep(0.15)
+
+                                        await _resume_inp.set_input_files(files=[{
+                                            "name":     _fname,
+                                            "mimeType": _mime,
+                                            "buffer":   _resume_bytes,
+                                        }])
+
+                                        await page.evaluate("""
+                                            const inp = document.querySelector('input[type="file"]#resume')
+                                                      || document.querySelector('input[type="file"]');
+                                            if (inp) {
+                                                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                                                inp.dispatchEvent(new Event('input',  { bubbles: true }));
+                                                inp.setAttribute('style', inp._rack_prev_style || '');
+                                            }
+                                        """)
+                                        await asyncio.sleep(0.3)
+                                        _attached = True
+                                        _attach_method = "playwright_buffer"
+                                        logger.info(
+                                            "[browser_agent] resume attached via Playwright buffer fallback"
+                                        )
+                                    except Exception as _fbe:
+                                        logger.warning(
+                                            f"[browser_agent] Playwright fallback also failed: {_fbe}",
+                                            exc_info=True,
+                                        )
+
+                                if _attached:
+                                    filled_count += 1
+                                    yield _step(
+                                        "ok",
+                                        f'Attached resume: {_fname} (via {_attach_method})',
+                                    )
+                                else:
+                                    yield _step("error", "Could not attach resume — both Steel CDP and fallback failed")
                         else:
-                            yield _step("skip", "Could not get resume download URL")
+                            yield _step("skip", f"Could not get resume download URL (resp type={type(_signed_resp).__name__})")
                     else:
-                        yield _step("skip", "Resume storage path not found")
+                        yield _step("skip", "Resume storage path not found in DB")
                 except Exception as _fe:
-                    logger.warning(f"[browser_agent] Resume upload failed: {_fe}")
-                    yield _step("skip", f"Resume attach failed: {str(_fe)[:80]}")
+                    logger.warning(f"[browser_agent] Resume upload failed: {_fe}", exc_info=True)
+                    yield _step("skip", f"Resume attach failed: {str(_fe)[:120]}")
             elif resume_file_field:
-                yield _step("skip", "Skipping: Resume (no resume_id provided)")
+                yield _step("skip", "Skipping resume upload: no resume_id resolved")
 
             # -- Pre-submit scroll & validation ----------------------------------
             await asyncio.sleep(0.4)

@@ -78,3 +78,78 @@ async def release_session(session_id: str) -> None:
     except Exception as e:
         # Non-fatal — session will timeout on its own after SESSION_TIMEOUT_MS
         logger.warning(f"[steel] Could not release session {session_id}: {e}")
+
+
+async def upload_session_file(
+    session_id: str,
+    file_bytes: bytes,
+    filename:   str,
+    mime_type:  str | None = None,
+) -> str | None:
+    """
+    Upload a file into a live Steel session's VM filesystem.
+
+    Returns the VM-side absolute path (e.g. "/files/TejasAIResume2.pdf") that
+    can be passed to `DOM.setFileInputFiles` via CDP. Returns None on failure.
+
+    Why this exists:
+        Playwright's `set_input_files(buffer=...)` over a remote CDP connection
+        ships bytes through the Playwright client process. With Steel's VM-based
+        browser, the resulting file path doesn't exist on the VM's own
+        filesystem — the browser engine sees the change event but the file
+        bytes aren't really there at submit time.
+
+        The Steel-native fix: upload bytes into the Steel VM first, then bind
+        the VM-side path to the file input via CDP `DOM.setFileInputFiles`.
+
+    Steel docs: https://docs.steel.dev/overview/files-api/overview
+    """
+    from steel import AsyncSteel
+
+    # The Steel Python SDK accepts file uploads as bytes, a PathLike, or a
+    # (filename, contents, media_type) tuple. We want the original filename
+    # inside the VM so the form's UI confirmation ("Selected: TejasAIResume2.pdf")
+    # looks right to the user watching the live viewer.
+    mime = mime_type or "application/octet-stream"
+    file_payload = (filename, file_bytes, mime)
+
+    try:
+        client = AsyncSteel(steel_api_key=_api_key())
+        # Pass `path=filename` so the file lands at /files/{filename} inside
+        # the VM. Without this, Steel allocates a UUID-based path (e.g.
+        # /files/bb14a975-d40d-...) and the file input on the page reads back
+        # `file.name` as the bare UUID — Greenhouse then shows the UUID to the
+        # user and to recruiters reviewing the application instead of the real
+        # resume filename. Confirmed via Steel's own SDK examples.
+        uploaded = await client.sessions.files.upload(
+            session_id,
+            file=file_payload,
+            path=filename,
+        )
+    except Exception as e:
+        logger.warning(
+            f"[steel] upload_session_file failed for session={session_id} "
+            f"filename={filename!r}: {e}",
+            exc_info=True,
+        )
+        return None
+
+    # The SDK returns a Pydantic model with a `path` field. Probe dict-style
+    # access too in case the SDK shape shifts in a future release.
+    path = (
+        getattr(uploaded, "path", None)
+        or (isinstance(uploaded, dict) and uploaded.get("path"))
+        or ""
+    )
+    if not path:
+        logger.warning(
+            f"[steel] upload returned no path field. "
+            f"response type={type(uploaded).__name__} value={uploaded!r}"
+        )
+        return None
+
+    logger.info(
+        f"[steel] uploaded {filename!r} ({len(file_bytes)} bytes) "
+        f"to session={session_id} → {path}"
+    )
+    return path
