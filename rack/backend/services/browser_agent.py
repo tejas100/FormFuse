@@ -79,13 +79,24 @@ _GH_GENDER_MAP = {
 }
 _GH_VETERAN_MAP = {
     "protected_veteran": "I am a protected veteran",
-    "not_a_veteran":     "I am not a protected veteran",
+    "not_a_veteran":     "No military service",  # neutral phrase — LLM/vision maps to ATS-specific option
     "decline":           "I don't wish to answer",
 }
 _GH_DISABILITY_MAP = {
     "yes":     "Yes, I have a disability, or have had one in the past",
     "no":      "No, I do not have a disability and have not had one in the past",
     "decline": "I don't wish to answer",
+}
+# Ethnicity — maps profile value to a human display string.
+# ATS options vary widely; the LLM text mapper picks the closest match from the live scraped list.
+_GH_ETHNICITY_MAP = {
+    "south_asian": "South Asian",
+    "east_asian":  "East Asian",
+    "black":       "Black or African American",
+    "hispanic":    "Hispanic or Latinx",
+    "white":       "White",
+    "two_or_more": "Two or more races",
+    "decline":     "I don't wish to answer",
 }
 
 # Which field labels are Greenhouse select2 dropdowns and what value map + container to use
@@ -100,6 +111,9 @@ _GH_SELECT2_FIELDS = {
     "veteran status":      (_GH_VETERAN_MAP,      "veteran_status"),
     "disability":          (_GH_DISABILITY_MAP,   "disability_status"),
     "disability status":   (_GH_DISABILITY_MAP,   "disability_status"),
+    "ethnicity":           (_GH_ETHNICITY_MAP,    "ethnicity_eeo"),
+    "race":                (_GH_ETHNICITY_MAP,    "ethnicity_eeo"),
+    "ethnicities":         (_GH_ETHNICITY_MAP,    "ethnicity_eeo"),
 }
 
 
@@ -472,29 +486,34 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str)
                 pass
 
         # ── Step 3: Scrape options immediately while dropdown is open ────────
-        # We scrape FIRST before typing anything. This gives us the real option
-        # list so we can decide the correct search term rather than guessing.
-        # The previous approach typed first then scraped — by then the dropdown
-        # had closed or shown "No options", so we got page body text instead.
+        # Use getBoundingClientRect() for visibility — NOT offsetParent.
+        # React portals (position:fixed / CSS transform) have offsetParent===null
+        # even when fully visible on screen. getBoundingClientRect().width > 0
+        # is the correct cross-portal visibility check.
         _scraped_options = []
         try:
             _scraped_options = await page.evaluate(
                 """() => {
-                    // Only grab elements that are actually inside a visible dropdown menu
-                    // Key: the dropdown menu container is a portal at the end of <body>,
-                    // so we look for menu/listbox/option containers that are visible.
+                    const isVisible = el => {
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    };
                     const MENU_SELECTORS = [
+                        '[role="listbox"]',
                         '[class*="menu"]',
                         '[class*="listbox"]',
-                        '[class*="dropdown"]',
-                        '[role="listbox"]',
+                        '[class*="dropdown-menu"]',
+                        '[class*="options-container"]',
                     ];
                     let menuEl = null;
                     for (const sel of MENU_SELECTORS) {
-                        const el = document.querySelector(sel);
-                        if (el && el.offsetParent !== null) { menuEl = el; break; }
+                        for (const el of document.querySelectorAll(sel)) {
+                            if (isVisible(el) && el.children.length > 0) {
+                                menuEl = el; break;
+                            }
+                        }
+                        if (menuEl) break;
                     }
-                    // Collect options from within the menu, or fall back to all visible options
                     const source = menuEl
                         ? menuEl.querySelectorAll('[class*="option"], [role="option"], li')
                         : document.querySelectorAll('[class*="option"], [role="option"]');
@@ -502,10 +521,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str)
                     const results = [];
                     for (const el of source) {
                         const t = (el.textContent || '').trim();
-                        // Filter: short enough to be an option, visible, not a heading
-                        if (t && t.length >= 2 && t.length <= 80
-                            && el.offsetParent !== null
-                            && !seen.has(t)) {
+                        if (t && t.length >= 2 && t.length <= 80 && isVisible(el) && !seen.has(t)) {
                             seen.add(t);
                             results.push(t);
                         }
@@ -518,16 +534,101 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str)
         except Exception as _se:
             logger.debug(f"[react_combobox] Option scrape failed: {_se}")
 
+        # ── Step 3-vision: Screenshot fallback when DOM scrape returns empty ──
+        # Some dropdowns (especially EEO/demographic ones) render options in a
+        # CSS-transformed portal that offsetParent checks miss. When DOM scrape
+        # returns nothing, take a screenshot and ask GPT-4o-mini vision to read
+        # the visible options and pick the best match for our intent.
+        _vision_best_option = None
+        if not _scraped_options:
+            try:
+                import base64 as _b64, os as _os3, httpx as _hx3
+                _api_key_v = _os3.environ.get("OPENAI_API_KEY", "")
+                if _api_key_v:
+                    # Scroll the combobox into view before screenshotting so the
+                    # open dropdown portal is fully visible in the viewport
+                    try:
+                        await combobox.scroll_into_view_if_needed(timeout=1000)
+                        await asyncio.sleep(0.3)
+                    except Exception:
+                        pass
+                    _screenshot_bytes = await page.screenshot(full_page=False)
+                    _img_b64 = _b64.b64encode(_screenshot_bytes).decode("utf-8")
+                    _vision_prompt = (
+                        f"This is a screenshot of a job application form with a dropdown menu open.\n"
+                        f"The open dropdown is for the question: \"{label}\"\n"
+                        f"The dropdown options are listed/visible in the screenshot right now.\n"
+                        f"The candidate wants to convey: \"{display_value}\"\n\n"
+                        f"IMPORTANT: Look ONLY at the dropdown list options visible in the screenshot "
+                        f"(not any already-selected value shown in the field box). "
+                        f"From those listed options, pick the single one that best matches what the "
+                        f"candidate wants to convey. Reply with ONLY that exact option text verbatim. "
+                        f"Do not explain. If no dropdown options are visible, reply: NONE"
+                    )
+                    async with _hx3.AsyncClient() as _hcv:
+                        _vresp = await _hcv.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {_api_key_v}", "Content-Type": "application/json"},
+                            json={
+                                "model": "gpt-4o-mini",
+                                "messages": [{
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_img_b64}", "detail": "low"}},
+                                        {"type": "text", "text": _vision_prompt},
+                                    ]
+                                }],
+                                "temperature": 0.0,
+                                "max_tokens": 60,
+                            },
+                            timeout=15.0,
+                        )
+                    _vision_option = _vresp.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
+                    if _vision_option and _vision_option.upper() != "NONE":
+                        logger.info(f"[react_combobox] Vision LLM picked '{_vision_option}' for '{label}' (display_value='{display_value}')")
+                        # Inject the vision-picked option into scraped_options so the
+                        # normal LLM + click flow below can use it
+                        _scraped_options = [_vision_option]
+                        _vision_best_option = _vision_option
+                    else:
+                        logger.warning(f"[react_combobox] Vision LLM returned NONE for '{label}'")
+            except Exception as _ve:
+                logger.warning(f"[react_combobox] Vision screenshot fallback failed: {_ve}")
+
         # ── Step 3a: Direct click if display_value matches a scraped option ───
         # Now that we have the real options, first try direct click (no typing).
+        # If the vision path ran, the dropdown may have closed during the screenshot.
+        # Re-open by clicking the container before attempting to click the option.
+        if _scraped_options:
+            # Ensure dropdown is open (vision path may have closed it)
+            try:
+                vis = await page.evaluate(
+                    """() => document.querySelectorAll('[class*="option"],[role="option"]').length"""
+                )
+                if vis == 0:
+                    for ancestor in ["xpath=../../..", "xpath=../..", "xpath=.."]:
+                        try:
+                            container = combobox.locator(ancestor).first
+                            await container.click(timeout=2000)
+                            await asyncio.sleep(0.4)
+                            vis2 = await page.evaluate(
+                                """() => document.querySelectorAll('[class*="option"],[role="option"]').length"""
+                            )
+                            if vis2 > 0:
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
         if await _try_click_option(page, display_value):
             return True
 
         # ── Step 3b: LLM picks the best option from the real scraped list ─────
         # If display_value isn't an exact option (e.g. "I am not a protected
         # veteran" vs actual option "No military service"), ask the LLM to map.
-        _best_option = None
-        if _scraped_options:
+        # Skip this call when vision already returned a single authoritative option.
+        _best_option = _vision_best_option if _vision_best_option else None
+        if _scraped_options and not _vision_best_option:
             import httpx as _hx2, os as _os2
             _api_key = _os2.environ.get("OPENAI_API_KEY", "")
             if _api_key:
@@ -962,13 +1063,20 @@ async def run_apply_agent(
             for f in fields:
                 lbl = (f.get("field_label") or "").lower()
                 if "full name" in lbl and "greenhouse.io" in job_url:
-                    name_parts = (f.get("value") or "").split(" ", 1)
+                    # Prefer explicit first_name/last_name from profile (legal name)
+                    # over splitting the Google display name
+                    _fname = profile.get("first_name") or ""
+                    _lname = profile.get("last_name") or ""
+                    if not _fname and not _lname:
+                        name_parts = (f.get("value") or "").split(" ", 1)
+                        _fname = name_parts[0] if name_parts else ""
+                        _lname = name_parts[1] if len(name_parts) > 1 else ""
                     expanded.append({**f, "field_label": "First Name",
                                      "selector_hint": "first_name",
-                                     "value": name_parts[0] if name_parts else ""})
+                                     "value": _fname})
                     expanded.append({**f, "field_label": "Last Name",
                                      "selector_hint": "last_name",
-                                     "value": name_parts[1] if len(name_parts) > 1 else ""})
+                                     "value": _lname})
                 else:
                     expanded.append(f)
             fields = expanded
@@ -1014,6 +1122,25 @@ async def run_apply_agent(
                     yield _step("skip", "Skipping: " + label)
                     await asyncio.sleep(0.1)
                     continue
+
+                # ── Override name fields with legal name from profile ──────────
+                # The LLM field detector may set value from profile["name"] (Google display name).
+                # If the user has set explicit first_name/last_name in their profile, use those instead.
+                if selector == "first_name" or (label.lower().strip().rstrip("*").strip() == "first name"):
+                    if profile.get("first_name"):
+                        value = profile["first_name"]
+                elif selector == "last_name" or (label.lower().strip().rstrip("*").strip() == "last name"):
+                    if profile.get("last_name"):
+                        value = profile["last_name"]
+
+                # ── Override ethnicity with profile value → human display string ──
+                # The LLM field detector defaults ethnicity to "decline" / "I don't wish to answer".
+                # Map the profile key to a human string so the LLM text mapper can pick the right option.
+                _label_lower_eth = label.lower()
+                if any(k in _label_lower_eth for k in ("ethnicit", "race", "racial")):
+                    _eth_raw = profile.get("ethnicity_eeo") or "decline"
+                    _eth_display = _GH_ETHNICITY_MAP.get(_eth_raw, "I don't wish to answer")
+                    value = _eth_display
 
                 # Free-text question -- write with LLM (or use fixed answer)
                 if field_type == "textarea" and _is_free_text_question(label):

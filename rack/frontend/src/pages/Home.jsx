@@ -4388,9 +4388,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                   color: 'rgba(232,255,107,0.85)',
                   fontFamily: 'var(--font-display)',
                   letterSpacing: '0.08em', textTransform: 'uppercase',
-                }}>Live Application</span>
+                }}>Live Application From Rack Server</span>
                 <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>
-                  — watching form fill in real time
+                  — You are watching Rack fill up the application in real time
                 </span>
               </div>
               <button

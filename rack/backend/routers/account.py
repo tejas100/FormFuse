@@ -41,6 +41,10 @@ DEFAULT_PREFERENCES = {
 
 
 class ProfileUpdate(BaseModel):
+    # Legal name — used for auto-apply forms (not display name from Google)
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    middle_name: Optional[str] = None
     # Job preferences
     target_roles: Optional[list[str]] = None
     preferred_locations: Optional[list[str]] = None
@@ -105,6 +109,10 @@ async def save_profile(
     if req.include_keywords    is not None: updates["include_keywords"]     = req.include_keywords
     if req.exclude_keywords    is not None: updates["exclude_keywords"]     = req.exclude_keywords
     if req.role_aliases        is not None: updates["role_aliases"]         = req.role_aliases
+    # Legal name fields — allow empty string to clear
+    if req.first_name          is not None: updates["first_name"]           = req.first_name
+    if req.last_name           is not None: updates["last_name"]            = req.last_name
+    if req.middle_name         is not None: updates["middle_name"]          = req.middle_name
     # Application profile — allow empty string to clear a field
     if req.phone               is not None: updates["phone"]                = req.phone
     if req.linkedin            is not None: updates["linkedin"]             = req.linkedin

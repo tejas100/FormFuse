@@ -586,6 +586,65 @@ function AuthenticatedAccount({ user, onSignOut }) {
           borderRadius: 'var(--radius)', marginBottom: 24,
           animation: 'fadeUp 0.4s ease 0.1s both', overflow: 'hidden',
         }}>
+          {/* Legal Name */}
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '-0.2px', marginBottom: 2 }}>
+                ✍️ Legal Name
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Used for auto-apply forms — not your Google display name
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 100 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)', marginBottom: 4 }}>First Name*</div>
+                <input
+                  type="text"
+                  value={profile.first_name || ''}
+                  onChange={e => updateField('first_name', e.target.value)}
+                  placeholder="Tejas"
+                  style={{
+                    width: '100%', padding: '8px 14px', borderRadius: 8, boxSizing: 'border-box',
+                    border: '1px solid var(--border)', background: 'var(--bg)',
+                    color: 'var(--text)', fontFamily: 'var(--font-body)',
+                    fontSize: 13, outline: 'none',
+                  }}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 100 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)', marginBottom: 4 }}>Last Name*</div>
+                <input
+                  type="text"
+                  value={profile.last_name || ''}
+                  onChange={e => updateField('last_name', e.target.value)}
+                  placeholder="B K"
+                  style={{
+                    width: '100%', padding: '8px 14px', borderRadius: 8, boxSizing: 'border-box',
+                    border: '1px solid var(--border)', background: 'var(--bg)',
+                    color: 'var(--text)', fontFamily: 'var(--font-body)',
+                    fontSize: 13, outline: 'none',
+                  }}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 100 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)', marginBottom: 4 }}>Middle Name</div>
+                <input
+                  type="text"
+                  value={profile.middle_name || ''}
+                  onChange={e => updateField('middle_name', e.target.value)}
+                  placeholder="optional"
+                  style={{
+                    width: '100%', padding: '8px 14px', borderRadius: 8, boxSizing: 'border-box',
+                    border: '1px solid var(--border)', background: 'var(--bg)',
+                    color: 'var(--text)', fontFamily: 'var(--font-body)',
+                    fontSize: 13, outline: 'none',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
           {/* Phone */}
           <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
@@ -852,7 +911,8 @@ function AuthenticatedAccount({ user, onSignOut }) {
               <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>Race / Ethnicity</div>
               <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 {[
-                  { label: 'Asian', value: 'asian' },
+                  { label: 'South Asian', value: 'south_asian' },
+                  { label: 'East Asian', value: 'east_asian' },
                   { label: 'Black', value: 'black' },
                   { label: 'Hispanic', value: 'hispanic' },
                   { label: 'White', value: 'white' },

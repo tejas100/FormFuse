@@ -70,11 +70,27 @@ async def _build_profile(current_user, resume_id: Optional[str], db: AsyncSessio
 
     prefs = current_user.preferences or {}
 
+    # Resolve legal name — prefer explicit first/last from profile,
+    # fall back to splitting the Google display_name if not set.
+    _first = (prefs.get("first_name") or "").strip()
+    _last  = (prefs.get("last_name")  or "").strip()
+    _middle = (prefs.get("middle_name") or "").strip()
+    if not _first and not _last:
+        _google_name = current_user.display_name or ""
+        _parts = _google_name.split(" ", 1)
+        _first = _parts[0] if _parts else ""
+        _last  = _parts[1] if len(_parts) > 1 else ""
+    # full name for ATS forms that ask for a single name field
+    _full_name = " ".join(p for p in [_first, _middle, _last] if p)
+
     profile = {
-        "name":                prefs.get("name")     or (current_user.display_name or ""),
+        "name":                _full_name or (current_user.display_name or ""),
+        "first_name":          _first,
+        "last_name":           _last,
+        "middle_name":         _middle,
         "email":               current_user.email    or "",
         "phone":               prefs.get("phone")    or "",
-        "location":            prefs.get("location") or "",
+        "location":            prefs.get("current_location") or prefs.get("location") or "",
         "linkedin":            prefs.get("linkedin") or "",
         "github":              prefs.get("github")   or "",
         "website":             prefs.get("website")  or "",
@@ -85,6 +101,7 @@ async def _build_profile(current_user, resume_id: Optional[str], db: AsyncSessio
         "gender_eeo":          prefs.get("gender_eeo")          or "decline",
         "veteran_status":      prefs.get("veteran_status")      or "decline",
         "disability_status":   prefs.get("disability_status")   or "decline",
+        "ethnicity_eeo":       prefs.get("ethnicity_eeo")       or "decline",
     }
 
     # Fetch resume — specific one if requested, otherwise most recent active
