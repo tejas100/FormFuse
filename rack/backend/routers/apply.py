@@ -20,6 +20,7 @@ Profile is assembled from:
   3. resumes.full_text + resumes.skills/titles/years_exp (from DB)
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -37,6 +38,11 @@ from db.database import get_db
 from routers.auth import get_current_user
 
 logger = logging.getLogger(__name__)
+
+# Stores asyncio.Events keyed by Steel session_id.
+# browser_agent yields "review_required" then blocks on the event.
+# POST /api/apply/confirm/{session_id} sets it, unblocking the agent.
+_pending_reviews: dict[str, asyncio.Event] = {}
 
 router = APIRouter(prefix="/api/apply", tags=["apply"])
 
@@ -107,11 +113,35 @@ async def _build_profile(current_user, resume_id: Optional[str], db: AsyncSessio
         logger.warning(f"[apply] Could not fetch resume: {e}")
 
     if resume_row:
-        profile["years_exp"]   = resume_row.years_exp
-        profile["titles"]      = resume_row.titles  or []
-        profile["skills"]      = resume_row.skills  or []
-        profile["resume_text"] = resume_row.full_text or ""
-        profile["resume_name"] = resume_row.display_name or resume_row.filename or ""
+        profile["years_exp"]    = resume_row.years_exp
+        profile["titles"]       = resume_row.titles  or []
+        profile["skills"]       = resume_row.skills  or []
+        profile["resume_text"]  = resume_row.full_text or ""
+        profile["resume_name"]  = resume_row.display_name or resume_row.filename or ""
+        profile["_resume_id"]   = str(resume_row.id)   # resolved resume ID for file upload
+
+        # Best-effort: extract most recent company name from resume text.
+        # Used to answer "current/most recent company" fields without hallucinating.
+        # Best-effort: extract most recent company from resume text.
+        # Looks for a capitalized line following an "Experience" section header.
+        _company = ""
+        _rtext = resume_row.full_text or ""
+        if _rtext:
+            import re as _bre
+            _lines = _rtext.split("\n")
+            _in_exp = False
+            for _ln in _lines:
+                _lnl = _ln.strip().lower()
+                if any(h in _lnl for h in ("experience", "employment", "work history")):
+                    _in_exp = True
+                    continue
+                if _in_exp and _ln.strip() and len(_ln.strip()) > 2:
+                    # First non-empty line after the section header is likely the company
+                    _candidate = _ln.strip()
+                    if _candidate[0].isupper() and len(_candidate.split()) <= 8:
+                        _company = _candidate
+                        break
+        profile["current_company"] = _company
 
     return profile
 
@@ -171,17 +201,37 @@ async def apply_stream(
         from models.orm import AutoMatchResult
         from sqlalchemy import update as sa_update, delete as sa_delete
 
+        # Create the review gate event upfront.
+        # Keyed by a placeholder until the agent emits steel_session with real session_id.
+        # Once "steel_session" arrives we re-key it so the confirm endpoint can find it.
+        _review_event = asyncio.Event()
+        _stream_key   = str(_uuid.uuid4())   # temp key until steel session_id arrives
+        _pending_reviews[_stream_key] = _review_event
+
         try:
+            # Use resolved resume_id from profile builder — always set even when
+            # request.resume_id is None (profile builder picks best/most-recent).
+            _resolved_resume_id = profile.get("_resume_id") or request.resume_id
+
             async for event in run_apply_agent(
-                job_url     = request.job_url,
-                job_title   = request.job_title,
-                company     = request.company,
-                resume_text = profile.get("resume_text", ""),
-                profile     = profile,
-                job_id      = request.job_id,
-                resume_id   = request.resume_id,
-                user_id     = str(current_user.id),
+                job_url      = request.job_url,
+                job_title    = request.job_title,
+                company      = request.company,
+                resume_text  = profile.get("resume_text", ""),
+                profile      = profile,
+                job_id       = request.job_id,
+                resume_id    = _resolved_resume_id,
+                user_id      = str(current_user.id),
+                review_event = _review_event,
             ):
+                # When the Steel session ID arrives, re-key the pending review
+                # so POST /api/apply/confirm/{session_id} can look it up.
+                if event.get("type") == "steel_session" and event.get("session_id"):
+                    sid = event["session_id"]
+                    _pending_reviews[sid] = _review_event
+                    _pending_reviews.pop(_stream_key, None)
+                    logger.info(f"[apply] Review gate registered for session_id={sid}")
+
                 yield _sse(event)
 
                 # Job posting no longer exists — delete from auto_match_results
@@ -228,6 +278,14 @@ async def apply_stream(
         except Exception as e:
             logger.error(f"[apply] Stream error: {e}", exc_info=True)
             yield _sse({"type": "error", "text": "Agent failed unexpectedly. Please try again."})
+        finally:
+            # Always clean up pending review entries when the stream ends
+            _pending_reviews.pop(_stream_key, None)
+            if "_review_event" in dir():
+                # Find and remove any key pointing to this event
+                stale = [k for k, v in list(_pending_reviews.items()) if v is _review_event]
+                for k in stale:
+                    _pending_reviews.pop(k, None)
 
     return StreamingResponse(
         event_stream(),
@@ -238,3 +296,55 @@ async def apply_stream(
             "Access-Control-Allow-Origin": "*",
         },
     )
+
+
+# ── Review confirmation endpoint ───────────────────────────────────────────────
+
+class ConfirmRequest(BaseModel):
+    action: str = "submit"   # "submit" | "cancel"
+
+
+@router.post("/confirm/{session_id}")
+async def confirm_review(
+    session_id:  str,
+    body:        ConfirmRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:          AsyncSession = Depends(get_db),
+):
+    """
+    Unblock the review gate in a running apply stream.
+
+    Called by the frontend when the user clicks "Confirm & Submit" or "Cancel"
+    in ApplyAgentCard after reviewing the filled form in the Steel panel.
+
+    session_id: the Steel session_id emitted in the "steel_session" SSE event.
+    body.action: "submit" (proceed) | "cancel" (abort — not yet implemented,
+                 treated as timeout on the agent side).
+    """
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        await get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+
+    event = _pending_reviews.get(session_id)
+    if not event:
+        logger.warning(f"[apply/confirm] No pending review for session_id={session_id!r}")
+        raise HTTPException(
+            status_code=404,
+            detail="No pending review found for this session. It may have already been confirmed or timed out.",
+        )
+
+    if body.action == "submit":
+        event.set()
+        logger.info(f"[apply/confirm] Review confirmed — session_id={session_id}")
+        return {"ok": True, "message": "Application will be submitted now."}
+    else:
+        # Cancel: don't set the event — it will time out naturally
+        # and yield "review_timeout" to the frontend.
+        _pending_reviews.pop(session_id, None)
+        logger.info(f"[apply/confirm] Review cancelled — session_id={session_id}")
+        return {"ok": True, "message": "Application cancelled."}

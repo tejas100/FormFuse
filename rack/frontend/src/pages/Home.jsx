@@ -3464,6 +3464,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                           {pageJobs.map((job, ji) => {
                             const globalIdx = (fPage - 1) * PAGE_SIZE_F + ji
+                            // job_data JSONB is the canonical source; top-level fields are aliases
+                            const jd        = job.job_data || {}
+                            const jobUrl    = job.url || jd.url || ''
+                            const jobResumeId   = job.resume_id   || jd.resume_id   || null
+                            const jobResumeName = job.resume_name || jd.resume_name || null
                             const jScore    = Math.round(job.score ?? 0)
                             const sc        = jScore >= 85 ? 'var(--accent)' : jScore >= 65 ? '#60a5fa' : '#fb923c'
                             const gradient  = jScore >= 85
@@ -3471,16 +3476,16 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                               : jScore >= 65
                               ? 'linear-gradient(90deg,#60a5fa,#818cf8)'
                               : 'linear-gradient(90deg,#fb923c,#f87171)'
-                            const title     = job.job_title || 'Untitled'
-                            const company   = job.company
-                              ? job.company.charAt(0).toUpperCase() + job.company.slice(1)
+                            const title     = job.job_title || jd.job_title || 'Untitled'
+                            const company   = (job.company || jd.company || '')
+                              ? (job.company || jd.company).charAt(0).toUpperCase() + (job.company || jd.company).slice(1)
                               : '—'
                             const posted    = job.posted_at || job.matched_at
                             const daysAgo   = posted
                               ? Math.max(0, Math.round((Date.now() - new Date(posted).getTime()) / 86400000))
                               : null
                             const isAI      = job.scoring_method === 'llm+hybrid'
-                            const rec       = job.llm_recommendation
+                            const rec       = job.llm_recommendation || jd.llm_recommendation
 
                             return (
                               ji >= visibleCount ? null :
@@ -3554,12 +3559,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px', gap: '8px' }}>
 
                                     {/* Resume download */}
-                                    {job.resume_name ? (
+                                    {jobResumeName ? (
                                       <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
                                         Best resume:{' '}
-                                        {job.resume_id ? (
+                                        {jobResumeId ? (
                                           <button
-                                            onClick={(e) => handleDownload(e, job.resume_id, job.resume_name)}
+                                            onClick={(e) => handleDownload(e, jobResumeId, jobResumeName)}
                                             style={{
                                               background: 'none', border: 'none', padding: '0 2px',
                                               cursor: 'pointer', color: 'var(--accent)', fontWeight: 600,
@@ -3568,18 +3573,18 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                               textUnderlineOffset: '2px',
                                             }}
                                           >
-                                            {job.resume_name} ↓
+                                            {jobResumeName} ↓
                                           </button>
                                         ) : (
-                                          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{job.resume_name}</span>
+                                          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{jobResumeName}</span>
                                         )}
                                       </div>
                                     ) : <div />}
 
                                     {/* ⚡ Apply button — only for auth'd users with a URL */}
-                                    {isAuthed && job.url && (
+                                    {isAuthed && jobUrl && (
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); handleApply([job]) }}
+                                        onClick={(e) => { e.stopPropagation(); handleApply([{ ...job, url: jobUrl, resume_id: jobResumeId, resume_name: jobResumeName, job_title: title, company: job.company || jd.company }]) }}
                                         disabled={applyLoading}
                                         style={{
                                           display: 'flex', alignItems: 'center', gap: '4px',

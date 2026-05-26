@@ -14,7 +14,7 @@
  *   company  — string — shown in header
  */
 
-export default function ApplyAgentCard({ steps, loading, error, done, submitted, jobRemoved, jobTitle, company }) {
+export default function ApplyAgentCard({ steps, loading, error, done, submitted, jobRemoved, jobTitle, company, reviewRequired, onConfirmSubmit, sessionId }) {
 
   const statusIcon = (status) => {
     if (status === 'ok')      return <span style={{ fontSize: '12px', color: 'var(--accent3)' }}>✓</span>
@@ -80,12 +80,15 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
         {(submitted || done) && !loading && (
           <span style={{ fontSize: '14px', color: 'var(--accent3)' }}>✓</span>
         )}
+        {reviewRequired && !loading && (
+          <span style={{ fontSize: '14px', color: 'var(--accent)' }}>◎</span>
+        )}
         {(error || jobRemoved) && !loading && (
           <span style={{ fontSize: '14px', color: 'var(--danger)' }}>✗</span>
         )}
         <div>
           <span style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500 }}>
-            {submitted ? 'Submitted' : done ? 'Application filled' : jobRemoved ? 'Job no longer available' : loading ? 'Auto-applying…' : 'Apply agent'}
+            {submitted ? 'Submitted' : done ? 'Application filled' : jobRemoved ? 'Job no longer available' : reviewRequired ? 'Review before submitting' : loading ? 'Auto-applying…' : 'Apply agent'}
           </span>
           {(jobTitle || company) && (
             <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, marginLeft: '6px' }}>
@@ -130,6 +133,65 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ── Review required state ── */}
+      {reviewRequired && !loading && !submitted && (
+        <div style={{
+          padding: '14px 16px',
+          borderRadius: '10px',
+          background: 'rgba(232,255,107,0.05)',
+          border: '1px solid rgba(232,255,107,0.25)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+        }}>
+          <div style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500, lineHeight: 1.5 }}>
+            {reviewRequired.filled_count} field{reviewRequired.filled_count !== 1 ? 's' : ''} filled.
+            {reviewRequired.validation_errors > 0 && (
+              <span style={{ color: '#fb923c', marginLeft: '6px' }}>
+                ⚠ {reviewRequired.validation_errors} validation warning{reviewRequired.validation_errors !== 1 ? 's' : ''} detected — check the form.
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, lineHeight: 1.5 }}>
+            Review the filled form in the panel on the right, then confirm to submit.
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => onConfirmSubmit && onConfirmSubmit('submit')}
+              style={{
+                padding: '7px 16px',
+                borderRadius: '20px',
+                border: '1px solid rgba(232,255,107,0.4)',
+                background: 'rgba(232,255,107,0.12)',
+                color: 'var(--accent)',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              Confirm &amp; Submit ↗
+            </button>
+            <button
+              onClick={() => onConfirmSubmit && onConfirmSubmit('cancel')}
+              style={{
+                padding: '7px 14px',
+                borderRadius: '20px',
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: 'var(--text-dim)',
+                fontSize: '12px',
+                fontWeight: 400,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 

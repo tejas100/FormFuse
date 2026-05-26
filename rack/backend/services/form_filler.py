@@ -42,14 +42,29 @@ Schema per item:
 RULES:
 1. Cover ALL visible input fields, textareas, and select elements.
 2. For file upload fields (resume/CV): set skip=true — we handle those separately.
-3. For select fields: value must be one of the visible option texts, pick the best match.
-4. For checkboxes (e.g. "I agree to terms"): value="check".
+3. For select/dropdown/combobox fields: value must be a display-friendly string the option list will contain.
+   - Work authorization (authorized to work in US): if profile says yes → value="Yes", if no → value="No"
+   - Sponsorship required: if profile says yes → value="Yes", if no → value="No"
+   - Gender: use exact strings like "Male", "Female", "Non-Binary", "I don't wish to answer"
+   - Veteran status: use "I am not a protected veteran" or "I am a protected veteran" or "I don't wish to answer"
+   - Disability: use "No, I do not have a disability" or "Yes, I have a disability" or "I don't wish to answer"
+   - NEVER return raw profile values like "yes"/"no"/"decline" for dropdown fields — always return the display text.
+4. For checkboxes (e.g. "I agree to terms", consent checkboxes): value="check", skip=false.
 5. For fields you cannot determine a value for: set skip=true.
 6. Do NOT fabricate information not present in the profile.
 7. For "How did you hear about us?" type fields: value="LinkedIn" unless profile says otherwise.
 8. For salary fields: skip=true (leave for human).
-9. For "Require sponsorship?" or work authorization: answer based on profile.
-10. Keep values concise and factual."""
+9. For EEO questions (gender identity, transgender, sexual orientation, ethnicity): use the profile value if set,
+   otherwise use the "decline/prefer not to answer" option — NEVER skip these, always fill them.
+10. Keep values concise and factual.
+11. For "current company" or "most recent company" fields: use the "Current/Most Recent Company" from the profile.
+    If not available in the profile, look in the resume text for the most recent employer name. NEVER skip this field.
+12. For privacy policy / consent dropdowns (e.g. "By selecting I agree..." or "I understand..."):
+    These are REQUIRED dropdowns with options like "I agree" or "I agree to the terms". Always fill them with
+    the affirmative option — set value="I agree" and skip=false. Never skip consent dropdowns.
+13. For "By checking this box, I consent..." checkboxes: value="check", skip=false.
+14. For transgender experience, sexual orientation, ethnicity dropdowns: if profile has no value,
+    use the decline/prefer not to answer option. NEVER leave skip=true for required EEO dropdowns."""
 
 _FREE_TEXT_SYSTEM = """You are an expert job application writer helping a candidate auto-apply to jobs.
 
@@ -110,6 +125,7 @@ def _build_profile_block(profile: dict) -> str:
     if profile.get("years_exp"):   lines.append(f"Years of Experience: {profile['years_exp']}")
     if profile.get("titles"):      lines.append(f"Job Titles: {', '.join(profile['titles'][:5])}")
     if profile.get("skills"):      lines.append(f"Skills: {', '.join(profile['skills'][:20])}")
+    if profile.get("current_company"):      lines.append(f"Current/Most Recent Company: {profile['current_company']}")
     if profile.get("work_auth"):            lines.append(f"Work Authorization: {profile['work_auth']}")
     if profile.get("requires_sponsorship"): lines.append(f"Requires Sponsorship: {profile['requires_sponsorship']}")
     # EEO voluntary self-ID
@@ -130,10 +146,17 @@ def _build_profile_block(profile: dict) -> str:
 
 # ── Main API ───────────────────────────────────────────────────────────────────
 
-async def detect_fields(raw_html: str, profile: dict) -> list[dict]:
+async def detect_fields(raw_html: str, profile: dict, dom_snapshot: list[dict] | None = None) -> list[dict]:
     """
-    Given raw page HTML and user profile, return list of field fill instructions.
+    Given raw page HTML, user profile, and optional DOM structural snapshot,
+    return list of field fill instructions.
     Each item: { field_label, selector_hint, field_type, value, skip }
+
+    dom_snapshot: list of dicts extracted by page.evaluate() in browser_agent.
+    Each dict has: i, tag, type, id, name, placeholder, labelText, parentText,
+    optionCount, firstOptions. When provided, a compact JSON table is prepended
+    to the LLM prompt so it can produce accurate selector_hints even for deeply
+    nested Greenhouse custom question fields.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -143,12 +166,34 @@ async def detect_fields(raw_html: str, profile: dict) -> list[dict]:
     form_html    = _extract_form_html(raw_html)
     profile_text = _build_profile_block(profile)
 
+    # Build compact DOM table — filter to only fillable, named elements
+    dom_table = ""
+    if dom_snapshot:
+        relevant = [
+            el for el in dom_snapshot
+            if (el.get("id") or el.get("name"))
+            and el.get("type") not in ("hidden", "submit", "button", "reset", "image")
+        ]
+        if relevant:
+            rows = []
+            for el in relevant:
+                label = el.get("labelText") or el.get("parentText", "")[:60]
+                opts  = ", ".join(el.get("firstOptions", []))
+                rows.append(
+                    f'  {{"tag":"{el["tag"]}", "type":"{el.get("type","")}", '
+                    f'"id":"{el.get("id","")}", "name":"{el.get("name","")}", '
+                    f'"label":"{label}", "placeholder":"{el.get("placeholder","")}"'
+                    + (f', "options":["{opts}"]' if opts else "")
+                    + "}"
+                )
+            dom_table = "DOM FIELD TABLE (use the id or name value here verbatim as selector_hint):\n[\n" + ",\n".join(rows) + "\n]\n\n"
+
     user_msg = f"""CANDIDATE PROFILE:
 {profile_text}
 
 ATS CONTEXT: {profile.get('_ats_hint', 'Return the actual HTML id or name attribute as selector_hint.')}
 
-FORM HTML:
+{dom_table}FORM HTML:
 {form_html}
 
 Return the JSON array of fill instructions now."""

@@ -333,6 +333,303 @@ def _get_ats_hint(url: str) -> str:
 
 # -- Fill helpers -------------------------------------------------------------
 
+
+async def _fill_react_combobox(page, selector_hint: str, label: str, value: str) -> bool:
+    """
+    Fill a React combobox (class='select__input') — used by Reddit, newer Greenhouse, etc.
+
+    Core strategy:
+      1. Find the combobox input by ID from DOM snapshot (hint = id attribute)
+      2. Click its GRANDPARENT container to open the dropdown (the container div,
+         not the input itself, is what triggers the open state)
+      3. Clear the search box, then try three search strategies:
+         a) No search — click "open all options" and look for exact match
+         b) Short unique prefix (2-3 chars) to avoid substring false matches
+         c) Full value typed in case search is needed
+      4. Click the option that contains the display value as EXACT text (not substring)
+         — uses JS text comparison to avoid "Male" matching "Female"
+      5. Escape and return False if nothing found — never leaves dropdown open
+    """
+    _NORMALIZE = {
+        "yes": "Yes", "no": "No",
+        "true": "Yes", "false": "No",
+    }
+    display_value = _NORMALIZE.get(value.lower().strip(), value)
+
+    async def _try_click_option(page, display_value: str) -> bool:
+        """
+        Click the option whose visible text EXACTLY matches display_value.
+        Falls back to starts-with match, then contains match.
+        Uses JS to compare text content — avoids has-text() substring issues.
+        """
+        try:
+            # JS exact match first — most reliable, avoids "Male" matching "Female"
+            clicked = await page.evaluate(
+                """([target]) => {
+                    const normalize = s => s.toLowerCase().replace(/[*\s]+/g, ' ').trim();
+                    const t = normalize(target);
+                    const candidates = [
+                        ...document.querySelectorAll('[class*="option"]'),
+                        ...document.querySelectorAll('[role="option"]'),
+                        ...document.querySelectorAll('li'),
+                    ];
+                    // 1. Exact match
+                    for (const el of candidates) {
+                        const txt = normalize(el.textContent || '');
+                        if (txt === t && el.offsetParent !== null) { el.click(); return 'exact:' + txt; }
+                    }
+                    // 2. Starts-with match
+                    for (const el of candidates) {
+                        const txt = normalize(el.textContent || '');
+                        if (txt.startsWith(t.slice(0,12)) && el.offsetParent !== null) { el.click(); return 'starts:' + txt; }
+                    }
+                    // 3. Contains match — last resort
+                    for (const el of candidates) {
+                        const txt = normalize(el.textContent || '');
+                        if (txt.includes(t) && el.offsetParent !== null) { el.click(); return 'contains:' + txt; }
+                    }
+                    return null;
+                }""",
+                [display_value]
+            )
+            if clicked:
+                logger.debug(f"[react_combobox] JS click matched '{display_value}' via {clicked}")
+                await asyncio.sleep(0.3)
+                return True
+        except Exception as _je:
+            logger.debug(f"[react_combobox] JS click failed: {_je}")
+        return False
+
+    try:
+        hint = (selector_hint or "").strip()
+
+        # ── Step 1: Locate the combobox input ────────────────────────────────
+        combobox = None
+        for sel in [
+            f'input.select__input[id="{hint}"]',
+            f'input[class*="select__input"][id="{hint}"]',
+        ]:
+            loc = page.locator(sel).first
+            if await loc.count() > 0:
+                combobox = loc
+                break
+
+        # Fallback: find by label text proximity
+        if not combobox:
+            all_cb = page.locator('input.select__input')
+            count = await all_cb.count()
+            label_words = [w for w in label.lower().split() if len(w) > 3]
+            for i in range(count):
+                cb = all_cb.nth(i)
+                try:
+                    nearby = await page.evaluate(
+                        """el => {
+                            let node = el;
+                            for (let i = 0; i < 7; i++) {
+                                if (!node.parentElement) break;
+                                node = node.parentElement;
+                                const t = node.textContent || '';
+                                if (t.length > 10 && t.length < 600) return t.toLowerCase();
+                            }
+                            return '';
+                        }""",
+                        await cb.element_handle()
+                    )
+                    if sum(1 for w in label_words[:4] if w in nearby) >= 2:
+                        combobox = all_cb.nth(i)
+                        break
+                except Exception:
+                    continue
+
+        if not combobox:
+            logger.warning(f"[react_combobox] Could not locate combobox for '{label}'")
+            return False
+
+        # ── Step 2: Click the container to open the dropdown ─────────────────
+        # Try grandparent first (the outer container div that React listens on)
+        opened = False
+        for ancestor in ["xpath=../../..", "xpath=../..", "xpath=.."]:
+            try:
+                container = combobox.locator(ancestor).first
+                await container.click(timeout=2000)
+                await asyncio.sleep(0.5)
+                # Check if any option is now visible
+                vis = await page.evaluate(
+                    """() => document.querySelectorAll('[class*="option"],[role="option"]').length"""
+                )
+                if vis > 0:
+                    opened = True
+                    break
+            except Exception:
+                continue
+
+        if not opened:
+            # Direct click on the input itself as last resort
+            try:
+                await combobox.click(timeout=2000)
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+        # ── Step 3: Scrape options immediately while dropdown is open ────────
+        # We scrape FIRST before typing anything. This gives us the real option
+        # list so we can decide the correct search term rather than guessing.
+        # The previous approach typed first then scraped — by then the dropdown
+        # had closed or shown "No options", so we got page body text instead.
+        _scraped_options = []
+        try:
+            _scraped_options = await page.evaluate(
+                """() => {
+                    // Only grab elements that are actually inside a visible dropdown menu
+                    // Key: the dropdown menu container is a portal at the end of <body>,
+                    // so we look for menu/listbox/option containers that are visible.
+                    const MENU_SELECTORS = [
+                        '[class*="menu"]',
+                        '[class*="listbox"]',
+                        '[class*="dropdown"]',
+                        '[role="listbox"]',
+                    ];
+                    let menuEl = null;
+                    for (const sel of MENU_SELECTORS) {
+                        const el = document.querySelector(sel);
+                        if (el && el.offsetParent !== null) { menuEl = el; break; }
+                    }
+                    // Collect options from within the menu, or fall back to all visible options
+                    const source = menuEl
+                        ? menuEl.querySelectorAll('[class*="option"], [role="option"], li')
+                        : document.querySelectorAll('[class*="option"], [role="option"]');
+                    const seen = new Set();
+                    const results = [];
+                    for (const el of source) {
+                        const t = (el.textContent || '').trim();
+                        // Filter: short enough to be an option, visible, not a heading
+                        if (t && t.length >= 2 && t.length <= 80
+                            && el.offsetParent !== null
+                            && !seen.has(t)) {
+                            seen.add(t);
+                            results.push(t);
+                        }
+                    }
+                    return results.slice(0, 40);
+                }"""
+            )
+            if _scraped_options:
+                logger.info(f"[react_combobox] Dropdown options for '{label}': {_scraped_options}")
+        except Exception as _se:
+            logger.debug(f"[react_combobox] Option scrape failed: {_se}")
+
+        # ── Step 3a: Direct click if display_value matches a scraped option ───
+        # Now that we have the real options, first try direct click (no typing).
+        if await _try_click_option(page, display_value):
+            return True
+
+        # ── Step 3b: LLM picks the best option from the real scraped list ─────
+        # If display_value isn't an exact option (e.g. "I am not a protected
+        # veteran" vs actual option "No military service"), ask the LLM to map.
+        _best_option = None
+        if _scraped_options:
+            import httpx as _hx2, os as _os2
+            _api_key = _os2.environ.get("OPENAI_API_KEY", "")
+            if _api_key:
+                _options_str = "\n".join(f"- {o}" for o in _scraped_options)
+                _prompt = (
+                    f"A job application dropdown for the question \"{label}\" has these options:\n"
+                    f"{_options_str}\n\n"
+                    f"The candidate wants to convey: \"{display_value}\"\n"
+                    "Which single option from the list best matches what the candidate wants? "
+                    "Reply with ONLY the exact option text copied verbatim. "
+                    "If truly none fit, reply with the option that is most neutral or decline-to-answer."
+                )
+                try:
+                    async with _hx2.AsyncClient() as _hc:
+                        _resp = await _hc.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {_api_key}", "Content-Type": "application/json"},
+                            json={"model": "gpt-4o-mini",
+                                  "messages": [{"role": "user", "content": _prompt}],
+                                  "temperature": 0.0, "max_tokens": 80},
+                            timeout=10.0,
+                        )
+                    _best_option = _resp.json()["choices"][0]["message"]["content"].strip().strip('"').strip("'")
+                    logger.info(f"[react_combobox] LLM mapped '{display_value}' → '{_best_option}'")
+                except Exception as _le:
+                    logger.debug(f"[react_combobox] LLM option pick failed: {_le}")
+
+        if _best_option and await _try_click_option(page, _best_option):
+            return True
+
+        # ── Step 3c: Type 3-char prefix of the LLM-chosen option and retry ────
+        # Some dropdowns need a search term to filter before options are clickable.
+        _search_target = _best_option or display_value
+        short_prefix = _search_target[:3]
+        try:
+            await combobox.fill("", timeout=2000)
+            await asyncio.sleep(0.2)
+            await combobox.type(short_prefix, timeout=2000)
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+        if await _try_click_option(page, _search_target):
+            return True
+
+        # ── Step 3d: Type more chars and try once more ────────────────────────
+        try:
+            await combobox.fill("", timeout=2000)
+            await asyncio.sleep(0.2)
+            await combobox.type(_search_target[:12], timeout=2000)
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+        if await _try_click_option(page, _search_target):
+            return True
+
+        # ── Step 3e: Heuristic fallback on scraped options ────────────────────
+        # No LLM, or LLM returned something that still didn't click — scan the
+        # scraped options for common semantic patterns.
+        if _scraped_options:
+            _dl = display_value.lower()
+            _HEURISTICS = [
+                # veteran / military
+                (["no military", "not a veteran", "not veteran", "none"], ["veteran", "military", "served"]),
+                # disability
+                (["no disability", "no, i do not", "not have a disability"], ["disability", "disabled", "ada"]),
+                # decline / prefer not to answer
+                (["prefer not", "decline", "don't wish", "not wish", "no answer"], []),
+            ]
+            for _matches, _triggers in _HEURISTICS:
+                _triggered = not _triggers or any(t in _dl for t in _triggers)
+                if _triggered:
+                    for _opt in _scraped_options:
+                        if any(k in _opt.lower() for k in _matches):
+                            # Clear search and try clicking this option directly
+                            try:
+                                await combobox.fill("", timeout=2000)
+                                await asyncio.sleep(0.3)
+                            except Exception:
+                                pass
+                            if await _try_click_option(page, _opt):
+                                logger.info(f"[react_combobox] Heuristic matched '{_opt}' for '{display_value}'")
+                                return True
+
+        # ── Close and give up ─────────────────────────────────────────────────
+        try:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
+        logger.warning(f"[react_combobox] No option matched '{display_value}' for '{label}'")
+        return False
+
+    except Exception as e:
+        logger.warning(f"[react_combobox] Outer error for '{label}': {e}")
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return False
+
+
+
 async def _fill_by_css(page, css: str, value: str, field_type: str) -> bool:
     """Try multiple comma-separated selectors from a css string."""
     selectors = [s.strip() for s in css.split(",")]
@@ -431,11 +728,31 @@ _FREE_TEXT_SIGNALS = [
 
 # Questions where a fixed short answer beats LLM generation
 _FIXED_ANSWERS = {
-    "hear about": "RACK — an AI job matching tool",
+    "hear about":       "RACK — an AI job matching tool",
     "how did you find": "RACK — an AI job matching tool",
-    "referred by": "",   # skip — no referrer
+    "referred by":      "",   # skip — no referrer
     "how did you hear": "RACK — an AI job matching tool",
 }
+
+# Privacy/consent dropdown answer map — keyed by label substring.
+# These comboboxes always have an "I agree" style option as the only valid choice.
+_CONSENT_DROPDOWN_PHRASES = [
+    "i agree",
+    "i understand",
+    "candidate privacy",
+    "privacy policy",
+    "data processing",
+    "consent to",
+    "by selecting",
+]
+_CONSENT_OPTION_CANDIDATES = [
+    "I agree",
+    "I Agree",
+    "I agree to the terms",
+    "I agree.",
+    "I understand",
+    "Yes",
+]
 
 def _is_free_text_question(label: str) -> bool:
     ll = label.lower()
@@ -445,16 +762,23 @@ def _is_free_text_question(label: str) -> bool:
 # -- Main agent generator -----------------------------------------------------
 
 async def run_apply_agent(
-    job_url:     str,
-    job_title:   str,
-    company:     str,
-    resume_text: str,
-    profile:     dict,
-    job_id:      str | None = None,
-    resume_id:   str | None = None,
-    user_id:     str | None = None,
+    job_url:      str,
+    job_title:    str,
+    company:      str,
+    resume_text:  str,
+    profile:      dict,
+    job_id:       str | None           = None,
+    resume_id:    str | None           = None,
+    user_id:      str | None           = None,
+    review_event: asyncio.Event | None = None,  # set by /api/apply/confirm endpoint
 ) -> AsyncGenerator[dict, None]:
-    """Async generator yielding SSE-ready step dicts."""
+    """
+    Async generator yielding SSE-ready step dicts.
+
+    review_event: if provided, the agent pauses before clicking Submit and
+    waits for this Event to be set (by the /api/apply/confirm endpoint).
+    Times out after 90 seconds — yields review_timeout and aborts.
+    """
     from services.form_filler import detect_fields, write_free_text
 
     def _step(status: str, text: str) -> dict:
@@ -592,9 +916,13 @@ async def run_apply_agent(
             # -- DOM snapshot -------------------------------------------------
             raw_html = await page.content()
 
-            # -- DOM dump (debug) — logs all form elements with label context --
+            # -- DOM structural snapshot — extract every form element with full
+            # context: id, name, label text, parent question text, select options.
+            # Passed to detect_fields() as a second representation alongside the
+            # raw HTML — LLM uses the clean field table to produce accurate selector_hints.
+            dom_snapshot = []
             try:
-                form_elements = await page.evaluate("""() => {
+                dom_snapshot = await page.evaluate("""() => {
                     const results = [];
                     document.querySelectorAll('input, select, textarea').forEach((el, i) => {
                         const label = document.querySelector(`label[for="${el.id}"]`);
@@ -612,8 +940,9 @@ async def run_apply_agent(
                     });
                     return results;
                 }""")
-                for el in form_elements:
+                for el in dom_snapshot:
                     logger.info(f"[dom_dump] {el}")
+                logger.info(f"[browser_agent] DOM snapshot: {len(dom_snapshot)} elements captured")
             except Exception as _de:
                 logger.warning(f"[dom_dump] failed: {_de}")
 
@@ -622,7 +951,7 @@ async def run_apply_agent(
 
             augmented_profile = dict(profile)
             augmented_profile["_ats_hint"] = ats_hint
-            fields = await detect_fields(raw_html, augmented_profile)
+            fields = await detect_fields(raw_html, augmented_profile, dom_snapshot=dom_snapshot)
 
             if not fields:
                 yield {"type": "error", "text": "Could not detect form fields. This ATS may require manual application."}
@@ -653,6 +982,23 @@ async def run_apply_agent(
                             f"hint={_dbg.get('selector_hint')!r} "
                             f"skip={_dbg.get('skip')} "
                             f"value={str(_dbg.get('value',''))[:40]!r}")
+
+            # -- Build sets of known field types from DOM snapshot -----------
+            # select__input → React combobox widget (open/type/click pattern)
+            # type=checkbox  → standard checkbox (direct .check() — never route to select2)
+            _react_combobox_ids = set()
+            _checkbox_ids = set()
+            for _el in dom_snapshot:
+                if 'select__input' in _el.get('classes', '') and _el.get('id'):
+                    _react_combobox_ids.add(str(_el['id']))
+                if _el.get('type') == 'checkbox' and _el.get('id'):
+                    _checkbox_ids.add(str(_el['id']))
+                if _el.get('type') == 'checkbox' and _el.get('name'):
+                    _checkbox_ids.add(str(_el['name']))
+            if _react_combobox_ids:
+                logger.info(f"[browser_agent] React combobox IDs: {_react_combobox_ids}")
+            if _checkbox_ids:
+                logger.info(f"[browser_agent] Checkbox IDs: {_checkbox_ids}")
 
             # -- Fill loop ----------------------------------------------------
             filled_count = 0
@@ -721,9 +1067,79 @@ async def run_apply_agent(
                     await asyncio.sleep(0.3)
                     continue
 
+                # ── Standard checkboxes — direct .check(), no select2/combobox ──
+                # DOM snapshot confirmed type=checkbox — always use _fill_by_css
+                # with checkbox semantics. This must come FIRST so GH select2
+                # routing never intercepts checkboxes on non-Greenhouse forms.
+                is_real_checkbox = (
+                    field_type == "checkbox"
+                    and (selector in _checkbox_ids or "checkbox" in field_type)
+                    and value == "check"
+                )
+                if is_real_checkbox or (field_type == "checkbox" and value == "check"):
+                    _cb_ok = await _fill_by_css(page, selector, value, "checkbox")
+                    if not _cb_ok:
+                        # Fallback: try by name attribute and by label-adjacent selector
+                        for _cb_sel in [
+                            f'input[type="checkbox"][id="{selector}"]',
+                            f'input[type="checkbox"][name="{selector}"]',
+                            f'input[type="checkbox"]',   # last resort: first checkbox on page
+                        ]:
+                            _loc = page.locator(_cb_sel).first
+                            if await _loc.count() > 0:
+                                if not await _loc.is_checked():
+                                    await _loc.check(timeout=3000)
+                                _cb_ok = True
+                                break
+                    if _cb_ok:
+                        filled_count += 1
+                        yield _step("ok", 'Checked: "' + label[:60] + '"')
+                    else:
+                        yield _step("error", 'Could not check: "' + label[:60] + '"')
+                    await asyncio.sleep(0.3)
+                    continue
+
+                # ── Privacy/consent dropdowns — always select "I agree" ──────
+                # These comboboxes (e.g. Reddit's candidate privacy policy dropdown)
+                # have only one valid option. We detect by label phrase and force
+                # the affirmative option, bypassing the LLM value entirely.
+                label_lower_consent = label.lower()
+                is_consent_dropdown = (
+                    selector in _react_combobox_ids
+                    and any(p in label_lower_consent for p in _CONSENT_DROPDOWN_PHRASES)
+                )
+                if is_consent_dropdown:
+                    _consent_ok = False
+                    for _copt in _CONSENT_OPTION_CANDIDATES:
+                        _consent_ok = await _fill_react_combobox(page, selector, label, _copt)
+                        if _consent_ok:
+                            break
+                    if _consent_ok:
+                        filled_count += 1
+                        yield _step("ok", 'Agreed: "' + label[:60] + '"')
+                    else:
+                        yield _step("error", 'Could not agree to: "' + label[:60] + '"')
+                    await asyncio.sleep(0.4)
+                    continue
+
+                # ── React combobox (select__input class) — ATS-agnostic ──────
+                # Detected from DOM snapshot: any input.select__input by ID.
+                # Covers Reddit, newer Greenhouse forms, and any other ATS using
+                # React-Select or similar. Must come BEFORE GH select2 routing
+                # so these don't get misrouted to _fill_gh_select2.
+                if selector in _react_combobox_ids:
+                    ok = await _fill_react_combobox(page, selector, label, value)
+                    if ok:
+                        filled_count += 1
+                        yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
+                    else:
+                        yield _step("error", 'Could not fill dropdown "' + label + '"')
+                    await asyncio.sleep(0.4)
+                    continue
+
                 # ── Greenhouse select2 dropdowns ──────────────────────────────
-                # Route: known select2 labels, OR type='checkbox'/'select' on GH
-                # (LLM often misclassifies select2 as checkbox or select)
+                # Route: known select2 labels, OR type='checkbox'/'select' on GH.
+                # Only fires on greenhouse.io URLs — not Reddit or other ATS.
                 is_select2_label = any(
                     k in label_lower_chk or label_lower_chk in k
                     for k in _GH_SELECT2_FIELDS
@@ -830,7 +1246,6 @@ async def run_apply_agent(
                 yield _step("skip", "Skipping: Resume (no resume_id provided)")
 
             # -- Pre-submit scroll & validation ----------------------------------
-            yield _step("ok", str(filled_count) + " field(s) filled — preparing to submit...")
             await asyncio.sleep(0.4)
 
             # Scroll to bottom so all fields are visible and validation triggers
@@ -840,18 +1255,50 @@ async def run_apply_agent(
             except Exception:
                 pass
 
-            # Check for any visible validation errors before clicking submit
+            # Check for visible validation errors
+            validation_errors = 0
             try:
                 error_locs = page.locator(
                     '.error-message:visible, .field-error:visible, '
                     '[aria-invalid="true"]:visible, .invalid-feedback:visible'
                 )
-                err_count = await error_locs.count()
-                if err_count > 0:
-                    yield _step("ok", f"Fixing {err_count} validation issue(s)...")
-                    await asyncio.sleep(0.3)
+                validation_errors = await error_locs.count()
             except Exception:
                 pass
+
+            # -- Human review gate -------------------------------------------
+            # Always pause here and wait for explicit user confirmation before
+            # clicking Submit. The frontend renders a "Review & Submit" button.
+            # If review_event is not provided (e.g. tests), proceed automatically.
+            _REVIEW_TIMEOUT = 120  # seconds — user has 2 minutes to confirm
+
+            yield {
+                "type":              "review_required",
+                "filled_count":      filled_count,
+                "validation_errors": validation_errors,
+                "text":              (
+                    f"{filled_count} field(s) filled"
+                    + (f" — {validation_errors} validation warning(s) detected" if validation_errors else "")
+                    + " — review and confirm to submit"
+                ),
+            }
+            logger.info(f"[browser_agent] Review gate reached — waiting for user confirmation (timeout={_REVIEW_TIMEOUT}s)")
+
+            if review_event is not None:
+                try:
+                    confirmed = await asyncio.wait_for(review_event.wait(), timeout=_REVIEW_TIMEOUT)
+                except asyncio.TimeoutError:
+                    yield _step("error", "Review timed out — application was not submitted")
+                    yield {
+                        "type":    "review_timeout",
+                        "text":    "No confirmation received within 2 minutes. The form was filled but not submitted.",
+                        "job_url": job_url,
+                    }
+                    return
+            # else: no event provided — fall through immediately (test/debug mode)
+
+            yield _step("ok", "Confirmed — submitting application...")
+            await asyncio.sleep(0.3)
 
             # -- Find and click Submit ----------------------------------------
             submit_selectors = [
@@ -869,7 +1316,6 @@ async def run_apply_agent(
                 try:
                     loc = page.locator(sel).first
                     if await loc.count() > 0 and await loc.is_visible():
-                        yield _step("ok", "Submitting application...")
                         await loc.scroll_into_view_if_needed()
                         await asyncio.sleep(0.3)
                         await loc.click(timeout=5000)

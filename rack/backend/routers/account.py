@@ -56,9 +56,11 @@ class ProfileUpdate(BaseModel):
     website: Optional[str] = None
     work_auth: Optional[str] = None               # "yes" | "no"
     requires_sponsorship: Optional[str] = None    # "yes" | "no"
+    current_location: Optional[str] = None        # "City, State" — filled into location fields
     gender_eeo: Optional[str] = None              # "male"|"female"|"non_binary"|"decline"
     veteran_status: Optional[str] = None          # "protected_veteran"|"not_a_veteran"|"decline"
     disability_status: Optional[str] = None       # "yes"|"no"|"decline"
+    ethnicity_eeo: Optional[str] = None           # "asian"|"black"|"hispanic"|"white"|"two_or_more"|"decline"
 
 
 class RoleAliasRequest(BaseModel):
@@ -108,11 +110,13 @@ async def save_profile(
     if req.linkedin            is not None: updates["linkedin"]             = req.linkedin
     if req.github              is not None: updates["github"]               = req.github
     if req.website             is not None: updates["website"]              = req.website
+    if req.current_location    is not None: updates["current_location"]     = req.current_location
     if req.work_auth           is not None: updates["work_auth"]            = req.work_auth
     if req.requires_sponsorship is not None: updates["requires_sponsorship"] = req.requires_sponsorship
     if req.gender_eeo          is not None: updates["gender_eeo"]           = req.gender_eeo
     if req.veteran_status      is not None: updates["veteran_status"]       = req.veteran_status
     if req.disability_status   is not None: updates["disability_status"]    = req.disability_status
+    if req.ethnicity_eeo       is not None: updates["ethnicity_eeo"]        = req.ethnicity_eeo
 
     new_prefs = {**existing, **updates}
 
