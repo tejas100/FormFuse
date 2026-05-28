@@ -252,24 +252,39 @@ async def apply_stream(
                 yield _sse(event)
 
                 # Job posting no longer exists — delete from auto_match_results
-                # so it never surfaces again for this user.
+                # AND insert into archived_job_ids so the scoring pipeline never
+                # re-inserts this job for this user.
                 if event.get("type") == "job_removed" and event.get("job_id"):
                     try:
                         from db.database import AsyncSessionLocal
+                        from models.orm import ArchivedJobId
+                        from sqlalchemy.dialects.postgresql import insert as pg_insert
+                        _removed_job_id = event["job_id"]
                         async with AsyncSessionLocal() as rm_db:
+                            # 1. Remove from matched results
                             await rm_db.execute(
                                 sa_delete(AutoMatchResult).where(
                                     AutoMatchResult.user_id == current_user.id,
-                                    AutoMatchResult.job_id  == event["job_id"],
+                                    AutoMatchResult.job_id  == _removed_job_id,
+                                )
+                            )
+                            # 2. Permanently archive so run_matching.py never re-scores it
+                            await rm_db.execute(
+                                pg_insert(ArchivedJobId).values(
+                                    user_id     = current_user.id,
+                                    job_id      = _removed_job_id,
+                                    archived_at = datetime.now(timezone.utc),
+                                ).on_conflict_do_nothing(
+                                    index_elements=["user_id", "job_id"]
                                 )
                             )
                             await rm_db.commit()
                         logger.info(
-                            f"[apply] Deleted removed job {event['job_id']} "
-                            f"from auto_match_results for user {current_user.email}"
+                            f"[apply] Removed job {_removed_job_id} from auto_match_results "
+                            f"and archived for user {current_user.email} (job no longer available)"
                         )
                     except Exception as db_err:
-                        logger.warning(f"[apply] DB delete after job_removed failed: {db_err}")
+                        logger.warning(f"[apply] DB cleanup after job_removed failed: {db_err}")
 
                 # On successful submit — mark applied in DB
                 if event.get("type") == "submitted" and event.get("job_id"):
