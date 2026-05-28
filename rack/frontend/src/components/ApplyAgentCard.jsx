@@ -49,9 +49,21 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
     return 'var(--text)'
   }
 
-  // Separate structural steps from field-fill steps
-  const structuralStatuses = new Set(['ok'])
-  const allSteps = steps || []
+  // Filter out "writing" steps that have already been resolved by a
+  // subsequent "ok" step for the same label. Without this, both the
+  // spinner and the checkmark render simultaneously.
+  const rawSteps = steps || []
+  const allSteps = rawSteps.filter((step, i) => {
+    if (step.status !== 'writing') return true
+    // Extract the label from the writing step text:
+    // "Writing answer for: Some Label..." → "Some Label"
+    const writingLabel = step.text.replace(/^Writing answer for:\s*/i, '').replace(/\.\.\.$/, '').trim()
+    // Check if any later step has status "ok" and text that contains this label
+    return !rawSteps.slice(i + 1).some(later =>
+      later.status === 'ok' &&
+      later.text.toLowerCase().includes(writingLabel.toLowerCase().slice(0, 30))
+    )
+  })
 
   return (
     <div style={{

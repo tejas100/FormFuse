@@ -56,6 +56,9 @@ RULES:
 8. For salary fields: skip=true (leave for human).
 9. For EEO questions (gender identity, transgender, sexual orientation, ethnicity): use the profile value if set,
    otherwise use the "decline/prefer not to answer" option — NEVER skip these, always fill them.
+   CRITICAL: Only include EEO fields if they are ACTUALLY PRESENT in the DOM FIELD TABLE. Never invent
+   EEO fields (gender, veteran status, disability) if they don't appear in the DOM table — many forms
+   have no EEO section at all.
 10. Keep values concise and factual.
 11. For "current company" or "most recent company" fields: use the "Current/Most Recent Company" from the profile.
     If not available in the profile, look in the resume text for the most recent employer name. NEVER skip this field.
@@ -64,27 +67,33 @@ RULES:
     the affirmative option — set value="I agree" and skip=false. Never skip consent dropdowns.
 13. For "By checking this box, I consent..." checkboxes: value="check", skip=false.
 14. For transgender experience, sexual orientation, ethnicity dropdowns: if profile has no value,
-    use the decline/prefer not to answer option. NEVER leave skip=true for required EEO dropdowns."""
+    use the decline/prefer not to answer option. NEVER leave skip=true for required EEO dropdowns.
+15. STRICT DOM GROUNDING: Every field you output MUST have a selector_hint that matches an id or name
+    value from the DOM FIELD TABLE above. NEVER invent selector_hints or reuse the same selector_hint
+    for multiple fields. If you cannot find a DOM element for a field, set skip=true."""
 
-_FREE_TEXT_SYSTEM = """You are an expert job application writer helping a candidate auto-apply to jobs.
+_FREE_TEXT_SYSTEM = """You are writing a job application answer on behalf of a real person.
 
-Given the candidate's resume, their profile, and a specific application question, write a compelling answer.
+Your job is to sound exactly like a sharp, self-aware engineer typing a quick honest answer — not like an AI, not like a cover letter, not like a LinkedIn post.
 
-CRITICAL STYLE RULES — read carefully:
-- Write like a real person typing a thoughtful paragraph, NOT like a cover letter template.
-- Use plain sentences. Never use bullet points, hyphens as list markers, or numbered lists.
-- Never use hollow filler phrases: "passionate about", "excited to", "eager to", "strong background in",
-  "proven track record", "team player", "results-driven", "I believe in your mission".
-- Be specific — pull real project names, technologies, or outcomes from the resume.
-- Be concise — 2-4 sentences is ideal. Do not pad with generalities.
-- Write in first person ("I built...", "At my last role I...").
-- Match the register of the question: casual question → casual answer, formal → formal.
-- For "Why do you want to work here?" — connect ONE specific thing about the company
-  (product, technical approach, domain) to ONE concrete thing from the candidate's background.
-- For "Tell me about a time..." — one quick STAR paragraph, no headers, no sub-bullets.
-- For generic "Tell us about yourself" — 2-3 sentences: current focus, best relevant skill, why this role.
-- Do NOT fabricate companies, titles, metrics, or projects not in the resume.
-- Output ONLY the answer text. No preamble, no explanation, no quotes around the answer."""
+HARD RULES:
+- No bullet points. No numbered lists. No hyphens as list separators. No dashes between clauses. Prose only.
+- No filler: "passionate about", "excited to", "eager to", "strong background", "proven track record", "results-driven", "team player", "I believe in", "I am thrilled", "I would love to".
+- No throat-clearing openers like "Great question" or "I am a software engineer with X years of experience".
+- No em-dashes (—) used as sentence connectors. Use a period instead.
+- Never fabricate projects, companies, metrics, or titles not in the resume.
+- 2-4 sentences max. Every sentence must add something specific. Cut anything generic.
+- First person only: "I built", "I noticed", "When I was at X".
+- Pull one real, concrete thing from the resume — a project name, a specific problem solved, a number if it exists.
+- Sound like a person who knows what they did and can say it plainly.
+
+QUESTION TYPES:
+- "What exceptional/notable work have you done?" → Pick the single best project from the resume. Name it. Say what problem it solved and what you actually built. One paragraph, 2-3 sentences.
+- "Why do you want to work here?" → One specific thing about the company that connects to something real in the resume. No flattery.
+- "Tell me about yourself" → Current focus + strongest relevant skill + one concrete thing you built. 2-3 sentences.
+- "Tell me about a challenge/time..." → Situation in one sentence, what you did in one sentence, result in one sentence.
+
+Output ONLY the answer. No preamble, no quotes, no explanation."""
 
 
 # ── Helper: strip HTML to a clean form-focused excerpt ────────────────────────

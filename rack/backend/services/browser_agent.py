@@ -825,6 +825,10 @@ _FREE_TEXT_SIGNALS = [
     "motivat", "passion", "background", "experience with", "accomplish",
     "challeng", "strength", "weakness", "goal", "comments",
     "hear about", "how did you", "referred by", "how did you find",
+    # Open-ended achievement / work questions
+    "exceptional work", "what work", "proud of", "most proud",
+    "notable", "significant", "impact", "contribution", "project",
+    "built", "created", "solved", "improved",
 ]
 
 # Questions where a fixed short answer beats LLM generation
@@ -854,6 +858,130 @@ _CONSENT_OPTION_CANDIDATES = [
     "I understand",
     "Yes",
 ]
+
+async def _scrape_combobox_options(page, selector_hint: str) -> list[str]:
+    """
+    Open a React combobox, scrape its visible options, then close it.
+    Returns a list of option strings (may be empty on failure).
+
+    Strategy:
+    1. Scroll the element into view first (critical — off-screen elements don't respond to JS click)
+    2. Click the grandparent container via Playwright locator (more reliable than pure JS click)
+    3. Wait for dropdown to render, then scrape visible options
+    4. Close with Escape
+    """
+    try:
+        # Step 1: Scroll element into view
+        await page.evaluate(
+            "(hint) => { const el = document.getElementById(hint); if (el) el.scrollIntoView({block:'center', behavior:'instant'}); }",
+            selector_hint,
+        )
+        await asyncio.sleep(0.3)
+
+        # Step 2: Click the grandparent container to open the dropdown
+        # Try Playwright locator first (respects visibility), fall back to JS click
+        _opened = False
+        try:
+            _loc = page.locator(f"#{selector_hint}").locator("xpath=../..").first
+            if await _loc.count() > 0:
+                await _loc.click(timeout=3000)
+                _opened = True
+        except Exception:
+            pass
+
+        if not _opened:
+            # JS fallback
+            await page.evaluate(
+                "(hint) => { const el = document.getElementById(hint); const gp = el?.parentElement?.parentElement; if (gp) gp.click(); }",
+                selector_hint,
+            )
+
+        await asyncio.sleep(0.6)
+
+        # Step 3: Scrape visible options
+        options = await page.evaluate("""() => {
+            const candidates = [
+                ...document.querySelectorAll('[class*="option"]'),
+                ...document.querySelectorAll('[role="option"]'),
+            ];
+            const visible = candidates.filter(el => el.offsetParent !== null);
+            return [...new Set(visible.map(el => el.textContent?.trim()).filter(Boolean))];
+        }""")
+
+        # Step 4: Close dropdown
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+        return options or []
+    except Exception:
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+        return []
+
+
+async def _pick_safe_combobox_answer(question: str, options: list[str], profile: dict) -> str | None:
+    """
+    Given a question label and its available options, use GPT-4o-mini to pick
+    the safest, most neutral answer for a job applicant.
+
+    Returns the exact option string to select, or None if truly unanswerable.
+    """
+    if not options:
+        return None
+
+    import httpx, os, json, re as _re
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+
+    # Build minimal profile context (no PII bulk)
+    ctx_parts = []
+    if profile.get("work_auth"):
+        ctx_parts.append(f"US work authorized: {profile['work_auth']}")
+    if profile.get("requires_sponsorship") is not None:
+        ctx_parts.append(f"Needs sponsorship: {profile['requires_sponsorship']}")
+    ctx = "; ".join(ctx_parts) if ctx_parts else "Standard job applicant, no special background."
+
+    prompt = f"""You are helping a job applicant fill out an application form dropdown.
+
+Question: {question}
+Available options:
+{chr(10).join(f'  - {o}' for o in options)}
+
+Applicant context: {ctx}
+
+Rules:
+1. Pick the single best option for a typical software engineer applicant with no military/government/security clearance background.
+2. For conflict-of-interest or government employment questions: choose "No" or the most negative/neutral option.
+3. For clearance questions: choose "None" or "No" or the equivalent that means the applicant has no current clearance.
+4. For "have you worked here before" questions: choose "No".
+5. For eligibility questions: choose the option that best fits a civilian software engineer.
+6. Return ONLY the exact option text from the list above. Nothing else."""
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "max_tokens": 60,
+                },
+                timeout=10.0,
+            )
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        # Validate response is actually one of the options (fuzzy)
+        raw_lower = raw.lower()
+        for opt in options:
+            if opt.lower() == raw_lower or opt.lower().startswith(raw_lower[:20]):
+                return opt
+        # Return raw if it looks reasonable
+        return raw if len(raw) < 120 else None
+    except Exception as _e:
+        logger.warning(f"[browser_agent] _pick_safe_combobox_answer LLM failed: {_e}")
+        return None
+
 
 def _is_free_text_question(label: str) -> bool:
     ll = label.lower()
@@ -1081,6 +1209,41 @@ async def run_apply_agent(
                     expanded.append(f)
             fields = expanded
 
+            # -- DOM-grounding filter -----------------------------------------
+            # Drop any field whose selector_hint doesn't match an actual id or
+            # name in the DOM snapshot. This prevents form_filler hallucinating
+            # EEO fields (gender, veteran, disability) on forms that don't have
+            # them, which causes noisy "Could not locate" errors in the fill loop.
+            _dom_ids   = {str(el.get("id",   "")) for el in dom_snapshot if el.get("id")}
+            _dom_names = {str(el.get("name", "")) for el in dom_snapshot if el.get("name")}
+            _dom_hints = _dom_ids | _dom_names
+            # Always-valid hints: standard top-level fields Greenhouse uses by convention
+            _ALWAYS_VALID = {"first_name", "last_name", "email", "phone", "resume", "cover_letter"}
+            _before_filter = len(fields)
+            fields_grounded = []
+            for _gf in fields:
+                _hint = _gf.get("selector_hint", "")
+                _ftype = _gf.get("field_type", "")
+                # Keep if: hint in DOM, hint is always-valid, field is a file type,
+                # or hint is empty (edge case — let fill loop handle it)
+                if (
+                    not _hint
+                    or _hint in _dom_hints
+                    or _hint in _ALWAYS_VALID
+                    or _ftype == "file"
+                ):
+                    fields_grounded.append(_gf)
+                else:
+                    logger.info(
+                        f"[browser_agent] DOM-filter dropped hallucinated field: "
+                        f"{_gf.get('field_label')!r} (hint={_hint!r})"
+                    )
+            fields = fields_grounded
+            if len(fields) < _before_filter:
+                logger.info(
+                    f"[browser_agent] DOM-filter: {_before_filter - len(fields)} field(s) removed"
+                )
+
             fillable = [f for f in fields if not f.get("skip")]
             yield _step("ok", "Found " + str(len(fillable)) + " fields to fill")
             # Debug: log every detected field so we can see what LLM returned
@@ -1108,6 +1271,105 @@ async def run_apply_agent(
             if _checkbox_ids:
                 logger.info(f"[browser_agent] Checkbox IDs: {_checkbox_ids}")
 
+            # -- Post-detect pass: resolve skipped/missing React combobox fields --
+            # Handles two cases:
+            #   A) fields with skip=True (form_filler had no profile value)
+            #   B) comboboxes in _react_combobox_ids that form_filler omitted entirely
+            #      (e.g. hispanic_ethnicity dropped by non-deterministic LLM output)
+            # For each, scroll into view, scrape live options, LLM-pick a safe answer.
+            _FILE_LABELS = {"resume", "attach", "cover letter", "cover_letter", "cv"}
+
+            # Build set of selector_hints already in fields list
+            _fields_hints = {f.get("selector_hint", "") for f in fields}
+
+            # Case A: skip=True fields that are React comboboxes
+            _resolve_targets = []
+            for _sf in fields:
+                if not _sf.get("skip"):
+                    continue
+                _sf_hint  = _sf.get("selector_hint", "")
+                _sf_label = _sf.get("field_label", "")
+                _sf_type  = _sf.get("field_type", "")
+                if _sf_hint not in _react_combobox_ids:
+                    continue
+                if _sf_type == "file" or any(fl in _sf_label.lower() for fl in _FILE_LABELS):
+                    continue
+                _resolve_targets.append(("field", _sf, _sf_hint, _sf_label))
+
+            # Case B: comboboxes in DOM that form_filler dropped entirely
+            for _dom_el in dom_snapshot:
+                _dom_id = str(_dom_el.get("id", ""))
+                if not _dom_id or _dom_id not in _react_combobox_ids:
+                    continue
+                if _dom_id in _fields_hints:
+                    continue  # already handled above
+                _dom_label = _dom_el.get("labelText") or _dom_el.get("parentText", "")[:80]
+                if any(fl in _dom_label.lower() for fl in _FILE_LABELS):
+                    continue
+                # Synthesise a new field entry for this orphaned combobox
+                _new_field = {
+                    "field_label":    _dom_label,
+                    "selector_hint":  _dom_id,
+                    "field_type":     "text",
+                    "value":          "",
+                    "skip":           True,
+                }
+                fields.append(_new_field)
+                _resolve_targets.append(("field", _new_field, _dom_id, _dom_label))
+                logger.info(f"[browser_agent] Orphaned combobox added to resolve targets: {_dom_label!r} (id={_dom_id})")
+
+            for (_, _sf, _sf_hint, _sf_label) in _resolve_targets:
+                try:
+                    logger.info(f"[browser_agent] Resolving combobox: {_sf_label!r}")
+                    _opts = await _scrape_combobox_options(page, _sf_hint)
+                    if not _opts:
+                        logger.warning(f"[browser_agent] No options scraped for {_sf_label!r} — leaving skipped")
+                        continue
+                    logger.info(f"[browser_agent] Combobox options for {_sf_label!r}: {_opts}")
+
+                    # ── Profile-aware overrides before LLM ──────────────────────
+                    # Hispanic/Latino is a Yes/No question — derive from ethnicity_eeo
+                    # rather than letting the generic LLM prompt pick "Decline".
+                    _label_lower_resolve = _sf_label.lower()
+                    _picked = None
+                    if any(k in _label_lower_resolve for k in ("hispanic", "latino")):
+                        _eth_raw_r = profile.get("ethnicity_eeo") or "decline"
+                        _target_r = "Yes" if _eth_raw_r == "hispanic" else "No"
+                        # Find exact match in scraped options (case-insensitive)
+                        _picked = next(
+                            (o for o in _opts if o.lower() == _target_r.lower()), None
+                        )
+                        if _picked:
+                            logger.info(f"[browser_agent] Profile override: {_sf_label!r} → {_picked!r}")
+                    elif any(k in _label_lower_resolve for k in ("ethnicit", "race", "racial")):
+                        _eth_raw_r = profile.get("ethnicity_eeo") or "decline"
+                        _eth_disp_r = _GH_ETHNICITY_MAP.get(_eth_raw_r, "I don't wish to answer")
+                        _picked = next(
+                            (o for o in _opts if _eth_disp_r.lower() in o.lower() or o.lower() in _eth_disp_r.lower()),
+                            None,
+                        )
+                        if _picked:
+                            logger.info(f"[browser_agent] Profile override: {_sf_label!r} → {_picked!r}")
+
+                    # Fall back to LLM if no profile override matched
+                    if not _picked:
+                        _picked = await _pick_safe_combobox_answer(_sf_label, _opts, profile)
+
+                    if _picked:
+                        _sf["skip"]  = False
+                        _sf["value"] = _picked
+                        logger.info(f"[browser_agent] Resolved {_sf_label!r} → {_picked!r}")
+                    else:
+                        logger.warning(f"[browser_agent] LLM could not pick for {_sf_label!r} — leaving skipped")
+                except Exception as _rse:
+                    logger.warning(f"[browser_agent] Post-detect resolve failed for {_sf_label!r}: {_rse}")
+
+            # Recount fillable after post-detect resolution
+            fillable_after = [f for f in fields if not f.get("skip")]
+            _newly_resolved = len(fillable_after) - len(fillable)
+            if _newly_resolved > 0:
+                yield _step("ok", f"Resolved {_newly_resolved} additional fields")
+
             # -- Fill loop ----------------------------------------------------
             filled_count = 0
 
@@ -1117,6 +1379,25 @@ async def run_apply_agent(
                 field_type = field.get("field_type", "text")
                 value      = field.get("value", "")
                 skip       = field.get("skip", False)
+
+                # ── Pre-skip rescue: un-skip fields we can handle regardless ──
+                # form_filler sets skip=True when it has no profile value.
+                # But some field types we handle ourselves — rescue them here
+                # before the skip guard fires.
+                if skip:
+                    _label_lower_rescue = label.lower()
+                    # Rescue 1: free-text textareas — write_free_text() handles these
+                    if field_type == "textarea" and _is_free_text_question(label):
+                        skip = False
+                        value = ""  # write_free_text path below will generate the answer
+                    # Rescue 2: native language name fields — we fill from profile
+                    elif "native language" in _label_lower_rescue or "native script" in _label_lower_rescue:
+                        _legal = profile.get("name") or (
+                            (profile.get("first_name", "") + " " + profile.get("last_name", "")).strip()
+                        )
+                        if _legal:
+                            skip  = False
+                            value = _legal
 
                 if skip:
                     yield _step("skip", "Skipping: " + label)
@@ -1133,11 +1414,26 @@ async def run_apply_agent(
                     if profile.get("last_name"):
                         value = profile["last_name"]
 
-                # ── Override ethnicity with profile value → human display string ──
-                # The LLM field detector defaults ethnicity to "decline" / "I don't wish to answer".
-                # Map the profile key to a human string so the LLM text mapper can pick the right option.
+                # ── Native language name — use legal name for Latin-script users ──
+                # xAI and some others ask for name in native script (Chinese, Cyrillic, etc).
+                # If the user's name is already Latin script, just repeat the full legal name.
+                _label_lower_native = label.lower()
+                if "native language" in _label_lower_native or "native script" in _label_lower_native:
+                    _legal = profile.get("name") or (
+                        (profile.get("first_name", "") + " " + profile.get("last_name", "")).strip()
+                    )
+                    if _legal:
+                        value = _legal
+
+                # ── Override ethnicity / hispanic-latino fields ────────────────
                 _label_lower_eth = label.lower()
-                if any(k in _label_lower_eth for k in ("ethnicit", "race", "racial")):
+                if any(k in _label_lower_eth for k in ("hispanic", "latino")):
+                    # This is a Yes/No/Decline question about Hispanic/Latino identity,
+                    # NOT a race picker. Always "No" unless profile says hispanic.
+                    _eth_raw = profile.get("ethnicity_eeo") or "decline"
+                    value = "Yes" if _eth_raw == "hispanic" else "No"
+                elif any(k in _label_lower_eth for k in ("ethnicit", "race", "racial")):
+                    # Race/ethnicity picker — map through display strings for LLM to match
                     _eth_raw = profile.get("ethnicity_eeo") or "decline"
                     _eth_display = _GH_ETHNICITY_MAP.get(_eth_raw, "I don't wish to answer")
                     value = _eth_display
@@ -1174,8 +1470,20 @@ async def run_apply_agent(
                     continue
 
                 if not value:
-                    yield _step("skip", "No value for: " + label)
-                    continue
+                    # Last-chance: if this is a React combobox, scrape options and resolve
+                    if selector in _react_combobox_ids:
+                        try:
+                            _lc_opts = await _scrape_combobox_options(page, selector)
+                            if _lc_opts:
+                                _lc_val = await _pick_safe_combobox_answer(label, _lc_opts, profile)
+                                if _lc_val:
+                                    value = _lc_val
+                                    logger.info(f"[browser_agent] Last-chance resolved {label!r} → {_lc_val!r}")
+                        except Exception as _lce:
+                            logger.warning(f"[browser_agent] Last-chance resolve failed for {label!r}: {_lce}")
+                    if not value:
+                        yield _step("skip", "No value for: " + label)
+                        continue
 
                 is_gh = "greenhouse.io" in job_url
                 label_lower_chk = label.lower()
@@ -1553,6 +1861,59 @@ async def run_apply_agent(
                     yield _step("skip", f"Resume attach failed: {str(_fe)[:120]}")
             elif resume_file_field:
                 yield _step("skip", "Skipping resume upload: no resume_id resolved")
+
+            # -- Dynamic field scan (post-fill) ----------------------------------
+            # Some forms reveal new fields after earlier answers are selected.
+            # Example: Anduril shows "Please identify your race" only AFTER
+            # "Are you Hispanic/Latino?" is answered.
+            # Re-snapshot the DOM, find any select__input comboboxes that are
+            # now visible but were NOT in the original snapshot, and fill them.
+            try:
+                _post_snapshot = await page.evaluate(
+                    """() => {
+                        const results = [];
+                        document.querySelectorAll('input.select__input').forEach((el) => {
+                            if (!el.id) return;
+                            const lbl = document.querySelector('label[for="' + el.id + '"]');
+                            const parent = el.closest('.field, .form-field, .application-field, .field-row');
+                            const parentText = parent ? parent.textContent.trim().slice(0, 120) : '';
+                            results.push({
+                                id: el.id,
+                                labelText: lbl ? lbl.textContent.trim() : '',
+                                parentText: parentText
+                            });
+                        });
+                        return results;
+                    }"""
+                )
+                _known_ids = {str(_el.get('id','')) for _el in dom_snapshot if _el.get('id')}
+                _new_fields = [f for f in _post_snapshot if f.get('id') and f['id'] not in _known_ids]
+                if _new_fields:
+                    logger.info(f"[browser_agent] Dynamic scan found {len(_new_fields)} new field(s): {[f['id'] for f in _new_fields]}")
+                    for _nf in _new_fields:
+                        _nf_id    = _nf['id']
+                        _nf_label = _nf.get('labelText') or _nf.get('parentText', '')[:80]
+                        try:
+                            _nf_opts = await _scrape_combobox_options(page, _nf_id)
+                            if not _nf_opts:
+                                logger.warning(f"[browser_agent] Dynamic field {_nf_label!r}: no options scraped")
+                                continue
+                            logger.info(f"[browser_agent] Dynamic field {_nf_label!r} options: {_nf_opts}")
+                            _nf_val = await _pick_safe_combobox_answer(_nf_label, _nf_opts, profile)
+                            if _nf_val:
+                                ok = await _fill_react_combobox(page, _nf_id, _nf_label, _nf_val)
+                                if ok:
+                                    filled_count += 1
+                                    yield _step("ok", f'Filled "{_nf_label}" -> {_nf_val}')
+                                    logger.info(f"[browser_agent] Dynamic field {_nf_label!r} filled → {_nf_val!r}")
+                                else:
+                                    yield _step("error", f'Could not fill dynamic field "{_nf_label}"')
+                            else:
+                                logger.warning(f"[browser_agent] No answer for dynamic field {_nf_label!r}")
+                        except Exception as _nfe:
+                            logger.warning(f"[browser_agent] Dynamic field fill failed for {_nf_label!r}: {_nfe}")
+            except Exception as _dse:
+                logger.warning(f"[browser_agent] Dynamic field scan failed: {_dse}")
 
             # -- Pre-submit scroll & validation ----------------------------------
             await asyncio.sleep(0.4)
