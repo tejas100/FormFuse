@@ -1940,7 +1940,7 @@ async def run_apply_agent(
             # Always pause here and wait for explicit user confirmation before
             # clicking Submit. The frontend renders a "Review & Submit" button.
             # If review_event is not provided (e.g. tests), proceed automatically.
-            _REVIEW_TIMEOUT = 180  # seconds — user has 3 minutes to confirm
+            _REVIEW_TIMEOUT = 120  # seconds — user has 2 minutes to confirm
 
             yield {
                 "type":              "review_required",

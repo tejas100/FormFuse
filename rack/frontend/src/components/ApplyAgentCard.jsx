@@ -14,7 +14,7 @@
  *   company  — string — shown in header
  */
 
-export default function ApplyAgentCard({ steps, loading, error, done, submitted, jobRemoved, jobTitle, company, reviewRequired, onConfirmSubmit, sessionId }) {
+export default function ApplyAgentCard({ steps, loading, error, done, submitted, jobRemoved, sessionEnded, jobTitle, company, reviewRequired, onConfirmSubmit, sessionId }) {
 
   const statusIcon = (status) => {
     if (status === 'ok')      return <span style={{ fontSize: '12px', color: 'var(--accent3)' }}>✓</span>
@@ -98,9 +98,12 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
         {(error || jobRemoved) && !loading && (
           <span style={{ fontSize: '14px', color: 'var(--danger)' }}>✗</span>
         )}
+        {sessionEnded && !loading && (
+          <span style={{ fontSize: '14px', color: 'rgba(251,146,60,0.9)' }}>⏱</span>
+        )}
         <div>
           <span style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500 }}>
-            {submitted ? 'Submitted' : done ? 'Application filled' : jobRemoved ? 'Job no longer available' : reviewRequired ? 'Review before submitting' : loading ? 'Auto-applying…' : 'Apply agent'}
+            {submitted ? 'Submitted' : done ? 'Application filled' : jobRemoved ? 'Job no longer available' : sessionEnded ? 'Session ended' : reviewRequired ? 'Review before submitting' : loading ? 'Auto-applying…' : 'Apply agent'}
           </span>
           {(jobTitle || company) && (
             <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, marginLeft: '6px' }}>
@@ -273,6 +276,27 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
               Open application ↗
             </a>
           )}
+        </div>
+      )}
+
+      {/* ── Session ended state ── */}
+      {sessionEnded && !loading && (
+        <div style={{
+          padding: '14px 16px',
+          borderRadius: '10px',
+          background: 'rgba(251,146,60,0.06)',
+          border: '1px solid rgba(251,146,60,0.2)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}>
+          <div style={{ fontSize: '13px', color: 'rgba(251,146,60,0.9)', fontWeight: 500 }}>
+            ⏱ Review session expired
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, lineHeight: 1.6 }}>
+            The 2-minute review window closed before submission. The form was filled but not submitted.
+            You can start a new session anytime.
+          </div>
         </div>
       )}
 

@@ -1329,8 +1329,9 @@ export default function Home() {
   // Tracks which message (by msgId) is currently waiting at the review gate.
   // Used so handleConfirmSubmit can look up the Steel session_id for that message.
   const [applyReviewMsgId, setApplyReviewMsgId] = useState(null)
-  const [reviewCountdown, setReviewCountdown]   = useState(null)  // seconds remaining, null when not in review
+  const [reviewCountdown, setReviewCountdown]   = useState(null)
   const reviewTimerRef                          = useRef(null)
+  const [reviewWarningShown, setReviewWarningShown] = useState(false)
 
   // Derived: last completed message's results (for ValuePreviewCard)
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
@@ -2659,8 +2660,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               // Switch Steel panel to interactive so user can click around and inspect.
               setSteelViewer(prev => prev ? { ...prev, interactive: true } : prev)
               setApplyReviewMsgId(msgId)
-              const totalSecs = event.timeout_seconds || 180
+              const totalSecs = event.timeout_seconds || 120
               setReviewCountdown(totalSecs)
+              setReviewWarningShown(false)
               // Start ticking countdown — clears itself when it hits 0 or review ends
               if (reviewTimerRef.current) clearInterval(reviewTimerRef.current)
               reviewTimerRef.current = setInterval(() => {
@@ -2670,6 +2672,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                     reviewTimerRef.current = null
                     return 0
                   }
+                  if (prev - 1 === 30) setReviewWarningShown(true)
                   return prev - 1
                 })
               }, 1000)
@@ -2681,10 +2684,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               // User didn't confirm within timeout — agent aborted cleanly.
               if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
               setReviewCountdown(null)
+              setReviewWarningShown(false)
               setSteelViewer(null)
               setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
-                ? { ...m, applyReviewRequired: null, applyError: 'Review timed out — form was filled but not submitted. Open the job URL to submit manually.', loading: false }
+                ? { ...m, applyReviewRequired: null, applySessionEnded: true, loading: false }
                 : m
               ))
             } else if (event.type === 'job_removed') {
@@ -2697,6 +2701,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               const { type, ...submittedData } = event
               if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
               setReviewCountdown(null)
+              setReviewWarningShown(false)
               setApplyReviewMsgId(null)
               // Keep panel open — user can see the confirmation page
               setSteelViewer(prev => prev ? { ...prev, interactive: false } : prev)
@@ -2708,6 +2713,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               const { type, ...doneData } = event
               if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
               setReviewCountdown(null)
+              setReviewWarningShown(false)
               setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applyReviewRequired: null, applyDone: doneData, loading: false }
@@ -2716,6 +2722,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
             } else if (event.type === 'error') {
               if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
               setReviewCountdown(null)
+              setReviewWarningShown(false)
               setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applyReviewRequired: null, applyError: event.text, loading: false }
@@ -2778,6 +2785,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
         // User cancelled — clear review state immediately on the frontend.
         if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
         setReviewCountdown(null)
+        setReviewWarningShown(false)
         // The agent will time-out naturally and yield review_timeout which
         // will be handled by the SSE parser, but we update UI right away.
         setSteelViewer(null)
@@ -2794,6 +2802,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
       if (action === 'submit') {
         if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
         setReviewCountdown(null)
+        setReviewWarningShown(false)
       }
     } catch (err) {
       console.error('[handleConfirmSubmit] Error:', err)
@@ -3999,6 +4008,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         done={msg.applyDone || null}
                         submitted={msg.applySubmitted || null}
                         jobRemoved={msg.applyJobRemoved || null}
+                        sessionEnded={msg.applySessionEnded || false}
                         jobTitle={msg.applyJobTitle}
                         company={msg.applyCompany}
                         reviewRequired={msg.applyReviewRequired || null}
@@ -4766,6 +4776,89 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
       <div className={`rack-toast${toast.out ? ' out' : ''}`}>
         <span className="rack-toast-dot" />
         {toast.msg}
+      </div>
+    )}
+
+    {/* ── Review session 30s warning popup ── */}
+    {reviewWarningShown && reviewCountdown !== null && reviewCountdown > 0 && (
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(0,0,0,0.55)',
+        backdropFilter: 'blur(4px)',
+        animation: 'bubbleIn 0.25s cubic-bezier(0.22,1,0.36,1) both',
+      }}>
+        <div style={{
+          background: 'var(--surface)',
+          border: '1px solid rgba(251,146,60,0.35)',
+          borderRadius: 16,
+          padding: '28px 32px',
+          maxWidth: 380,
+          width: '90%',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14,
+          boxShadow: '0 0 60px rgba(251,146,60,0.12)',
+        }}>
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+              background: 'rgba(251,146,60,0.1)',
+              border: '1.5px solid rgba(251,146,60,0.45)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              animation: 'pulse 1s ease-in-out infinite',
+            }}>
+              <span style={{ fontSize: 16 }}>⏱</span>
+            </div>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'rgba(251,146,60,0.95)', fontFamily: 'var(--font-display)', letterSpacing: '0.02em' }}>
+                Session ending soon
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 300, marginTop: 2 }}>
+                Your review window closes in{' '}
+                <span style={{ color: 'rgba(251,146,60,0.85)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                  {reviewCountdown}s
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Body */}
+          <div style={{ fontSize: 13, color: 'var(--text-mid)', fontWeight: 300, lineHeight: 1.6 }}>
+            Your application session will end in <strong style={{ color: 'var(--text)' }}>30 seconds</strong>. Confirm now to submit, or the session will close and you can start a new one.
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+            <button
+              onClick={() => { setReviewWarningShown(false); handleConfirmSubmit('submit') }}
+              style={{
+                flex: 1, padding: '9px 0', borderRadius: 10,
+                background: 'rgba(251,146,60,0.14)',
+                border: '1px solid rgba(251,146,60,0.4)',
+                color: 'rgba(251,146,60,0.95)',
+                fontSize: 13, fontWeight: 600,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              Submit now ↗
+            </button>
+            <button
+              onClick={() => setReviewWarningShown(false)}
+              style={{
+                padding: '9px 16px', borderRadius: 10,
+                background: 'transparent',
+                border: '1px solid var(--border)',
+                color: 'var(--text-dim)',
+                fontSize: 13, fontWeight: 400,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
       </div>
     )}
     </>
