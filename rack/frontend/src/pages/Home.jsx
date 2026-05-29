@@ -1329,6 +1329,8 @@ export default function Home() {
   // Tracks which message (by msgId) is currently waiting at the review gate.
   // Used so handleConfirmSubmit can look up the Steel session_id for that message.
   const [applyReviewMsgId, setApplyReviewMsgId] = useState(null)
+  const [reviewCountdown, setReviewCountdown]   = useState(null)  // seconds remaining, null when not in review
+  const reviewTimerRef                          = useRef(null)
 
   // Derived: last completed message's results (for ValuePreviewCard)
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
@@ -2657,12 +2659,28 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               // Switch Steel panel to interactive so user can click around and inspect.
               setSteelViewer(prev => prev ? { ...prev, interactive: true } : prev)
               setApplyReviewMsgId(msgId)
+              const totalSecs = event.timeout_seconds || 180
+              setReviewCountdown(totalSecs)
+              // Start ticking countdown — clears itself when it hits 0 or review ends
+              if (reviewTimerRef.current) clearInterval(reviewTimerRef.current)
+              reviewTimerRef.current = setInterval(() => {
+                setReviewCountdown(prev => {
+                  if (prev === null || prev <= 1) {
+                    clearInterval(reviewTimerRef.current)
+                    reviewTimerRef.current = null
+                    return 0
+                  }
+                  return prev - 1
+                })
+              }, 1000)
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applyReviewRequired: { filled_count: event.filled_count, validation_errors: event.validation_errors }, loading: true }
                 : m
               ))
             } else if (event.type === 'review_timeout') {
-              // User didn't confirm within 120s — agent aborted cleanly.
+              // User didn't confirm within timeout — agent aborted cleanly.
+              if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
+              setReviewCountdown(null)
               setSteelViewer(null)
               setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
@@ -2677,6 +2695,8 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               ))
             } else if (event.type === 'submitted') {
               const { type, ...submittedData } = event
+              if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
+              setReviewCountdown(null)
               setApplyReviewMsgId(null)
               // Keep panel open — user can see the confirmation page
               setSteelViewer(prev => prev ? { ...prev, interactive: false } : prev)
@@ -2686,12 +2706,16 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               ))
             } else if (event.type === 'done') {
               const { type, ...doneData } = event
+              if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
+              setReviewCountdown(null)
               setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applyReviewRequired: null, applyDone: doneData, loading: false }
                 : m
               ))
             } else if (event.type === 'error') {
+              if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
+              setReviewCountdown(null)
               setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applyReviewRequired: null, applyError: event.text, loading: false }
@@ -2752,6 +2776,8 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
 
       if (action === 'cancel') {
         // User cancelled — clear review state immediately on the frontend.
+        if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
+        setReviewCountdown(null)
         // The agent will time-out naturally and yield review_timeout which
         // will be handled by the SSE parser, but we update UI right away.
         setSteelViewer(null)
@@ -2763,8 +2789,12 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
         setApplyLoading(false)
         applyInProgressRef.current = false
       }
-      // For action === 'submit': the SSE stream will emit 'submitted' or 'done'
-      // which the parser handles — no extra frontend work needed here.
+      // For action === 'submit': stop the countdown immediately (agent is now submitting),
+      // SSE stream will emit 'submitted' or 'done' which handles the rest.
+      if (action === 'submit') {
+        if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
+        setReviewCountdown(null)
+      }
     } catch (err) {
       console.error('[handleConfirmSubmit] Error:', err)
     }
@@ -4634,8 +4664,10 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                     <div style={{
                       width: 44, height: 44,
                       borderRadius: '50%',
-                      background: 'rgba(232,255,107,0.1)',
-                      border: '1.5px solid rgba(232,255,107,0.55)',
+                      background: reviewCountdown !== null && reviewCountdown <= 30
+                        ? 'rgba(251,146,60,0.12)' : 'rgba(232,255,107,0.1)',
+                      border: `1.5px solid ${reviewCountdown !== null && reviewCountdown <= 30
+                        ? 'rgba(251,146,60,0.6)' : 'rgba(232,255,107,0.55)'}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       flexShrink: 0,
                       animation: 'pulse 2s ease-in-out infinite',
@@ -4643,16 +4675,37 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                       <span style={{ fontSize: 20, lineHeight: 1 }}>↖</span>
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                      <span style={{
-                        fontSize: 15, fontWeight: 700,
-                        color: 'rgba(232,255,107,0.95)',
-                        fontFamily: 'var(--font-display)',
-                        letterSpacing: '0.04em',
-                        textTransform: 'uppercase',
-                      }}>
-                        You're in control
-                      </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{
+                          fontSize: 15, fontWeight: 700,
+                          color: reviewCountdown !== null && reviewCountdown <= 30
+                            ? 'rgba(251,146,60,0.95)' : 'rgba(232,255,107,0.95)',
+                          fontFamily: 'var(--font-display)',
+                          letterSpacing: '0.04em',
+                          textTransform: 'uppercase',
+                          transition: 'color 0.4s ease',
+                        }}>
+                          You're in control
+                        </span>
+                        {/* Live countdown pill */}
+                        {reviewCountdown !== null && (
+                          <span style={{
+                            fontSize: 11, fontWeight: 700,
+                            fontFamily: 'var(--font-display)',
+                            letterSpacing: '0.05em',
+                            color: reviewCountdown <= 30 ? 'rgba(251,146,60,0.9)' : 'rgba(255,255,255,0.35)',
+                            background: reviewCountdown <= 30 ? 'rgba(251,146,60,0.1)' : 'rgba(255,255,255,0.06)',
+                            border: `1px solid ${reviewCountdown <= 30 ? 'rgba(251,146,60,0.3)' : 'rgba(255,255,255,0.1)'}`,
+                            borderRadius: 6,
+                            padding: '2px 8px',
+                            transition: 'all 0.4s ease',
+                            fontVariantNumeric: 'tabular-nums',
+                          }}>
+                            {String(Math.floor(reviewCountdown / 60)).padStart(1,'0')}:{String(reviewCountdown % 60).padStart(2,'0')}
+                          </span>
+                        )}
+                      </div>
                       <span style={{
                         fontSize: 12,
                         color: 'rgba(255,255,255,0.5)',
