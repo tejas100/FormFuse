@@ -147,7 +147,53 @@ const mobileCardStyles = `
     display: none !important;
   }
 
-  /* Steel live panel — takes all remaining space */
+  /* ── Steel panel keyframes ─────────────────────────────── */
+
+  /* Left border breathes — always on while panel is open */
+  @keyframes steel-glow-breathe {
+    0%, 100% { border-left-color: rgba(232,255,107,0.18);
+               box-shadow: inset 2px 0 12px rgba(232,255,107,0.05), -2px 0 16px rgba(232,255,107,0.06); }
+    50%       { border-left-color: rgba(232,255,107,0.42);
+               box-shadow: inset 2px 0 18px rgba(232,255,107,0.11), -2px 0 24px rgba(232,255,107,0.13); }
+  }
+
+  /* Slow shimmer that drifts across the header bar continuously */
+  @keyframes steel-bar-drift {
+    0%   { background-position: -800px 0; }
+    100% { background-position: 800px 0; }
+  }
+
+  /* Live dot steady pulse */
+  @keyframes steel-dot-pulse {
+    0%, 100% { box-shadow: 0 0 5px rgba(232,255,107,0.5),  0 0 0 0   rgba(232,255,107,0); }
+    50%       { box-shadow: 0 0 10px rgba(232,255,107,0.85), 0 0 14px rgba(232,255,107,0.25); }
+  }
+
+  /* One-shot scan line on open */
+  @keyframes steel-scan {
+    0%   { transform: translateY(-4px); opacity: 0; }
+    4%   { opacity: 1; }
+    90%  { opacity: 0.7; }
+    100% { transform: translateY(100vh); opacity: 0; }
+  }
+
+  /* Iframe materialise on open */
+  @keyframes steel-iframe-reveal {
+    0%   { opacity: 0; transform: scale(0.975); }
+    60%  { opacity: 1; }
+    100% { opacity: 1; transform: scale(1); }
+  }
+
+  /* One-shot burst on open */
+  @keyframes steel-border-burst {
+    0%   { border-left-color: rgba(255,255,255,0.06); }
+    10%  { border-left-color: rgba(232,255,107,0.95);
+           box-shadow: inset 4px 0 22px rgba(232,255,107,0.18), -4px 0 32px rgba(232,255,107,0.28); }
+    40%  { border-left-color: rgba(232,255,107,0.5); }
+    100% { border-left-color: rgba(232,255,107,0.28); }
+  }
+
+  /* ── Steel panel base ── */
   .rack-steel-panel {
     flex: 0 0 0px;
     overflow: hidden;
@@ -156,15 +202,72 @@ const mobileCardStyles = `
     height: 100%;
     background: #0a0a0a;
     border-left: 4px solid rgba(255,255,255,0.06);
-    transition: flex 0.35s cubic-bezier(0.22,1,0.36,1);
+    transition: flex 0.38s cubic-bezier(0.34,1.4,0.64,1);
   }
+
+  /* OPEN state — persistent ambient glow on the border */
   .rack-steel-panel.open {
     flex: 1 1 0px;
     min-width: 0;
+    border-left-color: rgba(232,255,107,0.28);
+    animation: steel-glow-breathe 3s ease-in-out infinite;
   }
+
   @media (max-width: 900px) {
     .rack-steel-panel.open { flex: 0 0 100vw; }
     .rack-chat-col.panel-open { display: none; }
+  }
+
+  /* OPEN — header bar gets a slow drifting shimmer, always visible */
+  .rack-steel-panel.open .rack-steel-header-label {
+    background: linear-gradient(
+      90deg,
+      rgba(232,255,107,0.7)  0%,
+      rgba(232,255,107,0.9)  35%,
+      rgba(255,255,255,0.95) 50%,
+      rgba(232,255,107,0.9)  65%,
+      rgba(232,255,107,0.7)  100%
+    );
+    background-size: 800px 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: steel-bar-drift 4s linear infinite;
+  }
+
+  /* OPEN — live dot pulses continuously */
+  .rack-steel-panel.open .rack-live-dot {
+    animation: steel-dot-pulse 2s ease-in-out infinite !important;
+  }
+
+  /* OPENING (950ms burst) — override border with a sharper burst then hand off to breathe */
+  .rack-steel-panel.steel-opening {
+    animation: steel-border-burst 800ms cubic-bezier(0.22,1,0.36,1) forwards,
+               steel-glow-breathe 3s ease-in-out 800ms infinite;
+  }
+
+  /* OPENING — scan line sweeps once top→bottom */
+  .rack-steel-panel.steel-opening .rack-steel-body::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    height: 2px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(232,255,107,0.0) 10%,
+      rgba(232,255,107,0.65) 50%,
+      rgba(232,255,107,0.0) 90%,
+      transparent
+    );
+    pointer-events: none;
+    z-index: 10;
+    animation: steel-scan 750ms cubic-bezier(0.4,0,0.6,1) 80ms forwards;
+  }
+
+  /* Iframe materialise on open */
+  .rack-steel-iframe-entering {
+    animation: steel-iframe-reveal 500ms cubic-bezier(0.22,1,0.36,1) 150ms both;
   }
 
   /* Scrollable message area — goes full bleed, flows under the floating nav */
@@ -716,7 +819,7 @@ const CHROME_CROP_TOP = 185
 // CHROME_CROP_BOTTOM: native px to skip at bottom (status bar / blank space)
 const CHROME_CROP_BOTTOM = 60
 
-function ScaledLiveIframe({ src, nativeWidth = 1280 }) {
+function ScaledLiveIframe({ src, nativeWidth = 1280, entering = false }) {
   const wrapperRef = useRef(null)
   const [xform, setXform] = useState({ scale: 1, tx: 0, ty: 0 })
 
@@ -754,6 +857,7 @@ function ScaledLiveIframe({ src, nativeWidth = 1280 }) {
   return (
     <div
       ref={wrapperRef}
+      className={entering ? 'rack-steel-iframe-entering' : undefined}
       style={{ position: 'absolute', inset: 0, overflow: 'hidden', background: '#000' }}
     >
       <iframe
@@ -1219,8 +1323,12 @@ export default function Home() {
   const [applyLoading, setApplyLoading]   = useState(false)
   const applyInProgressRef               = useRef(false)  // sync guard — prevents double-stream on fast double-click
   // Steel live browser viewer — null when no session active
-  // { liveViewUrl, sessionId, isOpen }
+  // { liveViewUrl, sessionId, interactive }
   const [steelViewer, setSteelViewer]     = useState(null)
+  const [steelOpening, setSteelOpening]   = useState(false)
+  // Tracks which message (by msgId) is currently waiting at the review gate.
+  // Used so handleConfirmSubmit can look up the Steel session_id for that message.
+  const [applyReviewMsgId, setApplyReviewMsgId] = useState(null)
 
   // Derived: last completed message's results (for ValuePreviewCard)
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
@@ -1301,6 +1409,14 @@ export default function Home() {
     window.dispatchEvent(new CustomEvent('rack:steel-panel', { detail: { open: !!steelViewer } }))
     document.body.classList.toggle('steel-panel-open', !!steelViewer)
     return () => document.body.classList.remove('steel-panel-open')
+  }, [steelViewer])
+
+  // Fire opening animation class for 950ms when Steel viewer first opens
+  useEffect(() => {
+    if (!steelViewer) return
+    setSteelOpening(true)
+    const t = setTimeout(() => setSteelOpening(false), 950)
+    return () => clearTimeout(t)
   }, [steelViewer])
 
   // Mood transitions
@@ -2520,14 +2636,37 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
             catch { continue }
 
             if (event.type === 'steel_session') {
-              // Steel remote browser is ready — slide in the live panel
+              // Steel remote browser is ready — slide in the live panel (read-only while agent fills)
               setSteelViewer({
                 liveViewUrl: event.live_view_url,
                 sessionId:   event.session_id,
+                interactive: false,   // switches to true when review_required fires
               })
+              // Also store sessionId on the message so handleConfirmSubmit can find it
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applySessionId: event.session_id }
+                : m
+              ))
             } else if (event.type === 'step') {
               setMessages(prev => prev.map(m => m.id === msgId
                 ? { ...m, applySteps: [...(m.applySteps || []), event] }
+                : m
+              ))
+            } else if (event.type === 'review_required') {
+              // Agent finished filling — waiting for user to confirm before submitting.
+              // Switch Steel panel to interactive so user can click around and inspect.
+              setSteelViewer(prev => prev ? { ...prev, interactive: true } : prev)
+              setApplyReviewMsgId(msgId)
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applyReviewRequired: { filled_count: event.filled_count, validation_errors: event.validation_errors }, loading: true }
+                : m
+              ))
+            } else if (event.type === 'review_timeout') {
+              // User didn't confirm within 120s — agent aborted cleanly.
+              setSteelViewer(null)
+              setApplyReviewMsgId(null)
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applyReviewRequired: null, applyError: 'Review timed out — form was filled but not submitted. Open the job URL to submit manually.', loading: false }
                 : m
               ))
             } else if (event.type === 'job_removed') {
@@ -2538,19 +2677,24 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               ))
             } else if (event.type === 'submitted') {
               const { type, ...submittedData } = event
+              setApplyReviewMsgId(null)
+              // Keep panel open — user can see the confirmation page
+              setSteelViewer(prev => prev ? { ...prev, interactive: false } : prev)
               setMessages(prev => prev.map(m => m.id === msgId
-                ? { ...m, applySubmitted: submittedData, loading: false }
+                ? { ...m, applyReviewRequired: null, applySubmitted: submittedData, loading: false }
                 : m
               ))
             } else if (event.type === 'done') {
               const { type, ...doneData } = event
+              setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
-                ? { ...m, applyDone: doneData, loading: false }
+                ? { ...m, applyReviewRequired: null, applyDone: doneData, loading: false }
                 : m
               ))
             } else if (event.type === 'error') {
+              setApplyReviewMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
-                ? { ...m, applyError: event.text, loading: false }
+                ? { ...m, applyReviewRequired: null, applyError: event.text, loading: false }
                 : m
               ))
             }
@@ -2567,14 +2711,66 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
       if (applyJobs.length > 1) await new Promise(r => setTimeout(r, 800))
     }
 
-    // Dismiss the Steel viewer pill/modal — agent is done
+    // Dismiss the Steel viewer — only if we're not still waiting at the review gate.
+    // If the stream ended while review is pending it means the agent timed out or errored;
+    // review state was already cleared above. Safe to close.
     setSteelViewer(null)
+    setApplyReviewMsgId(null)
     setApplyLoading(false)
     applyInProgressRef.current = false
   }
 
 
-  // ── Slash command handler ───────────────────────────────────────
+  // ── Confirm (or cancel) a pending review gate ───────────────────
+  // Called by ApplyAgentCard's "Confirm & Submit" / "Cancel" buttons.
+  // Looks up the Steel session_id from the message that is currently at the
+  // review gate, then posts to /api/apply/confirm/{session_id}.
+  const handleConfirmSubmit = async (action) => {
+    if (!applyReviewMsgId) return
+
+    // Find the message that is waiting at the review gate to get its session_id
+    const reviewMsg = messages.find(m => m.id === applyReviewMsgId)
+    const sessionId = reviewMsg?.applySessionId || steelViewer?.sessionId
+    if (!sessionId) {
+      console.error('[handleConfirmSubmit] No sessionId found for review gate')
+      return
+    }
+
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE}/api/apply/confirm/${sessionId}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body:    JSON.stringify({ action }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        console.error('[handleConfirmSubmit] Confirm failed:', errData.detail)
+        return
+      }
+
+      if (action === 'cancel') {
+        // User cancelled — clear review state immediately on the frontend.
+        // The agent will time-out naturally and yield review_timeout which
+        // will be handled by the SSE parser, but we update UI right away.
+        setSteelViewer(null)
+        setApplyReviewMsgId(null)
+        setMessages(prev => prev.map(m => m.id === applyReviewMsgId
+          ? { ...m, applyReviewRequired: null, applyError: 'Application cancelled.', loading: false }
+          : m
+        ))
+        setApplyLoading(false)
+        applyInProgressRef.current = false
+      }
+      // For action === 'submit': the SSE stream will emit 'submitted' or 'done'
+      // which the parser handles — no extra frontend work needed here.
+    } catch (err) {
+      console.error('[handleConfirmSubmit] Error:', err)
+    }
+  }
+
+
   // Available tools shown in the dropdown when user types '/'
   const SLASH_TOOLS = [
     {
@@ -3775,6 +3971,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         jobRemoved={msg.applyJobRemoved || null}
                         jobTitle={msg.applyJobTitle}
                         company={msg.applyCompany}
+                        reviewRequired={msg.applyReviewRequired || null}
+                        onConfirmSubmit={handleConfirmSubmit}
+                        sessionId={msg.applySessionId || null}
                       />
                     </div>
                   )}
@@ -4366,7 +4565,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
     {(() => {
       const hasLiveView = !!steelViewer?.liveViewUrl
       return (
-        <div className={`rack-steel-panel${steelViewer ? ' open' : ''}`}>
+        <div className={`rack-steel-panel${steelViewer ? ' open' : ''}${steelOpening ? ' steel-opening' : ''}`}>
           {steelViewer && (<>
 
             {/* Panel header */}
@@ -4378,19 +4577,21 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               flexShrink: 0,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                <span style={{
+                <span className="rack-live-dot" style={{
                   width: 7, height: 7, borderRadius: '50%',
                   background: '#e8ff6b', boxShadow: '0 0 7px #e8ff6b',
                   animation: 'pulse 2s ease-in-out infinite', flexShrink: 0,
                 }} />
-                <span style={{
+                <span className="rack-steel-header-label" style={{
                   fontSize: 11, fontWeight: 600,
                   color: 'rgba(232,255,107,0.85)',
                   fontFamily: 'var(--font-display)',
                   letterSpacing: '0.08em', textTransform: 'uppercase',
-                }}>Live Application From Rack Server</span>
+                }}>{steelViewer?.interactive ? 'Review — Your Turn' : 'Live Application From Rack Server'}</span>
                 <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>
-                  — You are watching Rack fill up the application in real time
+                  {steelViewer?.interactive
+                    ? '— Click around to inspect. Confirm in the chat to submit.'
+                    : '— You are watching Rack fill up the application in real time'}
                 </span>
               </div>
               <button
@@ -4411,11 +4612,61 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                 anchored top-left. overflow:hidden on the wrapper clips the bottom black bar.
                 The panel is ~700px wide → scale ≈ 0.547 → fills edge-to-edge, no letterbox. */}
             <div
+              className="rack-steel-body"
               style={{ flex: 1, position: 'relative', background: '#000', overflow: 'hidden', minHeight: 0 }}
             >
-              {hasLiveView ? (
-                <ScaledLiveIframe src={`${steelViewer.liveViewUrl}?interactive=false`} nativeWidth={1280} />
-              ) : (
+              {hasLiveView ? (<>
+                <ScaledLiveIframe src={`${steelViewer.liveViewUrl}?interactive=${steelViewer.interactive ? 'true' : 'false'}`} nativeWidth={1280} entering={steelOpening} />
+
+                {/* ── Interactive takeover banner — shown only during review gate ── */}
+                {steelViewer.interactive && (
+                  <div style={{
+                    position: 'absolute',
+                    bottom: 0, left: 0, right: 0,
+                    padding: '40px 24px 22px',
+                    background: 'linear-gradient(to top, rgba(8,8,8,1) 55%, rgba(8,8,8,0.92) 80%, rgba(8,8,8,0.0) 100%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 18,
+                    pointerEvents: 'none',
+                  }}>
+                    {/* Pulsing cursor icon */}
+                    <div style={{
+                      width: 44, height: 44,
+                      borderRadius: '50%',
+                      background: 'rgba(232,255,107,0.1)',
+                      border: '1.5px solid rgba(232,255,107,0.55)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0,
+                      animation: 'pulse 2s ease-in-out infinite',
+                    }}>
+                      <span style={{ fontSize: 20, lineHeight: 1 }}>↖</span>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                      <span style={{
+                        fontSize: 15, fontWeight: 700,
+                        color: 'rgba(232,255,107,0.95)',
+                        fontFamily: 'var(--font-display)',
+                        letterSpacing: '0.04em',
+                        textTransform: 'uppercase',
+                      }}>
+                        You're in control
+                      </span>
+                      <span style={{
+                        fontSize: 12,
+                        color: 'rgba(255,255,255,0.5)',
+                        fontFamily: 'var(--font-body)',
+                        fontWeight: 300,
+                        lineHeight: 1.5,
+                      }}>
+                        Click anywhere to inspect or edit the filled form.<br/>
+                        Confirm in the chat panel when you're ready to submit.
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </>) : (
                 <div style={{
                   width: '100%', height: '100%',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -4432,6 +4683,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                 </div>
               )}
             </div>
+
 
             {/* Panel footer */}
             <div style={{

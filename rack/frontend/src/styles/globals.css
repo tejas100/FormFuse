@@ -197,3 +197,102 @@ html, body, #root {
 ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
 
 /* Fira Code is now --font-display; no scaleY distortion on headings */
+
+/* ── Steel panel open animations ───────────────────────────────────────── */
+
+/* 1. Border luminance burst — left edge flares to accent gold then fades to resting glow */
+@keyframes steel-border-burst {
+  0%   { border-left-color: rgba(232,255,107,0.06); }
+  12%  { border-left-color: rgba(232,255,107,0.9);
+          box-shadow: inset 3px 0 18px rgba(232,255,107,0.12), -2px 0 24px rgba(232,255,107,0.18); }
+  45%  { border-left-color: rgba(232,255,107,0.28);
+          box-shadow: inset 2px 0 10px rgba(232,255,107,0.06), -1px 0 12px rgba(232,255,107,0.08); }
+  100% { border-left-color: rgba(232,255,107,0.12);
+          box-shadow: inset 1px 0 6px rgba(232,255,107,0.03), -1px 0 8px rgba(232,255,107,0.04); }
+}
+
+/* 2. Scan line — sweeps top→bottom once across the panel body */
+@keyframes steel-scan {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  5%   { opacity: 1; }
+  92%  { opacity: 0.6; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+
+/* 3. Iframe content materialise — subtle scale + fade */
+@keyframes steel-iframe-reveal {
+  0%   { opacity: 0; transform: scale(0.975); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* 4. Live dot beacon — one-shot bright burst before settling into normal pulse */
+@keyframes steel-beacon {
+  0%   { box-shadow: 0 0 0px rgba(232,255,107,0); transform: scale(1); }
+  18%  { box-shadow: 0 0 0 6px rgba(232,255,107,0.35), 0 0 22px rgba(232,255,107,0.6); transform: scale(1.5); }
+  55%  { box-shadow: 0 0 0 3px rgba(232,255,107,0.1), 0 0 10px rgba(232,255,107,0.25); transform: scale(1.15); }
+  100% { box-shadow: 0 0 7px rgba(232,255,107,0.5); transform: scale(1); }
+}
+
+/* 5. Header shimmer — one sweep across the header bar */
+@keyframes steel-header-shimmer {
+  0%   { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+
+/* Applied to .rack-steel-panel while the opening animation plays (~900ms) */
+.rack-steel-panel.steel-opening {
+  animation: steel-border-burst 900ms cubic-bezier(0.22,1,0.36,1) forwards;
+}
+
+/* Scan line pseudo — positioned inside .rack-steel-panel via .steel-opening modifier */
+.rack-steel-panel.steel-opening .rack-steel-body::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(232,255,107,0.0) 15%,
+    rgba(232,255,107,0.55) 50%,
+    rgba(232,255,107,0.0) 85%,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 10;
+  animation: steel-scan 700ms cubic-bezier(0.4,0,0.6,1) 120ms forwards;
+}
+
+/* The iframe wrapper gets this class for the materialise animation */
+.rack-steel-iframe-entering {
+  animation: steel-iframe-reveal 500ms cubic-bezier(0.22,1,0.36,1) 180ms both;
+}
+
+/* Live dot beacon on panel open */
+.rack-steel-panel.steel-opening .rack-live-dot {
+  animation: steel-beacon 700ms cubic-bezier(0.22,1,0.36,1) forwards !important;
+}
+
+/* Header shimmer text sweep */
+.rack-steel-panel.steel-opening .rack-steel-header-label {
+  background: linear-gradient(
+    90deg,
+    rgba(232,255,107,0.75) 0%,
+    rgba(232,255,107,1.0) 40%,
+    rgba(255,255,255,0.95) 50%,
+    rgba(232,255,107,1.0) 60%,
+    rgba(232,255,107,0.75) 100%
+  );
+  background-size: 600px 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: steel-header-shimmer 700ms ease-out 80ms both;
+}
+
+/* Resting glow on the border after animation — always-on subtle luminance */
+.rack-steel-panel.open {
+  box-shadow: inset 1px 0 6px rgba(232,255,107,0.03), -1px 0 8px rgba(232,255,107,0.04);
+}
