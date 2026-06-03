@@ -47,6 +47,7 @@ function AppInner() {
   const [steelPanelOpen, setSteelPanelOpen] = useState(false)
   // showLanding: null = waiting for auth to resolve, true = show landing, false = skip to app
   const [showLanding, setShowLanding] = useState(null)
+  const [skipping, setSkipping] = useState(false)
   const { user, authLoading, signInWithGoogle } = useAuth()
   const { theme } = useTheme()
   const { show: showWelcome, dismiss: dismissWelcome } = useFirstVisit()
@@ -65,6 +66,13 @@ function AppInner() {
   const switchTab = (tab) => {
     setActive(tab)
     setPageKey(k => k + 1)
+  }
+
+  // Fluid landing → home transition — rack wordmark zooms to fill screen
+  const handleSkip = () => {
+    setSkipping(true)
+    setTimeout(() => setShowLanding(false), 320)   // Home mounts under overlay
+    setTimeout(() => setSkipping(false), 960)      // Overlay gone, Home visible
   }
 
   // ── rack:navigate — fired by Home.jsx "Open Tracking ✦" buttons ──
@@ -92,17 +100,56 @@ function AppInner() {
   // ── Still resolving auth — render nothing to avoid flash ────────────────
   if (authLoading && showLanding === null) return null
 
+  // Overlay — white flash + "rack" wordmark zooms to fill screen, then fades
+  const overlay = skipping ? (
+    <div aria-hidden="true" style={{
+      position: "fixed", inset: 0, zIndex: 9999,
+      background: "#ffffff",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      pointerEvents: "all",
+      animation: "rackOverlayFadeIn 0.28s cubic-bezier(0.4,0,0.2,1) both",
+    }}>
+      <span style={{
+        fontFamily: "'Geist', -apple-system, BlinkMacSystemFont, sans-serif",
+        fontWeight: 800,
+        letterSpacing: "-0.05em",
+        color: "#06140e",
+        fontSize: "clamp(40px, 8vw, 72px)",
+        animation: "rackWordmarkZoom 0.72s cubic-bezier(0.16,1,0.3,1) 0.18s both",
+        display: "inline-block",
+        transformOrigin: "center center",
+        willChange: "transform, opacity",
+      }}>rack</span>
+      <style>{`
+        @keyframes rackOverlayFadeIn {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        @keyframes rackWordmarkZoom {
+          0%   { transform: scale(1);    opacity: 1; }
+          60%  { transform: scale(5);    opacity: 1; }
+          100% { transform: scale(12);   opacity: 0; }
+        }
+      `}</style>
+    </div>
+  ) : null
+
   // ── Landing page ─────────────────────────────────────────────────────────
   if (showLanding) {
     return (
-      <Landing
-        onEnter={signInWithGoogle}
-        onSkip={() => setShowLanding(false)}
-      />
+      <>
+        <Landing
+          onEnter={signInWithGoogle}
+          onSkip={handleSkip}
+        />
+        {overlay}
+      </>
     )
   }
 
   return (
+    <>
+    {overlay}
     <div className="app">
       <div className="blob blob-1" />
       <div className="blob blob-2" />
@@ -399,6 +446,7 @@ function AppInner() {
 
       {showWelcome && <WelcomeSlideshow onDismiss={dismissWelcome} />}
     </div>
+    </>
   )
 }
 
