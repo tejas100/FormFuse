@@ -30,6 +30,11 @@ import Resumes from './pages/Resumes'
 import Tracking from './pages/Tracking'
 import Account from './pages/Account'
 
+// 1. Import at the top
+import Landing from './pages/Landing'
+
+
+
 const PAGE_MAP = { Home, Resumes, Tracking, Account }
 
 // Tabs that require authentication
@@ -40,9 +45,22 @@ function AppInner() {
   const [active, setActive] = useState('Home')
   const [pageKey, setPageKey] = useState(0)
   const [steelPanelOpen, setSteelPanelOpen] = useState(false)
+  // showLanding: null = waiting for auth to resolve, true = show landing, false = skip to app
+  const [showLanding, setShowLanding] = useState(null)
   const { user, authLoading, signInWithGoogle } = useAuth()
   const { theme } = useTheme()
   const { show: showWelcome, dismiss: dismissWelcome } = useFirstVisit()
+
+  // ── Landing gate: decide once auth resolves ──────────────────────────────
+  useEffect(() => {
+    if (authLoading) return           // still resolving — wait
+    if (user) {
+      setShowLanding(false)           // logged in → skip landing entirely
+    } else if (showLanding === null) {
+      setShowLanding(true)            // first resolution, no user → show landing
+    }
+    // If showLanding is already false (user clicked "Skip"), don't reset it
+  }, [authLoading, user]) // eslint-disable-line
 
   const switchTab = (tab) => {
     setActive(tab)
@@ -70,6 +88,19 @@ function AppInner() {
 
   // Is this tab gated and the user is not signed in?
   const isGated = AUTH_REQUIRED_TABS.includes(active) && !user && !authLoading
+
+  // ── Still resolving auth — render nothing to avoid flash ────────────────
+  if (authLoading && showLanding === null) return null
+
+  // ── Landing page ─────────────────────────────────────────────────────────
+  if (showLanding) {
+    return (
+      <Landing
+        onEnter={signInWithGoogle}
+        onSkip={() => setShowLanding(false)}
+      />
+    )
+  }
 
   return (
     <div className="app">

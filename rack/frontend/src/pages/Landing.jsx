@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
-// ── Companies shown in marquee + pills ──────────────────────────────────────
+// ── Companies for marquee ────────────────────────────────────────────────────
 const COMPANIES = [
   'Anthropic', 'Stripe', 'Figma', 'Vercel', 'Datadog', 'Cloudflare',
   'MongoDB', 'Brex', 'Coinbase', 'Airtable', 'Temporal', 'Amplitude',
@@ -9,18 +9,52 @@ const COMPANIES = [
   'CockroachLabs', 'Mixpanel', 'AssemblyAI',
 ]
 
-const ACTIVE_PILLS = new Set(['Anthropic', 'Figma', 'Cloudflare', 'Airtable'])
+// ── Scroll-triggered reveal hook ─────────────────────────────────────────────
+function useInView(threshold = 0.15) {
+  const ref = useRef(null)
+  const [inView, setInView] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setInView(true); obs.disconnect() } },
+      { threshold }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [threshold])
+  return [ref, inView]
+}
 
-// ── Score bar animated counter ───────────────────────────────────────────────
-function useCountUp(target, started, duration = 1400) {
+// ── Parallax hook ────────────────────────────────────────────────────────────
+function useParallax(speed = 0.15) {
+  const ref = useRef(null)
+  const [offset, setOffset] = useState(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () => {
+      const rect = el.getBoundingClientRect()
+      const center = rect.top + rect.height / 2 - window.innerHeight / 2
+      setOffset(center * speed)
+    }
+    const scrollEl = el.closest('[data-scroll]') || window
+    scrollEl.addEventListener('scroll', update, { passive: true })
+    update()
+    return () => scrollEl.removeEventListener('scroll', update)
+  }, [speed])
+  return [ref, offset]
+}
+
+// ── Count-up animation ───────────────────────────────────────────────────────
+function useCountUp(target, started, duration = 1200) {
   const [val, setVal] = useState(0)
   useEffect(() => {
     if (!started) return
-    let start = null
+    let startTime = null
     const step = (ts) => {
-      if (!start) start = ts
-      const p = Math.min((ts - start) / duration, 1)
-      // ease-out cubic
+      if (!startTime) startTime = ts
+      const p = Math.min((ts - startTime) / duration, 1)
       const eased = 1 - Math.pow(1 - p, 3)
       setVal(Math.round(eased * target))
       if (p < 1) requestAnimationFrame(step)
@@ -30,497 +64,64 @@ function useCountUp(target, started, duration = 1400) {
   return val
 }
 
-function ScoreDemo() {
-  const ref = useRef(null)
-  const [started, setStarted] = useState(false)
+// ── Reveal wrapper ───────────────────────────────────────────────────────────
+function Reveal({ children, delay = 0, y = 24, className = '' }) {
+  const [ref, inView] = useInView(0.1)
+  return (
+    <div
+      ref={ref}
+      className={className}
+      style={{
+        opacity: inView ? 1 : 0,
+        transform: inView ? 'translateY(0)' : `translateY(${y}px)`,
+        transition: `opacity 0.75s cubic-bezier(0.16,1,0.3,1) ${delay}s, transform 0.75s cubic-bezier(0.16,1,0.3,1) ${delay}s`,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
 
-  useEffect(() => {
-    const obs = new IntersectionObserver(
-      ([e]) => { if (e.isIntersecting) { setStarted(true); obs.disconnect() } },
-      { threshold: 0.4 }
-    )
-    if (ref.current) obs.observe(ref.current)
-    return () => obs.disconnect()
-  }, [])
+// ── Score bars widget ────────────────────────────────────────────────────────
+function ScoreWidget() {
+  const [ref, inView] = useInView(0.4)
+  const sf = useCountUp(88, inView, 1000)
+  const ex = useCountUp(76, inView, 1200)
+  const tr = useCountUp(71, inView, 1400)
 
-  const sf = useCountUp(88, started)
-  const ex = useCountUp(76, started, 1500)
-  const tr = useCountUp(71, started, 1600)
-
-  const rows = [
-    { label: 'Skills fit',  val: sf, target: 88, color: 'var(--accent)'  },
-    { label: 'Experience',  val: ex, target: 76, color: 'var(--accent2)' },
-    { label: 'Trajectory',  val: tr, target: 71, color: 'var(--accent3)' },
+  const bars = [
+    { label: 'Skills fit',   val: sf, end: 88, color: '#16a34a' },
+    { label: 'Experience',   val: ex, end: 76, color: '#2563eb' },
+    { label: 'Trajectory',   val: tr, end: 71, color: '#9333ea' },
   ]
 
   return (
-    <div ref={ref} style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {rows.map(({ label, val, target, color }) => (
-        <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 13, color: 'var(--text-mid)', width: 100, flexShrink: 0 }}>{label}</span>
-          <div style={{ flex: 1, height: 6, background: 'rgba(255,255,255,0.07)', borderRadius: 3, overflow: 'hidden' }}>
+    <div ref={ref} style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 20 }}>
+      {bars.map(({ label, val, end, color }) => (
+        <div key={label}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: '#374151' }}>{label}</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color, fontFamily: 'var(--ld-mono)' }}>{val}%</span>
+          </div>
+          <div style={{ height: 6, background: '#f3f4f6', borderRadius: 99, overflow: 'hidden' }}>
             <div style={{
-              height: '100%', borderRadius: 3, background: color,
-              width: `${(val / 100) * 100}%`,
-              transition: 'width 0.05s linear',
+              height: '100%',
+              width: inView ? `${end}%` : '0%',
+              background: color,
+              borderRadius: 99,
+              transition: 'width 1.2s cubic-bezier(0.16,1,0.3,1)',
             }} />
           </div>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 500, width: 36, textAlign: 'right', color }}>
-            {val}%
-          </span>
         </div>
       ))}
     </div>
   )
 }
 
-// ── Scroll reveal hook ───────────────────────────────────────────────────────
-function useReveal(threshold = 0.12) {
-  const ref = useRef(null)
-  const [visible, setVisible] = useState(false)
-  useEffect(() => {
-    const obs = new IntersectionObserver(
-      ([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect() } },
-      { threshold }
-    )
-    if (ref.current) obs.observe(ref.current)
-    return () => obs.disconnect()
-  }, [threshold])
-  return [ref, visible]
-}
-
-function Reveal({ children, delay = 0, threshold = 0.12 }) {
-  const [ref, visible] = useReveal(threshold)
-  return (
-    <div ref={ref} style={{
-      opacity: visible ? 1 : 0,
-      transform: visible ? 'translateY(0)' : 'translateY(32px)',
-      transition: `opacity 0.7s ease ${delay}s, transform 0.7s ease ${delay}s`,
-    }}>
-      {children}
-    </div>
-  )
-}
-
-// ── Match result row ─────────────────────────────────────────────────────────
-function MatchRow({ rank, name, role, score, color, barColor, delay }) {
-  return (
-    <div className="ld-match-row" style={{ animationDelay: delay }}>
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-dim)', width: 24, flexShrink: 0 }}>
-        #{rank}
-      </span>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 14, fontWeight: 500 }}>{name}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>{role}</div>
-      </div>
-      <div style={{ width: 60, height: 4, background: 'rgba(255,255,255,0.07)', borderRadius: 2, overflow: 'hidden' }}>
-        <div className="ld-score-bar" style={{ background: barColor, animationDelay: delay }} />
-      </div>
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 600, color }}>{score}%</span>
-    </div>
-  )
-}
-
-// ── Main component ───────────────────────────────────────────────────────────
-export default function Landing({ onEnter, onSkip }) {
-  const [modalOpen, setModalOpen] = useState(false)
-
-  // Close modal on Escape
-  useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') setModalOpen(false) }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
-
-  // Lock body scroll when modal open
-  useEffect(() => {
-    document.body.style.overflow = modalOpen ? 'hidden' : ''
-    return () => { document.body.style.overflow = '' }
-  }, [modalOpen])
-
-  const handleGoogleSignIn = () => {
-    setModalOpen(false)
-    onEnter?.()
-  }
-
-  const scrollTo = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' })
-
-  return (
-    <>
-      <style>{CSS}</style>
-
-      {/* ── Atmosphere ── */}
-      <div className="ld-atmo" aria-hidden="true">
-        <div className="ld-blob ld-blob-1" />
-        <div className="ld-blob ld-blob-2" />
-        <div className="ld-blob ld-blob-3" />
-        <div className="ld-blob ld-blob-accent" />
-      </div>
-      <div className="ld-grain" aria-hidden="true" />
-
-      <div className="ld-root">
-
-        {/* ── NAV ── */}
-        <nav className="ld-nav">
-          <a href="#" className="ld-logo" onClick={(e) => e.preventDefault()}>
-            <span className="ld-logo-pill">RACK</span>
-            <span className="ld-logo-sub">your job agent</span>
-          </a>
-          <ul className="ld-nav-links">
-            <li><button onClick={() => scrollTo('ld-how')}>How it works</button></li>
-            <li><button onClick={() => scrollTo('ld-features')}>Features</button></li>
-            <li><button onClick={() => scrollTo('ld-apply')}>Auto-apply</button></li>
-          </ul>
-          <div className="ld-nav-cta">
-            <button className="ld-btn-ghost" onClick={() => setModalOpen(true)}>Log in</button>
-            <button className="ld-btn-accent" onClick={() => setModalOpen(true)}>Get started free</button>
-          </div>
-        </nav>
-
-        {/* ── HERO ── */}
-        <section className="ld-hero">
-          <div className="ld-hero-badge">
-            <span className="ld-badge-dot" aria-hidden="true" />
-            Now live — scanning 150+ company job boards daily
-          </div>
-
-          <h1 className="ld-hero-headline">
-            Your resume,<br />matched to the <span className="ld-accent-word">right role</span>
-          </h1>
-
-          <p className="ld-hero-sub">
-            Rack scans hundreds of job boards, scores every posting against your exact resume,
-            and surfaces only the roles you'll actually get callbacks for.
-          </p>
-
-          <div className="ld-hero-actions">
-            <button className="ld-btn-hero" onClick={() => setModalOpen(true)}>
-              <Arrow />
-              Start matching for free
-            </button>
-            <button className="ld-btn-hero-ghost" onClick={() => scrollTo('ld-how')}>
-              See how it works
-            </button>
-          </div>
-
-          <p className="ld-hero-meta">No credit card &middot; Free during beta &middot; Cancel anytime</p>
-
-          {/* Terminal preview */}
-          <div className="ld-hero-visual">
-            <div className="ld-terminal-card">
-              <div className="ld-terminal-bar">
-                <div className="ld-tdot ld-tdot-r" />
-                <div className="ld-tdot ld-tdot-y" />
-                <div className="ld-tdot ld-tdot-g" />
-                <span className="ld-terminal-title">rack — pipeline run ✦ 3 resumes matched</span>
-              </div>
-              <div className="ld-terminal-body">
-                <div className="ld-pipeline-row">
-                  <PipeStep label="Input" val="Software Engineer JD" />
-                  <PipeArrow />
-                  <PipeStep label="Phase 1 — Vector" val="pgvector similarity" />
-                  <PipeArrow />
-                  <PipeStep label="Phase 2 — LLM" val="GPT-4o-mini scoring" />
-                  <PipeArrow />
-                  <PipeStep label="Output" val="Ranked matches" accent />
-                </div>
-                <div className="ld-match-results">
-                  <MatchRow rank={1} name="Tejas Kulkarni" role="SWE · 4 yrs · Full-stack" score={92} color="var(--accent)"  barColor="var(--accent)"  delay="1.4s" />
-                  <MatchRow rank={2} name="Jordan Park"    role="SWE · 3 yrs · Backend"    score={78} color="var(--accent2)" barColor="var(--accent2)" delay="1.6s" />
-                  <MatchRow rank={3} name="Alex Rivera"    role="SWE · 2 yrs · Frontend"   score={65} color="var(--accent3)" barColor="var(--accent3)" delay="1.8s" />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="ld-scroll-hint" aria-hidden="true">
-            <span>scroll</span>
-            <div className="ld-scroll-arrow" />
-          </div>
-        </section>
-
-        {/* ── MARQUEE ── */}
-        <div className="ld-marquee-wrap" aria-hidden="true">
-          <div className="ld-marquee-track">
-            {[...COMPANIES, ...COMPANIES].map((c, i) => (
-              <span key={i} className="ld-marquee-item">{c}</span>
-            ))}
-          </div>
-        </div>
-
-        {/* ── STATS ── */}
-        <div className="ld-stats-strip">
-          {[
-            { num: '150+',   label: 'Company job boards scanned daily' },
-            { num: '2-phase',label: 'AI scoring pipeline per match' },
-            { num: '6×',     label: 'Daily fetch runs, fully automated' },
-            { num: '∞',      label: 'Resume versions supported' },
-          ].map(({ num, label }, i) => (
-            <Reveal key={num} delay={i * 0.1}>
-              <div className="ld-stat-item">
-                <div className="ld-stat-num">{num}</div>
-                <div className="ld-stat-label">{label}</div>
-              </div>
-            </Reveal>
-          ))}
-        </div>
-
-        {/* ── HOW IT WORKS ── */}
-        <section id="ld-how" className="ld-section">
-          <div className="ld-section-inner">
-            <Reveal>
-              <div className="ld-section-tag">Process</div>
-              <h2 className="ld-section-title">Three steps to your next job</h2>
-              <p className="ld-section-sub">Rack runs a full matching pipeline every day — no daily login required.</p>
-            </Reveal>
-            <Reveal delay={0.15}>
-              <div className="ld-steps-grid">
-                {[
-                  { n: '01', icon: '📄', title: 'Upload your resume', desc: 'Drop up to 5 resume versions. Each is chunked, embedded into vectors, and stored. Tailor one for product-focused roles, another for engineering IC roles — Rack knows which to send where.' },
-                  { n: '02', icon: '🔍', title: 'We scan while you sleep', desc: 'Six times a day, Rack fetches fresh postings from 150+ Greenhouse, Ashby, and Lever boards. Every new job is vector-scored against your resume — only top matches move to LLM scoring.' },
-                  { n: '03', icon: '⚡', title: 'See your ranked matches', desc: 'Wake up to a sorted list of the best-fit roles — scored on skills fit, experience alignment, and career trajectory. One click to apply, or let Rack auto-apply for you.' },
-                ].map(({ n, icon, title, desc }) => (
-                  <div key={n} className="ld-step-card">
-                    <div className="ld-step-num">{n}</div>
-                    <span className="ld-step-icon" aria-hidden="true">{icon}</span>
-                    <div className="ld-step-title">{title}</div>
-                    <p className="ld-step-desc">{desc}</p>
-                  </div>
-                ))}
-              </div>
-            </Reveal>
-          </div>
-        </section>
-
-        {/* ── FEATURES BENTO ── */}
-        <section id="ld-features" className="ld-section">
-          <div className="ld-section-inner">
-            <Reveal>
-              <div className="ld-section-tag">Features</div>
-              <h2 className="ld-section-title">Built for the serious job seeker</h2>
-              <p className="ld-section-sub">Not just another job board aggregator. A full AI matching engine.</p>
-            </Reveal>
-
-            <div className="ld-bento-grid">
-              {/* Wide — company coverage */}
-              <Reveal delay={0.1}>
-                <div className="ld-bento-card ld-bento-wide">
-                  <div className="ld-bento-corner-glow" aria-hidden="true" />
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 24 }}>
-                    <div>
-                      <div className="ld-bento-label">Coverage</div>
-                      <div className="ld-bento-title">150+ company boards,<br />one inbox</div>
-                      <p className="ld-bento-desc">Direct Greenhouse, Ashby, and Lever integrations — plus YC batch company auto-discovery. No job board middlemen.</p>
-                    </div>
-                    <div className="ld-company-pills">
-                      {COMPANIES.slice(0, 14).map(c => (
-                        <span key={c} className={`ld-cpill${ACTIVE_PILLS.has(c) ? ' ld-cpill-active' : ''}`}>{c}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </Reveal>
-
-              {/* AI scoring */}
-              <Reveal delay={0.15}>
-                <div className="ld-bento-card ld-bento-tall">
-                  <div className="ld-bento-icon" aria-hidden="true">🧠</div>
-                  <div className="ld-bento-label">Intelligence</div>
-                  <div className="ld-bento-title">Two-phase AI scoring</div>
-                  <p className="ld-bento-desc">Phase 1: pgvector cosine similarity filters the job pool. Phase 2: GPT-4o-mini scores each job on three dimensions.</p>
-                  <ScoreDemo />
-                </div>
-              </Reveal>
-
-              {/* Multi-resume */}
-              <Reveal delay={0.2}>
-                <div className="ld-bento-card ld-bento-tall">
-                  <div className="ld-bento-icon" aria-hidden="true">📋</div>
-                  <div className="ld-bento-label">Multi-resume</div>
-                  <div className="ld-bento-title">Send the right version every time</div>
-                  <p className="ld-bento-desc">Upload up to 5 resume variants. Rack picks the best-matching version per job automatically.</p>
-                  <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {[
-                      { name: 'resume_swe_ic.pdf',       badge: 'ACTIVE', active: true },
-                      { name: 'resume_pm_adjacent.pdf',  badge: '2nd',    active: false },
-                      { name: 'resume_ml_focused.pdf',   badge: '3rd',    active: false },
-                    ].map(({ name, badge, active }) => (
-                      <div key={name} className={`ld-resume-row${active ? ' ld-resume-row-active' : ''}`}>
-                        <span style={{ fontSize: 16 }}>📄</span>
-                        <span style={{ fontSize: 13, flex: 1 }}>{name}</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: active ? 'var(--accent)' : 'var(--text-dim)' }}>{badge}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </Reveal>
-            </div>
-          </div>
-        </section>
-
-        {/* ── AUTO-APPLY ── */}
-        <section id="ld-apply" className="ld-auto-apply-section">
-          <div className="ld-auto-apply-inner">
-            <Reveal>
-              <div className="ld-section-tag">Automation</div>
-              <h2 className="ld-section-title">Apply while you sleep</h2>
-              <p className="ld-section-sub" style={{ marginBottom: 28 }}>
-                Rack's Steel-powered browser agent fills out and submits applications on
-                Greenhouse, Ashby, and Lever — accurately and without shortcuts.
-              </p>
-              <ul className="ld-benefits-list">
-                {[
-                  'Reads the actual form fields — no brittle hardcoded selectors',
-                  'Uploads the best-fit resume version per application',
-                  'Tracks every submission in your pipeline board',
-                  'You stay in control — review matches before they go out',
-                ].map((item) => (
-                  <li key={item}>
-                    <span className="ld-check" aria-hidden="true">✓</span>
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </Reveal>
-
-            <Reveal delay={0.2}>
-              <div className="ld-apply-visual">
-                <div className="ld-apply-header">
-                  <div className="ld-live-dot" aria-hidden="true" />
-                  <span className="ld-apply-header-text">steel agent · applying · Anthropic</span>
-                </div>
-                <div className="ld-apply-body">
-                  {[
-                    { time: '12:04:01', icon: '→', cls: 'ld-log-accent', msg: 'Opening Greenhouse form...' },
-                    { time: '12:04:02', icon: '✓', cls: 'ld-log-green',  msg: 'Page loaded · anthropic.com/jobs' },
-                    { time: '12:04:03', icon: '→', cls: 'ld-log-accent', msg: 'Selecting resume variant #1' },
-                    { time: '12:04:04', icon: '↑', cls: 'ld-log-purple', msg: 'Uploading resume_swe_ic.pdf' },
-                    { time: '12:04:05', icon: '✓', cls: 'ld-log-green',  msg: 'Resume uploaded' },
-                    { time: '12:04:06', icon: '→', cls: 'ld-log-accent', msg: 'Filling name, email, LinkedIn' },
-                    { time: '12:04:08', icon: '→', cls: 'ld-log-accent', msg: 'Answering work authorization' },
-                    { time: '12:04:09', icon: '✓', cls: 'ld-log-green',  msg: 'All fields complete' },
-                  ].map(({ time, icon, cls, msg }) => (
-                    <span key={time} className="ld-log-line">
-                      <span className="ld-log-dim">{time}</span>{' '}
-                      <span className={cls}>{icon}</span>{' '}
-                      {msg}
-                    </span>
-                  ))}
-                  <span className="ld-log-line">
-                    <span className="ld-log-dim">12:04:10</span>{' '}
-                    <span className="ld-log-accent">→</span>{' '}
-                    Submitting application...<span className="ld-cursor" aria-hidden="true" />
-                  </span>
-                </div>
-              </div>
-            </Reveal>
-          </div>
-        </section>
-
-        {/* ── CTA ── */}
-        <section className="ld-cta-section">
-          <div className="ld-cta-inner">
-            <Reveal>
-              <h2 className="ld-cta-headline">
-                Stop applying.<br />Start <span style={{ color: 'var(--accent)' }}>matching</span>.
-              </h2>
-              <p className="ld-cta-sub">
-                Join the waitlist — Rack is in beta, scanning hundreds of jobs for early users every single day.
-              </p>
-              <div className="ld-cta-actions">
-                <button className="ld-btn-cta" onClick={() => setModalOpen(true)}>
-                  <Arrow size={20} />
-                  Get early access
-                </button>
-                <span className="ld-cta-note">
-                  Free during beta &mdash; built by{' '}
-                  <a href="https://tejasbk.dev" target="_blank" rel="noopener noreferrer" className="ld-cta-link">
-                    Tejas
-                  </a>
-                </span>
-                {onSkip && (
-                  <button className="ld-btn-skip" onClick={onSkip}>
-                    Continue without signing in →
-                  </button>
-                )}
-              </div>
-            </Reveal>
-          </div>
-        </section>
-
-        {/* ── FOOTER ── */}
-        <footer className="ld-footer">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="ld-logo-pill">RACK</span>
-            <span className="ld-logo-sub">rackx.app</span>
-          </div>
-          <p className="ld-footer-note">
-            Built by{' '}
-            <a href="https://tejasbk.dev" target="_blank" rel="noopener noreferrer" className="ld-cta-link">
-              Tejas
-            </a>
-            {' '}&middot; Scanning jobs so you don't have to.
-          </p>
-        </footer>
-
-      </div>{/* ld-root */}
-
-      {/* ── LOGIN MODAL ── */}
-      {modalOpen && (
-        <div
-          className="ld-modal-overlay ld-modal-open"
-          onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false) }}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Sign in to Rack"
-        >
-          <div className="ld-modal-box">
-            <button className="ld-modal-close" onClick={() => setModalOpen(false)} aria-label="Close">×</button>
-            <div style={{ marginBottom: 24 }}>
-              <span className="ld-logo-pill" style={{ fontSize: 15, padding: '6px 14px' }}>RACK</span>
-            </div>
-            <h2 className="ld-modal-title">Sign in to Rack</h2>
-            <p className="ld-modal-sub">
-              Continue with Google to access your matched jobs, resume vault, and application pipeline.
-            </p>
-            <button className="ld-btn-google" onClick={handleGoogleSignIn}>
-              <GoogleIcon />
-              Continue with Google
-            </button>
-          </div>
-        </div>
-      )}
-    </>
-  )
-}
-
-// ── Small helper components ──────────────────────────────────────────────────
-function PipeStep({ label, val, accent }) {
-  return (
-    <div className={`ld-pipe-step${accent ? ' ld-pipe-accent' : ''}`}>
-      <div className="ld-pipe-step-label">{label}</div>
-      <div className={`ld-pipe-step-val${accent ? ' ld-pipe-val-accent' : ''}`}>{val}</div>
-    </div>
-  )
-}
-
-function PipeArrow() {
-  return <div className="ld-pipe-arrow" aria-hidden="true">→</div>
-}
-
-function Arrow({ size = 18 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-      aria-hidden="true">
-      <path d="M5 12h14M12 5l7 7-7 7" />
-    </svg>
-  )
-}
-
+// ── Google icon ──────────────────────────────────────────────────────────────
 function GoogleIcon() {
   return (
-    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
       <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
       <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
       <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
@@ -529,464 +130,1510 @@ function GoogleIcon() {
   )
 }
 
-// ── All styles ── (scoped with ld- prefix to avoid collisions with app styles)
+// ── Main landing component ───────────────────────────────────────────────────
+export default function Landing({ onEnter, onSkip }) {
+  const [modalOpen, setModalOpen] = useState(false)
+  const [scrollY, setScrollY] = useState(0)
+  const scrollRef = useRef(null)
+
+  // Track scroll for parallax + nav opacity
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => setScrollY(el.scrollTop)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Escape key for modal
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') setModalOpen(false) }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  // Lock page scroll when modal open
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.style.overflow = modalOpen ? 'hidden' : 'auto'
+  }, [modalOpen])
+
+  const openModal = () => setModalOpen(true)
+  const closeModal = () => setModalOpen(false)
+  const handleSignIn = () => { closeModal(); onEnter?.() }
+  const scrollTo = (id) => {
+    const el = document.getElementById(id)
+    if (el && scrollRef.current) {
+      scrollRef.current.scrollTo({ top: el.offsetTop - 64, behavior: 'smooth' })
+    }
+  }
+
+  const navAlpha = Math.min(scrollY / 80, 1)
+  const heroParallax = scrollY * 0.25
+
+  return (
+    <>
+      <style>{CSS}</style>
+
+      {/* ── Full-page scroll container — escapes App's overflow:clip ── */}
+      <div ref={scrollRef} data-scroll className="ld-page" aria-label="Rack landing page">
+
+        {/* ── NAV ── */}
+        <nav
+          className="ld-nav"
+          style={{
+            background: `rgba(255,255,255,${0.7 + navAlpha * 0.25})`,
+            borderBottomColor: `rgba(0,0,0,${0.04 + navAlpha * 0.04})`,
+            boxShadow: navAlpha > 0.3 ? `0 1px 0 rgba(0,0,0,${navAlpha * 0.06})` : 'none',
+          }}
+        >
+          <div className="ld-nav-logo">
+            <div className="ld-wordmark">rack</div>
+          </div>
+          <ul className="ld-nav-links">
+            {['How it works', 'Features', 'Auto-apply'].map((label, i) => (
+              <li key={label}>
+                <button onClick={() => scrollTo(['ld-how', 'ld-features', 'ld-apply'][i])}>{label}</button>
+              </li>
+            ))}
+          </ul>
+          <div className="ld-nav-actions">
+            <button className="ld-btn-text" onClick={openModal}>Log in</button>
+            <button className="ld-btn-pill" onClick={openModal}>Get started</button>
+          </div>
+        </nav>
+
+        {/* ── HERO ── */}
+        <section className="ld-hero">
+          {/* Geometric grid background */}
+          <div className="ld-hero-grid" aria-hidden="true" style={{ transform: `translateY(${heroParallax * 0.3}px)` }} />
+          <div className="ld-hero-glow" aria-hidden="true" style={{ transform: `translateY(${heroParallax * 0.15}px)` }} />
+
+          <div className="ld-hero-inner">
+            {/* Badge */}
+            <div className="ld-badge" style={{ animation: 'ldFadeUp 0.6s 0.05s both' }}>
+              <span className="ld-badge-pulse" aria-hidden="true" />
+              <span>Now live — 150+ company job boards, scanned daily</span>
+            </div>
+
+            {/* Headline */}
+            <h1 className="ld-hero-h1" style={{ animation: 'ldFadeUp 0.7s 0.15s both' }}>
+              Your resume,<br />
+              <span className="ld-gradient-text">matched perfectly</span>
+            </h1>
+
+            <p className="ld-hero-sub" style={{ animation: 'ldFadeUp 0.7s 0.28s both' }}>
+              Rack scans every job board, scores each posting against your exact resume,
+              and surfaces only the roles you'll actually hear back from.
+            </p>
+
+            {/* CTAs */}
+            <div className="ld-hero-ctas" style={{ animation: 'ldFadeUp 0.7s 0.4s both' }}>
+              <button className="ld-btn-primary" onClick={openModal}>
+                Start matching for free
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </button>
+              <button className="ld-btn-ghost" onClick={() => scrollTo('ld-how')}>
+                See how it works
+              </button>
+            </div>
+
+            <p className="ld-hero-note" style={{ animation: 'ldFadeUp 0.7s 0.52s both' }}>
+              Free during beta · No credit card · Cancel anytime
+            </p>
+
+            {/* Hero product card */}
+            <div className="ld-hero-card" style={{ animation: 'ldFadeUp 0.9s 0.65s both' }}>
+              <div className="ld-card-top-bar">
+                <div className="ld-dots">
+                  <span className="ld-dot" style={{ background: '#ff5f57' }} />
+                  <span className="ld-dot" style={{ background: '#ffbd2e' }} />
+                  <span className="ld-dot" style={{ background: '#28c840' }} />
+                </div>
+                <span className="ld-card-label">rack · pipeline run · 3 matches</span>
+                <span className="ld-card-status">
+                  <span className="ld-status-dot" aria-hidden="true" />
+                  live
+                </span>
+              </div>
+
+              {/* Pipeline steps */}
+              <div className="ld-pipeline">
+                {[
+                  { step: 'JD input', detail: 'Software Engineer' },
+                  { step: 'pgvector', detail: 'Phase 1 similarity' },
+                  { step: 'GPT-4o-mini', detail: 'Phase 2 scoring' },
+                  { step: 'Ranked', detail: 'Top matches', accent: true },
+                ].map((s, i) => (
+                  <div key={i} className="ld-pipeline-row">
+                    <div className={`ld-pipeline-chip${s.accent ? ' accent' : ''}`}>
+                      <span className="ld-chip-step">{s.step}</span>
+                      <span className="ld-chip-detail">{s.detail}</span>
+                    </div>
+                    {i < 3 && <div className="ld-pipe-arrow" aria-hidden="true">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    </div>}
+                  </div>
+                ))}
+              </div>
+
+              {/* Match results */}
+              <div className="ld-results">
+                {[
+                  { rank: 1, name: 'resume_swe_ic.pdf',      role: '4 yrs · Full-stack',  score: 92, color: '#16a34a' },
+                  { rank: 2, name: 'resume_pm_adjacent.pdf', role: '3 yrs · Backend',      score: 78, color: '#2563eb' },
+                  { rank: 3, name: 'resume_ml_focused.pdf',  role: '2 yrs · ML Engineer', score: 65, color: '#9333ea' },
+                ].map(({ rank, name, role, score, color }, i) => (
+                  <div
+                    key={rank}
+                    className="ld-result-row"
+                    style={{ animation: `ldSlideIn 0.5s ${1.4 + i * 0.15}s both` }}
+                  >
+                    <span className="ld-result-rank">#{rank}</span>
+                    <div className="ld-result-meta">
+                      <span className="ld-result-name">{name}</span>
+                      <span className="ld-result-role">{role}</span>
+                    </div>
+                    <div className="ld-result-bar-wrap">
+                      <div className="ld-result-bar" style={{ '--score': `${score}%`, '--color': color }} />
+                    </div>
+                    <span className="ld-result-score" style={{ color }}>{score}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ── MARQUEE ── */}
+        <div className="ld-marquee" aria-hidden="true">
+          <div className="ld-marquee-inner">
+            {[...COMPANIES, ...COMPANIES].map((c, i) => (
+              <span key={i} className="ld-marquee-item">
+                <span className="ld-marquee-dot" />
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* ── STATS ── */}
+        <div className="ld-stats">
+          {[
+            { value: '150+', label: 'Company job boards' },
+            { value: '2×',   label: 'AI scoring phases' },
+            { value: '6×',   label: 'Daily fetch runs' },
+            { value: '5',    label: 'Resume versions supported' },
+          ].map(({ value, label }, i) => (
+            <Reveal key={label} delay={i * 0.08}>
+              <div className="ld-stat">
+                <span className="ld-stat-val">{value}</span>
+                <span className="ld-stat-label">{label}</span>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+
+        {/* ── HOW IT WORKS ── */}
+        <section id="ld-how" className="ld-section">
+          <Reveal>
+            <div className="ld-section-eyebrow">Process</div>
+            <h2 className="ld-section-h2">Three steps to your next job</h2>
+            <p className="ld-section-sub">Rack runs the full pipeline daily — no manual searching, no daily login.</p>
+          </Reveal>
+
+          <div className="ld-steps">
+            {[
+              {
+                n: '01',
+                title: 'Upload your resume',
+                desc: 'Drop up to 5 tailored versions. Each is chunked into vectors and stored. Rack automatically routes the best-fit version to each application.',
+                icon: (
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="12" y1="18" x2="12" y2="12"/>
+                    <line x1="9" y1="15" x2="15" y2="15"/>
+                  </svg>
+                ),
+              },
+              {
+                n: '02',
+                title: 'We scan while you sleep',
+                desc: 'Six times a day, Rack fetches fresh postings from 150+ Greenhouse, Ashby, and Lever boards. Every job gets vector-scored. Only top matches move to GPT-4o-mini scoring.',
+                icon: (
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                  </svg>
+                ),
+              },
+              {
+                n: '03',
+                title: 'See ranked matches, apply in one click',
+                desc: 'Wake up to a sorted list scored on skills fit, experience alignment, and career trajectory. Click to apply manually — or let Rack auto-apply via its Steel browser agent.',
+                icon: (
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                  </svg>
+                ),
+              },
+            ].map(({ n, title, desc, icon }, i) => (
+              <Reveal key={n} delay={i * 0.1}>
+                <div className="ld-step">
+                  <div className="ld-step-num">{n}</div>
+                  <div className="ld-step-icon">{icon}</div>
+                  <h3 className="ld-step-title">{title}</h3>
+                  <p className="ld-step-desc">{desc}</p>
+                </div>
+              </Reveal>
+            ))}
+          </div>
+        </section>
+
+        {/* ── FEATURES ── */}
+        <section id="ld-features" className="ld-section ld-section-alt">
+          <Reveal>
+            <div className="ld-section-eyebrow">Intelligence</div>
+            <h2 className="ld-section-h2">Built for serious candidates</h2>
+            <p className="ld-section-sub">Not a job board. A full AI matching and application engine.</p>
+          </Reveal>
+
+          <div className="ld-bento">
+            {/* Wide — company coverage */}
+            <Reveal delay={0.05} className="ld-bento-wide">
+              <div className="ld-bento-card ld-bento-coverage">
+                <div>
+                  <div className="ld-bento-eyebrow">Coverage</div>
+                  <h3 className="ld-bento-title">150+ company boards, one inbox</h3>
+                  <p className="ld-bento-desc">Direct Greenhouse, Ashby, and Lever integrations — plus YC batch auto-discovery. No middlemen, no delays.</p>
+                </div>
+                <div className="ld-company-grid">
+                  {COMPANIES.slice(0, 12).map((c) => (
+                    <span key={c} className="ld-company-chip">{c}</span>
+                  ))}
+                  <span className="ld-company-chip ld-chip-more">+{COMPANIES.length - 12} more</span>
+                </div>
+              </div>
+            </Reveal>
+
+            {/* Scoring */}
+            <Reveal delay={0.1} className="ld-bento-half">
+              <div className="ld-bento-card">
+                <div className="ld-bento-eyebrow">Scoring</div>
+                <h3 className="ld-bento-title">Two-phase AI scoring</h3>
+                <p className="ld-bento-desc">pgvector narrows the pool. GPT-4o-mini scores each match on three dimensions against your actual resume text.</p>
+                <ScoreWidget />
+              </div>
+            </Reveal>
+
+            {/* Multi-resume */}
+            <Reveal delay={0.15} className="ld-bento-half">
+              <div className="ld-bento-card">
+                <div className="ld-bento-eyebrow">Multi-resume</div>
+                <h3 className="ld-bento-title">Right version, every time</h3>
+                <p className="ld-bento-desc">Upload up to 5 variants. Rack picks the best-matching version per job automatically.</p>
+                <div className="ld-resume-list">
+                  {[
+                    { name: 'resume_swe_ic.pdf',      tag: 'Best fit', active: true },
+                    { name: 'resume_pm_adjacent.pdf', tag: '2nd',      active: false },
+                    { name: 'resume_ml_focused.pdf',  tag: '3rd',      active: false },
+                  ].map(({ name, tag, active }) => (
+                    <div key={name} className={`ld-resume-item${active ? ' active' : ''}`}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      <span className="ld-resume-name">{name}</span>
+                      <span className={`ld-resume-tag${active ? ' active' : ''}`}>{tag}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Reveal>
+
+            {/* Tracking */}
+            <Reveal delay={0.08} className="ld-bento-third">
+              <div className="ld-bento-card">
+                <div className="ld-bento-eyebrow">Tracking</div>
+                <h3 className="ld-bento-title">Full-funnel pipeline board</h3>
+                <p className="ld-bento-desc">Star roles, mark applied, track to offer. Nothing falls through a spreadsheet.</p>
+              </div>
+            </Reveal>
+
+            {/* Auto-apply */}
+            <Reveal delay={0.12} className="ld-bento-third">
+              <div className="ld-bento-card">
+                <div className="ld-bento-eyebrow">Automation</div>
+                <h3 className="ld-bento-title">Browser-level auto-apply</h3>
+                <p className="ld-bento-desc">A Steel-powered agent fills Greenhouse, Ashby, and Lever forms — accurately, not with brittle selectors.</p>
+              </div>
+            </Reveal>
+
+            {/* Voice */}
+            <Reveal delay={0.16} className="ld-bento-third">
+              <div className="ld-bento-card">
+                <div className="ld-bento-eyebrow">Onboarding</div>
+                <h3 className="ld-bento-title">Voice-first setup in 2 minutes</h3>
+                <p className="ld-bento-desc">Just talk. Rack's AI extracts your profile, preferences, and target roles from the conversation.</p>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+
+        {/* ── AUTO-APPLY SECTION ── */}
+        <section id="ld-apply" className="ld-apply-section">
+          <div className="ld-apply-inner">
+            <Reveal className="ld-apply-copy">
+              <div className="ld-section-eyebrow">Automation</div>
+              <h2 className="ld-section-h2" style={{ maxWidth: 480 }}>Apply while you sleep</h2>
+              <p className="ld-section-sub">
+                Rack's Steel browser agent fills out and submits applications on Greenhouse,
+                Ashby, and Lever — no brittle scripts, no missed fields.
+              </p>
+              <ul className="ld-checklist">
+                {[
+                  'Reads actual form fields at runtime — adapts to any layout',
+                  'Uploads the best-fit resume version per application',
+                  'Handles EEO fields, work auth, custom dropdowns',
+                  'You review and approve before anything goes out',
+                ].map((item) => (
+                  <li key={item}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </Reveal>
+
+            <Reveal delay={0.15} className="ld-apply-visual">
+              <div className="ld-terminal">
+                <div className="ld-terminal-header">
+                  <div className="ld-dots">
+                    <span className="ld-dot" style={{ background: '#ff5f57' }} />
+                    <span className="ld-dot" style={{ background: '#ffbd2e' }} />
+                    <span className="ld-dot" style={{ background: '#28c840' }} />
+                  </div>
+                  <span className="ld-terminal-title">steel agent · Anthropic · Software Engineer</span>
+                  <span className="ld-live-badge">
+                    <span className="ld-live-dot" aria-hidden="true" />
+                    live
+                  </span>
+                </div>
+                <div className="ld-terminal-body">
+                  {[
+                    { t: '12:04:01', sym: '→', cls: 'sym-blue',   msg: 'Opening Greenhouse form...' },
+                    { t: '12:04:02', sym: '✓', cls: 'sym-green',  msg: 'Page loaded · anthropic.com/jobs' },
+                    { t: '12:04:03', sym: '→', cls: 'sym-blue',   msg: 'Selecting resume variant #1' },
+                    { t: '12:04:04', sym: '↑', cls: 'sym-purple', msg: 'Uploading resume_swe_ic.pdf' },
+                    { t: '12:04:05', sym: '✓', cls: 'sym-green',  msg: 'Resume uploaded successfully' },
+                    { t: '12:04:06', sym: '→', cls: 'sym-blue',   msg: 'Filling name · email · LinkedIn' },
+                    { t: '12:04:08', sym: '→', cls: 'sym-blue',   msg: 'Handling EEO + work authorization' },
+                    { t: '12:04:09', sym: '✓', cls: 'sym-green',  msg: 'All 14 fields complete' },
+                  ].map(({ t, sym, cls, msg }) => (
+                    <div key={t} className="ld-log-row">
+                      <span className="ld-log-time">{t}</span>
+                      <span className={`ld-log-sym ${cls}`}>{sym}</span>
+                      <span className="ld-log-msg">{msg}</span>
+                    </div>
+                  ))}
+                  <div className="ld-log-row">
+                    <span className="ld-log-time">12:04:10</span>
+                    <span className="ld-log-sym sym-blue">→</span>
+                    <span className="ld-log-msg">Submitting application<span className="ld-cursor" aria-hidden="true" /></span>
+                  </div>
+                </div>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+
+        {/* ── CTA ── */}
+        <section className="ld-cta-section">
+          <Reveal>
+            <div className="ld-cta-inner">
+              <div className="ld-cta-eyebrow">Early access</div>
+              <h2 className="ld-cta-h2">
+                Stop applying.<br />
+                <span className="ld-gradient-text">Start matching.</span>
+              </h2>
+              <p className="ld-cta-sub">
+                Join early users already getting matched to roles at Anthropic, Stripe, Figma, and 150+ companies — every single day.
+              </p>
+              <div className="ld-cta-actions">
+                <button className="ld-btn-primary ld-btn-large" onClick={openModal}>
+                  Get started for free
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </button>
+                {onSkip && (
+                  <button className="ld-btn-text ld-btn-skip" onClick={onSkip}>
+                    Continue without signing in
+                  </button>
+                )}
+              </div>
+              <p className="ld-cta-note">Free during beta · Built by <a href="https://tejasbk.dev" target="_blank" rel="noopener noreferrer" className="ld-link">Tejas</a></p>
+            </div>
+          </Reveal>
+        </section>
+
+        {/* ── FOOTER ── */}
+        <footer className="ld-footer">
+          <div className="ld-footer-logo">
+            <span className="ld-wordmark">rack</span>
+            <span className="ld-footer-domain">rackx.app</span>
+          </div>
+          <p className="ld-footer-copy">Scanning jobs so you don't have to.</p>
+        </footer>
+
+      </div>{/* ld-page */}
+
+      {/* ── MODAL ── */}
+      {modalOpen && (
+        <div
+          className="ld-modal-backdrop"
+          onClick={(e) => { if (e.target === e.currentTarget) closeModal() }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Sign in to Rack"
+        >
+          <div className="ld-modal">
+            <button className="ld-modal-close" onClick={closeModal} aria-label="Close">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+            <div className="ld-modal-logo">rack</div>
+            <h2 className="ld-modal-title">Sign in to Rack</h2>
+            <p className="ld-modal-sub">Access your matched jobs, resume vault, and full application pipeline.</p>
+            <button className="ld-btn-google" onClick={handleSignIn}>
+              <GoogleIcon />
+              Continue with Google
+            </button>
+            <p className="ld-modal-note">Your email and resume data only — nothing sold or shared.</p>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+// ── Styles ───────────────────────────────────────────────────────────────────
 const CSS = `
-  .ld-root {
-    position: relative; z-index: 2;
-    min-height: 100dvh;
-    overflow-x: hidden;
+  /* ── Fonts ── */
+  @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap');
+
+  :root {
+    --ld-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --ld-mono: 'Geist Mono', 'SF Mono', 'Fira Code', monospace;
+    --ld-ink:    #0a0a0b;
+    --ld-ink-2:  #374151;
+    --ld-ink-3:  #6b7280;
+    --ld-ink-4:  #9ca3af;
+    --ld-bg:     #ffffff;
+    --ld-bg-2:   #f9fafb;
+    --ld-bg-3:   #f3f4f6;
+    --ld-border: rgba(0,0,0,0.08);
+    --ld-border-strong: rgba(0,0,0,0.13);
+    --ld-accent: #16a34a;
+    --ld-radius: 14px;
+  }
+
+  /* ── Page container — fixed inset, own scroll context ── */
+  .ld-page {
+    position: fixed;
+    inset: 0;
     overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--ld-bg);
+    font-family: var(--ld-sans);
+    color: var(--ld-ink);
+    -webkit-font-smoothing: antialiased;
     scroll-behavior: smooth;
-    font-family: var(--font-body);
+    z-index: 900;
   }
 
-  /* Atmosphere */
-  .ld-atmo {
-    position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden;
-  }
-  .ld-blob {
-    position: absolute; border-radius: 50%;
-    filter: blur(120px); opacity: 0.45;
-    pointer-events: none;
-  }
-  .ld-blob-1      { width:700px;height:700px;background:#1a1a2e;top:-200px;left:-200px; }
-  .ld-blob-2      { width:500px;height:500px;background:#0d1f0d;top:20%;right:-100px; }
-  .ld-blob-3      { width:600px;height:600px;background:#1a0a2e;bottom:-100px;left:30%; }
-  .ld-blob-accent { width:300px;height:300px;background:rgba(232,255,107,0.06);top:10%;left:40%;filter:blur(80px); }
-  .ld-grain {
-    position:fixed;inset:0;pointer-events:none;z-index:1;opacity:0.022;
-    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-    background-size:200px 200px;
-  }
-
-  /* Nav */
+  /* ── Nav ── */
   .ld-nav {
-    position: sticky; top: 0; left: 0; right: 0; z-index: 100;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 20px 48px;
-    background: rgba(11,11,13,0.65);
-    backdrop-filter: blur(20px);
-    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 40px;
+    height: 64px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--ld-border);
+    transition: background 0.2s, box-shadow 0.2s;
   }
-  .ld-logo { display:flex;align-items:center;gap:10px;text-decoration:none; }
-  .ld-logo-pill {
-    background: var(--accent); color: #000;
-    font-family: var(--font-display); font-weight: 800;
-    font-size: 13px; letter-spacing: 0.08em;
-    padding: 4px 10px; border-radius: 6px;
-  }
-  .ld-logo-sub {
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--text-dim); letter-spacing: 0.04em;
+  .ld-wordmark {
+    font-family: var(--ld-sans);
+    font-weight: 800;
+    font-size: 20px;
+    letter-spacing: -0.04em;
+    color: var(--ld-ink);
+    line-height: 1;
   }
   .ld-nav-links {
-    display:flex;align-items:center;gap:32px;list-style:none;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    list-style: none;
+    margin: 0; padding: 0;
   }
   .ld-nav-links button {
-    background:none;border:none;padding:0;
-    font-family:var(--font-body);font-size:14px;
-    color:var(--text-mid);cursor:pointer;
-    transition:color 0.2s;
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: var(--ld-sans);
+    font-size: 14px;
+    font-weight: 450;
+    color: var(--ld-ink-3);
+    cursor: pointer;
+    transition: color 0.15s;
   }
-  .ld-nav-links button:hover { color:var(--text); }
-  .ld-nav-cta { display:flex;align-items:center;gap:12px; }
-  .ld-btn-ghost {
-    background:none;border:1px solid var(--border-bright);color:var(--text-mid);
-    font-family:var(--font-body);font-size:14px;padding:8px 20px;border-radius:8px;
-    cursor:pointer;transition:all 0.2s;
+  .ld-nav-links button:hover { color: var(--ld-ink); }
+  .ld-nav-actions { display: flex; align-items: center; gap: 10px; }
+  .ld-btn-text {
+    background: none; border: none;
+    font-family: var(--ld-sans); font-size: 14px; font-weight: 500;
+    color: var(--ld-ink-3); cursor: pointer;
+    padding: 8px 14px; border-radius: 8px;
+    transition: color 0.15s, background 0.15s;
   }
-  .ld-btn-ghost:hover { border-color:rgba(255,255,255,0.3);color:var(--text); }
-  .ld-btn-accent {
-    background:var(--accent);color:#000;font-family:var(--font-body);
-    font-weight:600;font-size:14px;padding:9px 22px;border:none;border-radius:8px;
-    cursor:pointer;transition:all 0.18s;
+  .ld-btn-text:hover { color: var(--ld-ink); background: var(--ld-bg-3); }
+  .ld-btn-pill {
+    background: var(--ld-ink);
+    color: #fff;
+    border: none;
+    font-family: var(--ld-sans);
+    font-size: 14px;
+    font-weight: 600;
+    padding: 9px 20px;
+    border-radius: 99px;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+    letter-spacing: -0.01em;
   }
-  .ld-btn-accent:hover {
-    background:#f0ff80;box-shadow:0 0 24px rgba(232,255,107,0.25);transform:translateY(-1px);
+  .ld-btn-pill:hover {
+    background: #1f2937;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    transform: translateY(-1px);
   }
 
-  /* Hero */
+  /* ── Hero ── */
   .ld-hero {
-    position:relative;z-index:2;
-    min-height:100dvh;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;
-    text-align:center;padding:140px 24px 80px;overflow:hidden;
+    position: relative;
+    min-height: calc(100svh - 64px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 24px 60px;
+    overflow: hidden;
+    text-align: center;
   }
-  .ld-hero-badge {
-    display:inline-flex;align-items:center;gap:8px;
-    border:1px solid rgba(232,255,107,0.25);background:rgba(232,255,107,0.07);
-    border-radius:100px;padding:6px 16px 6px 8px;
-    font-size:13px;color:rgba(232,255,107,0.85);margin-bottom:40px;
-    opacity:0;animation:ldFadeUp 0.7s 0.1s ease forwards;
+  .ld-hero-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,0,0,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,0,0,0.04) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 80%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 80%);
   }
-  .ld-badge-dot {
-    width:6px;height:6px;background:var(--accent);border-radius:50%;
-    box-shadow:0 0 8px var(--accent);animation:ldPulseDot 2s ease-in-out infinite;
+  .ld-hero-glow {
+    position: absolute;
+    top: -120px; left: 50%;
+    transform: translateX(-50%);
+    width: 700px; height: 500px;
+    background: radial-gradient(ellipse at center, rgba(22,163,74,0.08) 0%, transparent 70%);
+    pointer-events: none;
   }
-  .ld-hero-headline {
-    font-family:var(--font-display);font-weight:800;
-    font-size:clamp(52px,8vw,96px);line-height:0.95;letter-spacing:-0.03em;
-    color:var(--text);max-width:900px;
-    opacity:0;animation:ldFadeUp 0.8s 0.25s ease forwards;
+  .ld-hero-inner {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 900px;
+    width: 100%;
   }
-  .ld-accent-word {
-    color:var(--accent);position:relative;display:inline-block;
+
+  /* Badge */
+  .ld-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #15803d;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 14px 6px 10px;
+    border-radius: 99px;
+    margin-bottom: 36px;
+    letter-spacing: -0.01em;
   }
-  .ld-accent-word::after {
-    content:'';position:absolute;bottom:4px;left:0;right:0;
-    height:3px;background:var(--accent);border-radius:2px;opacity:0.4;
-    transform:scaleX(0);transform-origin:left;
-    animation:ldUnderline 0.6s 1.2s ease forwards;
+  .ld-badge-pulse {
+    width: 7px; height: 7px;
+    background: #16a34a;
+    border-radius: 50%;
+    animation: ldPulse 2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+  @keyframes ldPulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(22,163,74,0.4); }
+    50%      { box-shadow: 0 0 0 5px rgba(22,163,74,0); }
+  }
+
+  /* Headline */
+  .ld-hero-h1 {
+    font-family: var(--ld-sans);
+    font-weight: 800;
+    font-size: clamp(48px, 7.5vw, 88px);
+    line-height: 1.0;
+    letter-spacing: -0.04em;
+    color: var(--ld-ink);
+    margin: 0 0 24px;
+    max-width: 800px;
+  }
+  .ld-gradient-text {
+    background: linear-gradient(135deg, #16a34a 0%, #059669 40%, #0d9488 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
   }
   .ld-hero-sub {
-    margin-top:28px;font-size:19px;line-height:1.6;color:var(--text-mid);
-    max-width:560px;font-weight:300;
-    opacity:0;animation:ldFadeUp 0.8s 0.4s ease forwards;
-  }
-  .ld-hero-actions {
-    margin-top:44px;display:flex;align-items:center;gap:16px;
-    flex-wrap:wrap;justify-content:center;
-    opacity:0;animation:ldFadeUp 0.8s 0.55s ease forwards;
-  }
-  .ld-btn-hero {
-    background:var(--accent);color:#000;font-family:var(--font-body);
-    font-weight:600;font-size:16px;padding:14px 32px;border:none;border-radius:10px;
-    cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:8px;
-  }
-  .ld-btn-hero:hover { background:#f0ff80;box-shadow:0 0 40px rgba(232,255,107,0.3);transform:translateY(-2px); }
-  .ld-btn-hero-ghost {
-    background:none;border:1px solid var(--border-bright);color:var(--text-mid);
-    font-family:var(--font-body);font-size:16px;padding:14px 28px;border-radius:10px;
-    cursor:pointer;transition:all 0.2s;
-  }
-  .ld-btn-hero-ghost:hover { border-color:rgba(255,255,255,0.3);color:var(--text); }
-  .ld-hero-meta {
-    margin-top:28px;font-size:13px;color:var(--text-dim);
-    opacity:0;animation:ldFadeUp 0.8s 0.7s ease forwards;
+    font-size: clamp(16px, 2.2vw, 19px);
+    line-height: 1.65;
+    color: var(--ld-ink-3);
+    max-width: 520px;
+    margin: 0 0 36px;
+    font-weight: 400;
   }
 
-  /* Terminal */
-  .ld-hero-visual {
-    position:relative;z-index:2;margin-top:72px;width:100%;max-width:860px;
-    opacity:0;animation:ldFadeUp 1s 0.85s ease forwards;
+  /* CTAs */
+  .ld-hero-ctas {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 20px;
   }
-  .ld-terminal-card {
-    background:var(--surface);border:1px solid var(--border-bright);border-radius:18px;
-    overflow:hidden;box-shadow:0 40px 120px rgba(0,0,0,0.6),0 0 0 1px rgba(232,255,107,0.04);
+  .ld-btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--ld-ink);
+    color: #fff;
+    border: none;
+    font-family: var(--ld-sans);
+    font-size: 15px;
+    font-weight: 600;
+    padding: 13px 28px;
+    border-radius: 99px;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+    letter-spacing: -0.01em;
   }
-  .ld-terminal-bar {
-    background:rgba(255,255,255,0.025);border-bottom:1px solid var(--border);
-    padding:13px 18px;display:flex;align-items:center;gap:10px;
+  .ld-btn-primary:hover {
+    background: #111827;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.22);
+    transform: translateY(-2px);
   }
-  .ld-tdot { width:10px;height:10px;border-radius:50%; }
-  .ld-tdot-r { background:#ff5f57; }
-  .ld-tdot-y { background:#ffbd2e; }
-  .ld-tdot-g { background:#28c840; }
-  .ld-terminal-title {
-    font-family:var(--font-mono);font-size:12px;color:var(--text-dim);
-    margin-left:auto;margin-right:auto;transform:translateX(-20px);
+  .ld-btn-large { padding: 16px 36px; font-size: 16px; }
+  .ld-btn-ghost {
+    background: none;
+    border: 1px solid var(--ld-border-strong);
+    color: var(--ld-ink-2);
+    font-family: var(--ld-sans);
+    font-size: 15px;
+    font-weight: 500;
+    padding: 13px 26px;
+    border-radius: 99px;
+    cursor: pointer;
+    transition: all 0.15s;
   }
-  .ld-terminal-body { padding:28px 32px; }
-  .ld-pipeline-row { display:flex;align-items:center;gap:0;margin-bottom:12px; }
-  .ld-pipe-step {
-    flex:1;background:var(--surface2);border:1px solid var(--border-bright);
-    border-radius:8px;padding:12px 16px;
-  }
-  .ld-pipe-step-label {
-    font-family:var(--font-mono);font-size:11px;color:var(--text-dim);
-    text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;
-  }
-  .ld-pipe-step-val { font-size:14px;font-weight:500;color:var(--text); }
-  .ld-pipe-accent {
-    border-color:rgba(232,255,107,0.3);background:rgba(232,255,107,0.04);
-  }
-  .ld-pipe-val-accent { color:var(--accent); }
-  .ld-pipe-arrow { width:32px;flex-shrink:0;text-align:center;color:var(--text-dim);font-size:16px; }
-  .ld-match-results { margin-top:20px;display:flex;flex-direction:column;gap:8px; }
-  .ld-match-row {
-    display:flex;align-items:center;gap:14px;
-    background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:11px 16px;
-    opacity:0;animation:ldSlideIn 0.5s ease forwards;
-  }
-  .ld-score-bar {
-    height:100%;border-radius:2px;
-    animation:ldBarFill 1s ease forwards;
-  }
-  .ld-score-bar[style*="var(--accent)"]  { --bar-end:92%; animation-delay:1.5s; }
-  .ld-score-bar[style*="var(--accent2)"] { --bar-end:78%; animation-delay:1.7s; }
-  .ld-score-bar[style*="var(--accent3)"] { --bar-end:65%; animation-delay:1.9s; }
-
-  /* Scroll hint */
-  .ld-scroll-hint {
-    position:absolute;bottom:40px;left:50%;transform:translateX(-50%);
-    display:flex;flex-direction:column;align-items:center;gap:8px;
-    color:var(--text-dim);font-size:12px;letter-spacing:0.08em;
-    opacity:0;animation:ldFadeUp 1s 1.5s ease forwards;
-  }
-  .ld-scroll-arrow {
-    width:20px;height:20px;
-    border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
-    transform:rotate(45deg);animation:ldScrollBounce 1.6s ease-in-out infinite;
+  .ld-btn-ghost:hover { border-color: rgba(0,0,0,0.25); color: var(--ld-ink); background: var(--ld-bg-3); }
+  .ld-hero-note {
+    font-size: 13px;
+    color: var(--ld-ink-4);
+    margin: 0 0 56px;
   }
 
-  /* Marquee */
-  .ld-marquee-wrap {
-    overflow:hidden;position:relative;z-index:2;
-    border-top:1px solid var(--border);border-bottom:1px solid var(--border);
-    padding:20px 0;background:rgba(255,255,255,0.01);
+  /* Product card */
+  .ld-hero-card {
+    width: 100%;
+    max-width: 760px;
+    background: #fff;
+    border: 1px solid var(--ld-border-strong);
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,0.04),
+      0 8px 32px rgba(0,0,0,0.07),
+      0 40px 80px rgba(0,0,0,0.06);
   }
-  .ld-marquee-track {
-    display:flex;gap:48px;width:max-content;
-    animation:ldMarquee 30s linear infinite;
+  .ld-card-top-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--ld-border);
+    background: var(--ld-bg-2);
+  }
+  .ld-dots { display: flex; gap: 6px; }
+  .ld-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .ld-card-label {
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    color: var(--ld-ink-4);
+    margin-left: 4px;
+    flex: 1;
+    text-align: center;
+  }
+  .ld-card-status {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--ld-mono);
+    font-size: 11px;
+    color: var(--ld-accent);
+  }
+  .ld-status-dot {
+    width: 6px; height: 6px;
+    background: var(--ld-accent);
+    border-radius: 50%;
+    animation: ldPulse 2s ease-in-out infinite;
+  }
+
+  /* Pipeline */
+  .ld-pipeline {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--ld-border);
+    overflow-x: auto;
+  }
+  .ld-pipeline-row { display: flex; align-items: center; gap: 0; }
+  .ld-pipeline-chip {
+    padding: 8px 14px;
+    background: var(--ld-bg-2);
+    border: 1px solid var(--ld-border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    white-space: nowrap;
+  }
+  .ld-pipeline-chip.accent {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+  }
+  .ld-chip-step {
+    font-family: var(--ld-mono);
+    font-size: 10px;
+    color: var(--ld-ink-4);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .ld-chip-detail {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ld-ink);
+    letter-spacing: -0.01em;
+  }
+  .ld-pipeline-chip.accent .ld-chip-detail { color: var(--ld-accent); }
+  .ld-pipe-arrow {
+    color: var(--ld-ink-4);
+    padding: 0 8px;
+    flex-shrink: 0;
+  }
+
+  /* Results */
+  .ld-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 12px 16px 16px;
+  }
+  .ld-result-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 8px;
+    border-radius: 8px;
+    transition: background 0.15s;
+  }
+  .ld-result-row:hover { background: var(--ld-bg-2); }
+  .ld-result-rank {
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    color: var(--ld-ink-4);
+    width: 24px;
+    flex-shrink: 0;
+  }
+  .ld-result-meta { flex: 1; min-width: 0; }
+  .ld-result-name {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ld-ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ld-result-role {
+    display: block;
+    font-size: 12px;
+    color: var(--ld-ink-4);
+    margin-top: 1px;
+  }
+  .ld-result-bar-wrap {
+    width: 80px;
+    height: 4px;
+    background: var(--ld-bg-3);
+    border-radius: 99px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .ld-result-bar {
+    height: 100%;
+    width: var(--score, 0%);
+    background: var(--color, #16a34a);
+    border-radius: 99px;
+    animation: ldBarFill 1s cubic-bezier(0.16,1,0.3,1) both;
+  }
+  .ld-result-bar:nth-child(1) { animation-delay: 1.5s; }
+  .ld-result-score {
+    font-family: var(--ld-mono);
+    font-size: 14px;
+    font-weight: 700;
+    width: 38px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── Marquee ── */
+  .ld-marquee {
+    overflow: hidden;
+    border-top: 1px solid var(--ld-border);
+    border-bottom: 1px solid var(--ld-border);
+    background: var(--ld-bg-2);
+    padding: 16px 0;
+  }
+  .ld-marquee-inner {
+    display: flex;
+    gap: 0;
+    width: max-content;
+    animation: ldMarquee 35s linear infinite;
   }
   .ld-marquee-item {
-    font-family:var(--font-mono);font-size:12px;color:var(--text-dim);
-    white-space:nowrap;display:flex;align-items:center;gap:12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 32px;
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    color: var(--ld-ink-4);
+    white-space: nowrap;
+    border-right: 1px solid var(--ld-border);
   }
-  .ld-marquee-item::before { content:'✦';color:var(--accent);opacity:0.5; }
+  .ld-marquee-dot {
+    width: 4px; height: 4px;
+    background: var(--ld-ink-4);
+    border-radius: 50%;
+    opacity: 0.4;
+  }
 
-  /* Stats */
-  .ld-stats-strip {
-    position:relative;z-index:2;
-    border-top:1px solid var(--border);border-bottom:1px solid var(--border);
-    background:rgba(255,255,255,0.016);
-    padding:36px 48px;display:flex;align-items:stretch;justify-content:center;gap:0;
+  /* ── Stats ── */
+  .ld-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--ld-border);
   }
-  .ld-stat-item { flex:1;max-width:240px;text-align:center;padding:0 32px; }
-  .ld-stat-item + .ld-stat-item { border-left:1px solid var(--border); }
-  .ld-stat-num {
-    font-family:var(--font-display);font-weight:800;font-size:40px;
-    color:var(--accent);line-height:1;letter-spacing:-0.02em;
+  .ld-stat {
+    padding: 36px 32px;
+    border-right: 1px solid var(--ld-border);
+    text-align: center;
   }
-  .ld-stat-label { margin-top:6px;font-size:13px;color:var(--text-dim); }
+  .ld-stat:last-child { border-right: none; }
+  .ld-stat-val {
+    display: block;
+    font-family: var(--ld-sans);
+    font-weight: 800;
+    font-size: 36px;
+    letter-spacing: -0.04em;
+    color: var(--ld-ink);
+    line-height: 1;
+  }
+  .ld-stat-label {
+    display: block;
+    font-size: 13px;
+    color: var(--ld-ink-4);
+    margin-top: 6px;
+    font-weight: 400;
+  }
 
-  /* Sections */
-  .ld-section { position:relative;z-index:2; }
-  .ld-section-inner { max-width:1100px;margin:0 auto;padding:96px 48px; }
-  .ld-section-tag {
-    display:inline-flex;align-items:center;gap:8px;
-    font-family:var(--font-mono);font-size:12px;color:var(--accent);
-    letter-spacing:0.1em;text-transform:uppercase;margin-bottom:20px;
+  /* ── Sections ── */
+  .ld-section {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 100px 48px;
   }
-  .ld-section-tag::before { content:'';display:block;width:20px;height:1px;background:var(--accent); }
-  .ld-section-title {
-    font-family:var(--font-display);font-weight:700;
-    font-size:clamp(34px,4vw,52px);line-height:1.1;letter-spacing:-0.02em;
-    color:var(--text);max-width:600px;margin-bottom:16px;
+  .ld-section-alt {
+    max-width: 100%;
+    background: var(--ld-bg-2);
+    border-top: 1px solid var(--ld-border);
+    border-bottom: 1px solid var(--ld-border);
+    padding: 0;
+  }
+  .ld-section-alt > * {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 100px 48px;
+  }
+  .ld-section-alt > div:first-child { padding-bottom: 0; }
+  .ld-section-eyebrow {
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ld-accent);
+    margin-bottom: 16px;
+  }
+  .ld-section-h2 {
+    font-family: var(--ld-sans);
+    font-weight: 800;
+    font-size: clamp(32px, 4vw, 48px);
+    letter-spacing: -0.035em;
+    line-height: 1.1;
+    color: var(--ld-ink);
+    margin: 0 0 16px;
   }
   .ld-section-sub {
-    font-size:17px;color:var(--text-mid);max-width:500px;line-height:1.7;font-weight:300;
+    font-size: 17px;
+    line-height: 1.65;
+    color: var(--ld-ink-3);
+    max-width: 500px;
+    font-weight: 400;
+    margin: 0;
   }
 
-  /* Steps */
-  .ld-steps-grid { margin-top:60px;display:grid;grid-template-columns:repeat(3,1fr);gap:2px; }
-  .ld-step-card {
-    background:var(--surface);border:1px solid var(--border);
-    padding:36px 32px;position:relative;overflow:hidden;transition:border-color 0.25s;
+  /* ── Steps ── */
+  .ld-steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    margin-top: 60px;
+    background: var(--ld-border);
+    border-radius: 16px;
+    overflow: hidden;
   }
-  .ld-step-card:first-child { border-radius:12px 0 0 12px; }
-  .ld-step-card:last-child  { border-radius:0 12px 12px 0; }
-  .ld-step-card::before {
-    content:'';position:absolute;top:0;left:0;right:0;height:1px;
-    background:linear-gradient(90deg,transparent,rgba(232,255,107,0.12),transparent);
-    opacity:0;transition:opacity 0.3s;
+  .ld-step {
+    background: var(--ld-bg);
+    padding: 36px 32px 40px;
+    transition: background 0.2s;
   }
-  .ld-step-card:hover { border-color:rgba(232,255,107,0.18); }
-  .ld-step-card:hover::before { opacity:1; }
-  .ld-step-num { font-family:var(--font-mono);font-size:11px;color:var(--accent);letter-spacing:0.1em;margin-bottom:20px; }
-  .ld-step-icon { font-size:28px;margin-bottom:16px;display:block; }
-  .ld-step-title { font-family:var(--font-display);font-weight:700;font-size:20px;color:var(--text);margin-bottom:10px; }
-  .ld-step-desc { font-size:14px;color:var(--text-mid);line-height:1.65; }
+  .ld-step:hover { background: var(--ld-bg-2); }
+  .ld-step-num {
+    font-family: var(--ld-mono);
+    font-size: 11px;
+    color: var(--ld-accent);
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    margin-bottom: 20px;
+  }
+  .ld-step-icon {
+    color: var(--ld-ink);
+    margin-bottom: 16px;
+    opacity: 0.75;
+  }
+  .ld-step-title {
+    font-family: var(--ld-sans);
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: -0.02em;
+    color: var(--ld-ink);
+    margin: 0 0 10px;
+    line-height: 1.25;
+  }
+  .ld-step-desc {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--ld-ink-3);
+    margin: 0;
+  }
 
-  /* Bento */
-  .ld-bento-grid { margin-top:48px;display:grid;grid-template-columns:1fr 1fr;gap:16px; }
+  /* ── Bento ── */
+  .ld-bento {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: auto auto auto;
+    gap: 2px;
+    background: var(--ld-border);
+    border-radius: 0;
+    overflow: hidden;
+    margin-top: 60px;
+    border-top: 1px solid var(--ld-border);
+  }
+  .ld-bento-wide { grid-column: 1 / -1; }
+  .ld-bento-half { grid-column: span 1; }
+  /* Make first two halves span equally */
+  .ld-bento > .ld-bento-half:nth-child(2) { }
+  .ld-bento > .ld-bento-half:nth-child(3) { }
+  .ld-bento-third { grid-column: span 1; }
   .ld-bento-card {
-    background:var(--surface);border:1px solid var(--border);border-radius:18px;
-    padding:36px 32px;position:relative;overflow:hidden;
-    transition:border-color 0.25s,transform 0.25s;
+    background: var(--ld-bg);
+    padding: 36px 32px;
+    transition: background 0.2s;
   }
-  .ld-bento-card:hover { border-color:rgba(232,255,107,0.18);transform:translateY(-2px); }
-  .ld-bento-wide { grid-column:1 / -1; }
-  .ld-bento-tall { min-height:320px; }
-  .ld-bento-corner-glow {
-    position:absolute;bottom:-60px;right:-60px;width:200px;height:200px;border-radius:50%;
-    background:radial-gradient(circle,rgba(232,255,107,0.08) 0%,transparent 70%);pointer-events:none;
+  .ld-bento-card:hover { background: #fafafa; }
+  .ld-bento-coverage {
+    display: flex;
+    gap: 48px;
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
-  .ld-bento-icon {
-    width:44px;height:44px;border-radius:10px;
-    background:rgba(232,255,107,0.1);border:1px solid rgba(232,255,107,0.2);
-    display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:20px;
+  .ld-bento-eyebrow {
+    font-family: var(--ld-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ld-ink-4);
+    margin-bottom: 10px;
   }
-  .ld-bento-label {
-    font-family:var(--font-mono);font-size:11px;color:var(--accent);
-    letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px;
+  .ld-bento-title {
+    font-family: var(--ld-sans);
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: -0.025em;
+    color: var(--ld-ink);
+    margin: 0 0 10px;
+    line-height: 1.25;
   }
-  .ld-bento-title { font-family:var(--font-display);font-weight:700;font-size:22px;color:var(--text);margin-bottom:10px;line-height:1.2; }
-  .ld-bento-desc { font-size:14px;color:var(--text-mid);line-height:1.65;max-width:380px; }
-  .ld-company-pills { display:flex;flex-wrap:wrap;gap:8px;max-width:420px; }
-  .ld-cpill {
-    background:var(--surface2);border:1px solid var(--border-bright);border-radius:6px;
-    padding:5px 12px;font-family:var(--font-mono);font-size:12px;color:var(--text-mid);transition:all 0.2s;
+  .ld-bento-desc {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--ld-ink-3);
+    margin: 0;
+    max-width: 340px;
   }
-  .ld-cpill:hover { border-color:rgba(232,255,107,0.3);color:var(--accent); }
-  .ld-cpill-active { background:rgba(232,255,107,0.08);border-color:rgba(232,255,107,0.3);color:var(--accent); }
-  .ld-resume-row {
-    display:flex;align-items:center;gap:10px;background:var(--surface2);
-    border:1px solid var(--border);border-radius:8px;padding:10px 14px;
+  .ld-company-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-content: flex-start;
+    flex: 1;
+    min-width: 280px;
   }
-  .ld-resume-row-active { border-color:rgba(232,255,107,0.2); }
+  .ld-company-chip {
+    background: var(--ld-bg-2);
+    border: 1px solid var(--ld-border-strong);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    color: var(--ld-ink-3);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .ld-company-chip:hover { border-color: rgba(22,163,74,0.4); color: var(--ld-accent); background: #f0fdf4; }
+  .ld-chip-more { color: var(--ld-ink-4); }
 
-  /* Auto-apply */
-  .ld-auto-apply-section {
-    position:relative;z-index:2;
-    background:linear-gradient(180deg,transparent 0%,rgba(232,255,107,0.025) 50%,transparent 100%);
-    border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+  /* Resume list in bento */
+  .ld-resume-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 20px;
   }
-  .ld-auto-apply-inner {
-    max-width:1100px;margin:0 auto;padding:96px 48px;
-    display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center;
+  .ld-resume-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--ld-bg-2);
+    border: 1px solid var(--ld-border);
+    border-radius: 8px;
+    transition: border-color 0.15s;
+    color: var(--ld-ink-3);
   }
-  .ld-benefits-list { list-style:none;display:flex;flex-direction:column;gap:14px; }
-  .ld-benefits-list li { display:flex;align-items:flex-start;gap:12px; }
-  .ld-check { color:var(--accent);margin-top:2px;flex-shrink:0; }
-  .ld-benefits-list li > span:last-child { font-size:15px;color:var(--text-mid);line-height:1.5; }
-  .ld-apply-visual {
-    background:var(--surface);border:1px solid var(--border-bright);border-radius:18px;
-    overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.4);
+  .ld-resume-item.active { border-color: #bbf7d0; background: #f0fdf4; color: var(--ld-ink); }
+  .ld-resume-name {
+    flex: 1;
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .ld-apply-header {
-    background:rgba(255,255,255,0.025);border-bottom:1px solid var(--border);
-    padding:12px 16px;display:flex;align-items:center;gap:8px;
+  .ld-resume-tag {
+    font-family: var(--ld-mono);
+    font-size: 11px;
+    color: var(--ld-ink-4);
+    flex-shrink: 0;
+  }
+  .ld-resume-tag.active { color: var(--ld-accent); font-weight: 600; }
+
+  /* ── Auto-apply section ── */
+  .ld-apply-section {
+    background: var(--ld-ink);
+    color: #fff;
+  }
+  .ld-apply-inner {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 100px 48px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 80px;
+    align-items: center;
+  }
+  .ld-apply-section .ld-section-eyebrow { color: #4ade80; }
+  .ld-apply-section .ld-section-h2 { color: #fff; max-width: 420px; }
+  .ld-apply-section .ld-section-sub { color: rgba(255,255,255,0.6); }
+  .ld-checklist {
+    list-style: none;
+    margin: 28px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .ld-checklist li {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-size: 15px;
+    color: rgba(255,255,255,0.75);
+    line-height: 1.5;
+  }
+  .ld-checklist svg { flex-shrink: 0; margin-top: 2px; }
+  .ld-apply-visual { width: 100%; }
+
+  /* Terminal */
+  .ld-terminal {
+    background: #0f1117;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 32px 80px rgba(0,0,0,0.5);
+  }
+  .ld-terminal-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.03);
+  }
+  .ld-terminal-title {
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    color: rgba(255,255,255,0.35);
+    flex: 1;
+    text-align: center;
+    margin: 0 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ld-live-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--ld-mono);
+    font-size: 11px;
+    color: #4ade80;
   }
   .ld-live-dot {
-    width:8px;height:8px;background:var(--accent3);border-radius:50%;
-    box-shadow:0 0 8px var(--accent3);animation:ldPulseDot 1.5s ease-in-out infinite;
+    width: 6px; height: 6px;
+    background: #4ade80;
+    border-radius: 50%;
+    animation: ldPulse 2s ease-in-out infinite;
   }
-  .ld-apply-header-text { font-family:var(--font-mono);font-size:12px;color:var(--text-mid); }
-  .ld-apply-body {
-    padding:20px;font-family:var(--font-mono);font-size:12px;line-height:2;
-    color:var(--text-dim);display:flex;flex-direction:column;
+  .ld-terminal-body {
+    padding: 20px 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
   }
-  .ld-log-line { display:block; }
-  .ld-log-accent { color:var(--accent); }
-  .ld-log-green  { color:var(--accent3); }
-  .ld-log-purple { color:var(--accent2); }
-  .ld-log-dim    { color:rgba(255,255,255,0.2); }
+  .ld-log-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .ld-log-row:last-child { border-bottom: none; }
+  .ld-log-time {
+    font-family: var(--ld-mono);
+    font-size: 11px;
+    color: rgba(255,255,255,0.2);
+    flex-shrink: 0;
+    width: 64px;
+  }
+  .ld-log-sym {
+    font-family: var(--ld-mono);
+    font-size: 13px;
+    flex-shrink: 0;
+    width: 16px;
+  }
+  .sym-green  { color: #4ade80; }
+  .sym-blue   { color: #60a5fa; }
+  .sym-purple { color: #c084fc; }
+  .ld-log-msg {
+    font-family: var(--ld-mono);
+    font-size: 13px;
+    color: rgba(255,255,255,0.65);
+    line-height: 1.4;
+  }
   .ld-cursor {
-    display:inline-block;width:8px;height:14px;background:var(--accent);
-    margin-left:2px;animation:ldBlink 1.1s step-end infinite;vertical-align:middle;
+    display: inline-block;
+    width: 8px; height: 14px;
+    background: #60a5fa;
+    margin-left: 2px;
+    vertical-align: middle;
+    animation: ldBlink 1.1s step-end infinite;
   }
 
-  /* CTA */
-  .ld-cta-section { position:relative;z-index:2;text-align:center; }
-  .ld-cta-inner { max-width:720px;margin:0 auto;padding:120px 48px; }
-  .ld-cta-headline {
-    font-family:var(--font-display);font-weight:800;
-    font-size:clamp(40px,5vw,64px);line-height:1.05;letter-spacing:-0.03em;
-    color:var(--text);margin-bottom:20px;
+  /* ── CTA section ── */
+  .ld-cta-section {
+    padding: 0;
+    background: #f9fafb;
+    border-top: 1px solid var(--ld-border);
+  }
+  .ld-cta-inner {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 120px 48px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .ld-cta-eyebrow {
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ld-accent);
+    margin-bottom: 16px;
+  }
+  .ld-cta-h2 {
+    font-family: var(--ld-sans);
+    font-weight: 800;
+    font-size: clamp(40px, 6vw, 64px);
+    letter-spacing: -0.04em;
+    line-height: 1.05;
+    color: var(--ld-ink);
+    margin: 0 0 20px;
   }
   .ld-cta-sub {
-    font-size:17px;color:var(--text-mid);line-height:1.6;font-weight:300;
-    max-width:460px;margin:0 auto 44px;
+    font-size: 17px;
+    line-height: 1.65;
+    color: var(--ld-ink-3);
+    max-width: 480px;
+    margin: 0 0 44px;
+    font-weight: 400;
   }
-  .ld-cta-actions { display:flex;flex-direction:column;align-items:center;gap:16px; }
-  .ld-btn-cta {
-    background:var(--accent);color:#000;font-family:var(--font-body);
-    font-weight:700;font-size:17px;padding:16px 48px;border:none;border-radius:12px;
-    cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:10px;
+  .ld-cta-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
   }
-  .ld-btn-cta:hover { background:#f0ff80;box-shadow:0 0 60px rgba(232,255,107,0.4);transform:translateY(-3px); }
-  .ld-cta-note { font-size:13px;color:var(--text-dim); }
-  .ld-cta-link { color:var(--text-dim);text-decoration:none;transition:color 0.2s; }
-  .ld-cta-link:hover { color:var(--accent); }
   .ld-btn-skip {
-    background:none;border:none;font-family:var(--font-body);
-    font-size:13px;color:var(--text-dim);cursor:pointer;
-    transition:color 0.2s;padding:0;
+    color: var(--ld-ink-4) !important;
+    font-size: 13px !important;
+    padding: 4px 8px !important;
   }
-  .ld-btn-skip:hover { color:var(--text-mid); }
+  .ld-btn-skip:hover { color: var(--ld-ink-3) !important; }
+  .ld-cta-note {
+    margin-top: 20px;
+    font-size: 13px;
+    color: var(--ld-ink-4);
+  }
+  .ld-link {
+    color: var(--ld-ink-3);
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+  .ld-link:hover { color: var(--ld-ink); }
 
-  /* Footer */
+  /* ── Footer ── */
   .ld-footer {
-    position:relative;z-index:2;border-top:1px solid var(--border);
-    padding:40px 48px;display:flex;align-items:center;justify-content:space-between;
+    border-top: 1px solid var(--ld-border);
+    padding: 32px 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--ld-bg);
   }
-  .ld-footer-note { font-size:13px;color:var(--text-dim); }
+  .ld-footer-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .ld-footer-domain {
+    font-family: var(--ld-mono);
+    font-size: 12px;
+    color: var(--ld-ink-4);
+  }
+  .ld-footer-copy {
+    font-size: 13px;
+    color: var(--ld-ink-4);
+    margin: 0;
+  }
 
-  /* Modal */
-  .ld-modal-overlay {
-    position:fixed;inset:0;z-index:999;background:rgba(0,0,0,0.75);
-    backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;
-    animation:ldFadeIn 0.2s ease;
+  /* ── Modal ── */
+  .ld-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0,0,0,0.45);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: ldFadeIn 0.2s ease;
   }
-  .ld-modal-box {
-    background:var(--surface);border:1px solid var(--border-bright);border-radius:20px;
-    padding:48px 40px;max-width:420px;width:90%;text-align:center;position:relative;
-    animation:ldModalIn 0.3s cubic-bezier(0.22,1,0.36,1);
+  .ld-modal {
+    background: #fff;
+    border: 1px solid var(--ld-border-strong);
+    border-radius: 20px;
+    padding: 48px 40px;
+    max-width: 400px;
+    width: 90%;
+    text-align: center;
+    position: relative;
+    animation: ldModalIn 0.3s cubic-bezier(0.16,1,0.3,1);
+    box-shadow: 0 32px 80px rgba(0,0,0,0.2);
   }
-  .ld-modal-title { font-family:var(--font-display);font-weight:700;font-size:26px;color:var(--text);margin-bottom:10px; }
-  .ld-modal-sub { font-size:14px;color:var(--text-dim);margin-bottom:32px;line-height:1.6; }
   .ld-modal-close {
-    position:absolute;top:16px;right:16px;background:none;border:none;
-    color:var(--text-dim);font-size:22px;cursor:pointer;line-height:1;
-    padding:4px 8px;border-radius:6px;transition:all 0.2s;
+    position: absolute;
+    top: 16px; right: 16px;
+    background: none;
+    border: none;
+    color: var(--ld-ink-4);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
   }
-  .ld-modal-close:hover { color:var(--text);background:rgba(255,255,255,0.06); }
+  .ld-modal-close:hover { color: var(--ld-ink); background: var(--ld-bg-3); }
+  .ld-modal-logo {
+    font-family: var(--ld-sans);
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: -0.04em;
+    color: var(--ld-ink);
+    margin-bottom: 20px;
+  }
+  .ld-modal-title {
+    font-family: var(--ld-sans);
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: -0.03em;
+    color: var(--ld-ink);
+    margin: 0 0 10px;
+  }
+  .ld-modal-sub {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--ld-ink-3);
+    margin: 0 0 28px;
+  }
   .ld-btn-google {
-    width:100%;display:flex;align-items:center;justify-content:center;gap:12px;
-    background:#fff;color:#1a1a1a;font-family:var(--font-body);
-    font-size:15px;font-weight:600;padding:14px 24px;
-    border:none;border-radius:10px;cursor:pointer;transition:all 0.2s;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: var(--ld-ink);
+    color: #fff;
+    border: none;
+    font-family: var(--ld-sans);
+    font-size: 15px;
+    font-weight: 600;
+    padding: 14px 24px;
+    border-radius: 99px;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: -0.01em;
   }
-  .ld-btn-google:hover { background:#f3f3f3;box-shadow:0 4px 20px rgba(0,0,0,0.3); }
+  .ld-btn-google:hover {
+    background: #111827;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+    transform: translateY(-1px);
+  }
+  .ld-modal-note {
+    margin-top: 18px;
+    font-size: 12px;
+    color: var(--ld-ink-4);
+    line-height: 1.5;
+  }
 
-  /* Keyframes */
+  /* ── Keyframes ── */
   @keyframes ldFadeUp {
-    from { opacity:0;transform:translateY(28px); }
-    to   { opacity:1;transform:translateY(0); }
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
-  @keyframes ldFadeIn { from { opacity:0; } to { opacity:1; } }
+  @keyframes ldFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
   @keyframes ldModalIn {
-    from { opacity:0;transform:translateY(20px) scale(0.97); }
-    to   { opacity:1;transform:translateY(0) scale(1); }
-  }
-  @keyframes ldUnderline { to { transform:scaleX(1); } }
-  @keyframes ldPulseDot {
-    0%,100% { opacity:1;transform:scale(1); }
-    50%     { opacity:0.6;transform:scale(0.75); }
+    from { opacity: 0; transform: translateY(16px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
   }
   @keyframes ldSlideIn {
-    from { opacity:0;transform:translateX(-10px); }
-    to   { opacity:1;transform:translateX(0); }
+    from { opacity: 0; transform: translateX(-8px); }
+    to   { opacity: 1; transform: translateX(0); }
   }
-  @keyframes ldBarFill { to { width:var(--bar-end,80%); } }
-  @keyframes ldBlink { 0%,100%{opacity:1;} 50%{opacity:0;} }
-  @keyframes ldScrollBounce {
-    0%,100% { transform:rotate(45deg) translateY(0); }
-    50%     { transform:rotate(45deg) translateY(4px); }
+  @keyframes ldBarFill {
+    from { width: 0; }
+    to   { width: var(--score, 0%); }
+  }
+  @keyframes ldBlink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
   }
   @keyframes ldMarquee {
-    from { transform:translateX(0); }
-    to   { transform:translateX(-50%); }
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
   }
 
-  /* Responsive */
-  @media (max-width:900px) {
-    .ld-nav { padding:16px 24px; }
-    .ld-nav-links { display:none; }
-    .ld-section-inner { padding:72px 24px; }
-    .ld-auto-apply-inner { grid-template-columns:1fr;gap:48px;padding:72px 24px; }
-    .ld-steps-grid { grid-template-columns:1fr;gap:12px; }
-    .ld-step-card { border-radius:12px !important; }
-    .ld-bento-grid { grid-template-columns:1fr; }
-    .ld-bento-wide { grid-column:1; }
-    .ld-stats-strip { flex-direction:column;gap:0;padding:48px 24px; }
-    .ld-stat-item { max-width:100%;padding:24px 0; }
-    .ld-stat-item + .ld-stat-item { border-left:none;border-top:1px solid var(--border); }
-    .ld-footer { flex-direction:column;gap:16px;text-align:center; }
-    .ld-hero { padding:120px 24px 80px; }
-    .ld-pipeline-row { flex-wrap:wrap;gap:8px; }
-    .ld-pipe-arrow { display:none; }
-    .ld-pipe-step { flex:1;min-width:40%; }
+  /* ── Responsive ── */
+  @media (max-width: 960px) {
+    .ld-nav { padding: 0 24px; }
+    .ld-nav-links { display: none; }
+    .ld-section { padding: 72px 24px; }
+    .ld-steps { grid-template-columns: 1fr; }
+    .ld-bento { grid-template-columns: 1fr; }
+    .ld-bento-wide, .ld-bento-half, .ld-bento-third { grid-column: 1; }
+    .ld-bento-coverage { flex-direction: column; gap: 24px; }
+    .ld-stats { grid-template-columns: repeat(2,1fr); }
+    .ld-stat:nth-child(2) { border-right: none; }
+    .ld-apply-inner { grid-template-columns: 1fr; gap: 48px; padding: 72px 24px; }
+    .ld-cta-inner { padding: 80px 24px; }
+    .ld-footer { flex-direction: column; gap: 12px; text-align: center; padding: 28px 24px; }
+    .ld-hero { padding: 60px 20px 40px; }
+    .ld-pipeline { overflow-x: scroll; -webkit-overflow-scrolling: touch; }
+    .ld-section-alt > * { padding: 72px 24px; }
+    .ld-section-alt > div:first-child { padding-bottom: 0; }
+  }
+
+  @media (max-width: 600px) {
+    .ld-stats { grid-template-columns: 1fr 1fr; }
+    .ld-hero-card { border-radius: 14px; }
+    .ld-bento { margin-top: 40px; }
+    .ld-steps { margin-top: 40px; }
   }
 `
