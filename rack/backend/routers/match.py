@@ -517,6 +517,7 @@ async def _tool_get_matched_jobs(user_uuid, db, min_score: int = 0, limit: int =
                 "matched_skills":     ((r.job_data or {}).get("matched_skills") or [])[:6],
                 "missing_skills":     ((r.job_data or {}).get("missing_skills") or [])[:4],
                 "posted_at":          r.posted_at.isoformat() if r.posted_at else None,
+                "matched_at":         r.matched_at.isoformat() if r.matched_at else None,
                 # job_url is the canonical key written by auto_match; fall back to url
                 "url":                (r.job_data or {}).get("job_url") or (r.job_data or {}).get("url", ""),
                 "job_id":             r.job_id,
@@ -944,28 +945,59 @@ Call exactly ONE routing tool now."""
                 _intro_reply = None
                 top_job = jobs_list[0] if jobs_list else None
                 try:
-                    _name_part = f"{_display_name}, " if _display_name else ""
+                    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
                     _is_recent_query = sort_by == "recent" or hours > 0
-                    _top_part = (
-                        f" The most recently matched role is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match)."
-                        if (top_job and _is_recent_query) else
-                        f" The top pick is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — it lines up really well with your profile."
-                        if top_job else ""
-                    )
-                    _context_hint = (
-                        f"The user asked for their RECENTLY matched jobs (sorted by match date, past {hours}h)."
-                        if _is_recent_query else
-                        f"The user asked for their top matched jobs (sorted by score)."
-                    )
+
+                    # Find freshly matched jobs (within last 48h) regardless of sort mode
+                    _now = _dt.now(_tz.utc)
+                    _fresh_jobs = []
+                    for _j in jobs_list:
+                        _mat = _j.get("matched_at")
+                        if _mat:
+                            try:
+                                _mat_dt = _dt.fromisoformat(_mat.replace("Z", "+00:00"))
+                                if (_now - _mat_dt) <= _td(hours=48):
+                                    _fresh_jobs.append(_j)
+                            except Exception:
+                                pass
+
+                    _has_fresh = len(_fresh_jobs) > 0
+
+                    if _is_recent_query:
+                        _top_part = (
+                            f" The most recently matched role is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — I'd suggest applying soon while it's fresh."
+                            if top_job else ""
+                        )
+                        _context_hint = (
+                            f"The user asked for their RECENTLY matched jobs (sorted by match date, past {hours}h). "
+                            f"Emphasize recency and urgency — these are fresh matches, they should apply soon."
+                        )
+                    elif _has_fresh:
+                        _newest = _fresh_jobs[0]
+                        _top_part = (
+                            f" The top match is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match). "
+                            f"Heads up — {len(_fresh_jobs)} of these {'was' if len(_fresh_jobs) == 1 else 'were'} matched in the last 48 hours, including **{_newest['job_title']} at {_newest['company']}** — worth applying soon while the posting is active."
+                        )
+                        _context_hint = (
+                            f"The user asked for all their matched jobs (sorted by score). "
+                            f"There are {len(_fresh_jobs)} freshly matched jobs in the list (matched within last 48 hours). "
+                            f"Mention both the top-scoring match AND the recency of fresh matches — suggest they apply to the new ones soon."
+                        )
+                    else:
+                        _top_part = (
+                            f" The top pick is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — it lines up really well with your profile."
+                            if top_job else ""
+                        )
+                        _context_hint = "The user asked for their top matched jobs (sorted by score). Mention the top match and express genuine enthusiasm."
+
                     _intro_prompt = (
                         f"You are RACK's job search assistant. {_context_hint} "
                         f"I found {len(jobs_list)} job{'s' if len(jobs_list) != 1 else ''} for them. "
                         f"{_top_part} "
                         f"Write 1-2 warm, personal sentences to introduce these results. "
                         f"Address them by first name if available: {_display_name or 'not available'}. "
-                        f"{'Emphasize that these are freshly matched — mention recency, not just score.' if _is_recent_query else 'Mention the top match briefly and express genuine enthusiasm.'} "
-                        f"Sound like a recruiter friend, not a bot. "
-                        f"Return ONLY the sentences, no preamble."
+                        f"Sound like a recruiter friend, not a bot. No hyphens or dashes between sentences. "
+                        f"Return ONLY the sentences, no preamble, no quotes."
                     )
                     _intro_res = await client.post(
                         "https://api.openai.com/v1/chat/completions",
