@@ -1100,3 +1100,4 @@ Call exactly ONE routing tool now."""
             return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
 
         return ChatResponse(tool="answer_career_question", intent="CAREER_QUESTION", reply=reply)
+    
