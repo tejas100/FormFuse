@@ -2343,6 +2343,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
         filterLabel: label,
         isFilterResult: true,
         filterJobs: jobs,
+        filterSort: triage.sort_by || 'recent',  // 'recent' | 'score' — drives the sort toggle
         filterJobsVisible: 0,   // cards revealed incrementally after intro types out
         results: null,
         loading: false,
@@ -3621,7 +3622,16 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                   {/* Filter results — auto-match chip queries, paginated 5/page */}
                   {msg.isFilterResult && !msg.error && (() => {
                     const PAGE_SIZE_F   = 5
-                    const allJobs       = msg.filterJobs || []
+                    const rawJobs       = msg.filterJobs || []
+                    const sortMode      = msg.filterSort || 'recent'
+                    // Client-side sort so the toggle re-orders instantly, no refetch.
+                    const _sortJobs = (arr, mode) => [...arr].sort((a, b) => {
+                      if (mode === 'score') return (b.score ?? 0) - (a.score ?? 0)
+                      const ta = new Date(a.posted_at || a.matched_at || 0).getTime()
+                      const tb = new Date(b.posted_at || b.matched_at || 0).getTime()
+                      return tb - ta
+                    })
+                    const allJobs       = _sortJobs(rawJobs, sortMode)
                     const totalJobs     = allJobs.length
                     const fPage         = msg.filterPage || 1
                     const totalPages    = Math.max(1, Math.ceil(Math.min(totalJobs, 20) / PAGE_SIZE_F))
@@ -3632,6 +3642,14 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         m.id === msg.id ? { ...m, filterPage: p, filterJobsVisible: 0 } : m
                       ))
                       startFilterReveal(msg.id, nextPageJobs.length)
+                    }
+                    const setSortMode   = (mode) => {
+                      if (mode === sortMode) return
+                      const resorted = _sortJobs(rawJobs, mode)
+                      setMessages(prev => prev.map(m =>
+                        m.id === msg.id ? { ...m, filterSort: mode, filterPage: 1, filterJobsVisible: 0 } : m
+                      ))
+                      startFilterReveal(msg.id, Math.min(resorted.length, PAGE_SIZE_F))
                     }
                     const visibleCount  = msg.filterJobsVisible ?? pageJobs.length  // fallback: all visible (rehydrated msgs)
                     const isTypingIntro = typewriterMsgId === msg.id
@@ -3664,17 +3682,51 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         {visibleCount > 0 && (
                           <div style={{
                             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                            marginBottom: '12px', padding: '0 2px',
+                            marginBottom: '12px', padding: '0 2px', gap: '10px', flexWrap: 'wrap',
                             animation: 'bubbleIn 0.3s ease both',
                           }}>
                             <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
                               {Math.min(totalJobs, 20)} job{totalJobs !== 1 ? 's' : ''} · page {fPage}/{totalPages}
                             </span>
-                            {totalJobs > 20 && (
-                              <span className="rack-tracking-cta" onClick={() => window.dispatchEvent(new CustomEvent('rack:navigate', { detail: { tab: 'Tracking' } }))}>
-                                ✦ See all {totalJobs} in Tracking →
-                              </span>
-                            )}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              {/* Sort toggle — Newest / Top score */}
+                              {totalJobs > 1 && (
+                                <div style={{
+                                  display: 'inline-flex', alignItems: 'center',
+                                  border: '1px solid var(--border-bright)', borderRadius: '20px',
+                                  padding: '2px', background: 'var(--surface)',
+                                }}>
+                                  {[
+                                    { id: 'recent', label: 'Newest' },
+                                    { id: 'score',  label: 'Top score' },
+                                  ].map(opt => {
+                                    const active = sortMode === opt.id
+                                    return (
+                                      <button
+                                        key={opt.id}
+                                        onClick={() => setSortMode(opt.id)}
+                                        title={opt.id === 'recent' ? 'Sort by most recently posted' : 'Sort by highest match score'}
+                                        style={{
+                                          border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                                          fontSize: '11px', fontWeight: 700, letterSpacing: '0.02em',
+                                          padding: '4px 11px', borderRadius: '16px',
+                                          background: active ? 'var(--accent)' : 'transparent',
+                                          color: active ? '#0a0a0a' : 'var(--text-dim)',
+                                          transition: 'all 0.18s ease',
+                                        }}
+                                      >
+                                        {opt.label}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                              {totalJobs > 20 && (
+                                <span className="rack-tracking-cta" onClick={() => window.dispatchEvent(new CustomEvent('rack:navigate', { detail: { tab: 'Tracking' } }))}>
+                                  ✦ See all {totalJobs} in Tracking →
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
 

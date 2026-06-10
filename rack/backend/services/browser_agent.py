@@ -116,6 +116,162 @@ _GH_SELECT2_FIELDS = {
     "ethnicities":         (_GH_ETHNICITY_MAP,    "ethnicity_eeo"),
 }
 
+# Standard "prefer not to answer" phrasings across ATSes — the universal fallback
+# for any EEO field when the profile says decline or no specific option matches.
+_EEO_DECLINE_CANDIDATES = [
+    "Decline To Self Identify", "Decline to self identify",
+    "I don't wish to answer", "I do not wish to answer",
+    "Prefer not to say", "Prefer not to answer", "Prefer not to disclose",
+    "Decline to answer", "I prefer not to answer", "Don't wish to answer",
+]
+
+
+def _match_eeo_option(options: list[str], candidates: list[str]) -> str | None:
+    """
+    Find the option that best matches any candidate phrase, in priority order:
+      1. exact (normalized, case-insensitive)
+      2. prefix (option starts with candidate, or candidate starts with option)
+      3. substring (candidate in option, or option in candidate)
+    Word-normalized so "No*" / "  No " / "NO" all match "no". Returns the original
+    option string (verbatim, for the click), or None.
+    """
+    if not options:
+        return None
+    def _norm(s: str) -> str:
+        return " ".join((s or "").lower().replace("*", " ").split())
+    norm = [(o, _norm(o)) for o in options]
+    cands = [_norm(c) for c in candidates if c and c.strip()]
+    # 1. exact
+    for c in cands:
+        for o, ol in norm:
+            if ol == c:
+                return o
+    # 2. prefix (guard tiny candidates so "no" only prefix-matches "no..." like "not hispanic")
+    for c in cands:
+        if len(c) < 2:
+            continue
+        for o, ol in norm:
+            if ol.startswith(c) or (len(ol) >= 3 and c.startswith(ol)):
+                return o
+    # 3. substring
+    for c in cands:
+        if len(c) < 3:
+            continue
+        for o, ol in norm:
+            if c in ol or ol in c:
+                return o
+    return None
+
+
+def _eeo_field_kind(label: str, options: list[str]) -> str | None:
+    """
+    Classify an EEO/demographic field from BOTH its label and its option contents.
+    Option contents are authoritative — a form may mislabel the field, but the
+    option set (e.g. Asian/White/Black, or Hispanic/Not Hispanic) is ground truth.
+    Returns: "race" | "hispanic" | "gender" | "veteran" | "disability" | None.
+    """
+    ll = (label or "").lower()
+    blob = " | ".join((o or "").lower() for o in (options or []))
+
+    # Race picker — real racial categories present in the options.
+    race_signals = (
+        "black or african", "native hawaiian", "american indian", "alaska native",
+        "two or more races", "pacific islander",
+    )
+    has_race_options = any(s in blob for s in race_signals) or ("asian" in blob and "white" in blob)
+    label_says_race  = any(k in ll for k in ("ethnicit", "race", "racial"))
+
+    if has_race_options:
+        return "race"
+    # Label mentions race/ethnicity but options are a Hispanic Yes/No set → hispanic.
+    if label_says_race and ("hispanic" in blob or "latino" in blob):
+        return "hispanic"
+    if label_says_race:
+        return "race"
+    if any(k in ll for k in ("hispanic", "latino")) or "hispanic" in blob or "latino" in blob:
+        return "hispanic"
+    if "gender" in ll or ll.strip() in ("sex", "what is your sex"):
+        return "gender"
+    if "veteran" in ll or "military" in ll or "protected veteran" in blob:
+        return "veteran"
+    if "disab" in ll or "disability" in blob:
+        return "disability"
+    return None
+
+
+def _resolve_eeo_combobox(label: str, options: list[str], profile: dict) -> str | None:
+    """
+    Deterministically pick the correct option for an EEO/demographic combobox from
+    the user's profile, matched against the LIVE scraped options. Returns the exact
+    option string to click, or None if this isn't an EEO field (caller falls back
+    to the generic LLM picker).
+
+    This is the single source of truth for EEO answers and runs in every place a
+    combobox is resolved (post-detect loop, fill loop, dynamic post-fill scan).
+    """
+    kind = _eeo_field_kind(label, options)
+    if not kind:
+        return None
+
+    eth = (profile.get("ethnicity_eeo") or "decline")
+    _decline = lambda: _match_eeo_option(options, _EEO_DECLINE_CANDIDATES)
+
+    if kind == "hispanic":
+        if eth == "hispanic":
+            return (_match_eeo_option(options, ["Yes", "Hispanic or Latino", "Hispanic/Latino", "Yes, Hispanic or Latino"])
+                    or _decline())
+        # Not Hispanic — note "No" prefix-matches "Not Hispanic or Latino"
+        return (_match_eeo_option(options, [
+                    "No", "Not Hispanic or Latino", "Not Hispanic/Latino", "Not Hispanic",
+                    "I am not Hispanic or Latino", "No, not Hispanic or Latino",
+                ]) or _decline())
+
+    if kind == "race":
+        disp = _GH_ETHNICITY_MAP.get(eth, "I don't wish to answer")
+        if eth == "decline":
+            return _decline()
+        cands = [disp]
+        if eth in ("south_asian", "east_asian"):
+            # Most ATSes collapse to a single "Asian" bucket.
+            cands += ["Asian", "Asian (Not Hispanic or Latino)", "Asian American", "Asian/Pacific Islander"]
+        elif eth == "black":
+            cands += ["Black or African American", "Black", "African American"]
+        elif eth == "white":
+            cands += ["White", "White (Not Hispanic or Latino)", "Caucasian"]
+        elif eth == "two_or_more":
+            cands += ["Two or More Races", "Two or more races", "Multiracial"]
+        return (_match_eeo_option(options, cands) or _decline())
+
+    if kind == "gender":
+        g = (profile.get("gender_eeo") or "decline")
+        disp = _GH_GENDER_MAP.get(g, "I don't wish to answer")
+        return (_match_eeo_option(options, [disp, g.replace("_", " ").title(), g.title()]) or _decline())
+
+    if kind == "veteran":
+        v = (profile.get("veteran_status") or "decline")
+        disp = _GH_VETERAN_MAP.get(v, "I don't wish to answer")
+        cands = [disp]
+        if v == "not_a_veteran":
+            cands += ["I am not a protected veteran", "Not a protected veteran",
+                      "I am not a veteran", "No military service", "No"]
+        elif v == "protected_veteran":
+            cands += ["I am a protected veteran", "I identify as one or more of the classifications of protected veteran"]
+        return (_match_eeo_option(options, cands) or _decline())
+
+    if kind == "disability":
+        d = (profile.get("disability_status") or "decline")
+        disp = _GH_DISABILITY_MAP.get(d, "I don't wish to answer")
+        cands = [disp]
+        if d == "no":
+            cands += ["No, I do not have a disability and have not had one in the past",
+                      "No, I do not have a disability", "No", "I do not have a disability"]
+        elif d == "yes":
+            cands += ["Yes, I have a disability, or have had one in the past",
+                      "Yes, I have a disability", "Yes"]
+        return (_match_eeo_option(options, cands) or _decline())
+
+    return None
+
 
 async def _fill_gh_url_field(page, label: str, value: str) -> bool:
     """
@@ -348,7 +504,7 @@ def _get_ats_hint(url: str) -> str:
 # -- Fill helpers -------------------------------------------------------------
 
 
-async def _fill_react_combobox(page, selector_hint: str, label: str, value: str) -> bool:
+async def _fill_react_combobox(page, selector_hint: str, label: str, value: str, profile: dict | None = None) -> bool:
     """
     Fill a React combobox (class='select__input') — used by Reddit, newer Greenhouse, etc.
 
@@ -533,6 +689,22 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str)
                 logger.info(f"[react_combobox] Dropdown options for '{label}': {_scraped_options}")
         except Exception as _se:
             logger.debug(f"[react_combobox] Option scrape failed: {_se}")
+
+        # ── Step 3-EEO: deterministic EEO resolution against the REAL options ──
+        # Demographic fields (race, hispanic, gender, veteran, disability) must be
+        # answered from the user's profile, never by the generic LLM picker (which
+        # defaults sensitive questions to "Decline"). Detected from the option set
+        # itself, so it works even when the form's label is vague. This runs before
+        # any generic matching so it always wins for EEO fields.
+        if profile and _scraped_options:
+            try:
+                _eeo_pick = _resolve_eeo_combobox(label, _scraped_options, profile)
+                if _eeo_pick:
+                    logger.info(f"[react_combobox] EEO resolver picked '{_eeo_pick}' for '{label}'")
+                    if await _try_click_option(page, _eeo_pick):
+                        return True
+            except Exception as _eeoe:
+                logger.debug(f"[react_combobox] EEO resolve failed: {_eeoe}")
 
         # ── Step 3-vision: Screenshot fallback when DOM scrape returns empty ──
         # Some dropdowns (especially EEO/demographic ones) render options in a
@@ -1327,29 +1499,15 @@ async def run_apply_agent(
                         continue
                     logger.info(f"[browser_agent] Combobox options for {_sf_label!r}: {_opts}")
 
-                    # ── Profile-aware overrides before LLM ──────────────────────
-                    # Hispanic/Latino is a Yes/No question — derive from ethnicity_eeo
-                    # rather than letting the generic LLM prompt pick "Decline".
-                    _label_lower_resolve = _sf_label.lower()
-                    _picked = None
-                    if any(k in _label_lower_resolve for k in ("hispanic", "latino")):
-                        _eth_raw_r = profile.get("ethnicity_eeo") or "decline"
-                        _target_r = "Yes" if _eth_raw_r == "hispanic" else "No"
-                        # Find exact match in scraped options (case-insensitive)
-                        _picked = next(
-                            (o for o in _opts if o.lower() == _target_r.lower()), None
-                        )
-                        if _picked:
-                            logger.info(f"[browser_agent] Profile override: {_sf_label!r} → {_picked!r}")
-                    elif any(k in _label_lower_resolve for k in ("ethnicit", "race", "racial")):
-                        _eth_raw_r = profile.get("ethnicity_eeo") or "decline"
-                        _eth_disp_r = _GH_ETHNICITY_MAP.get(_eth_raw_r, "I don't wish to answer")
-                        _picked = next(
-                            (o for o in _opts if _eth_disp_r.lower() in o.lower() or o.lower() in _eth_disp_r.lower()),
-                            None,
-                        )
-                        if _picked:
-                            logger.info(f"[browser_agent] Profile override: {_sf_label!r} → {_picked!r}")
+                    # ── Profile-aware EEO resolution before the generic LLM ─────
+                    # Race / hispanic / gender / veteran / disability are answered
+                    # deterministically from the profile, matched against the live
+                    # scraped options. Detected from the options themselves, so a
+                    # vague label (e.g. "Self-Identification") still resolves right.
+                    _picked = _resolve_eeo_combobox(_sf_label, _opts, profile)
+                    if _picked:
+                        logger.info(f"[browser_agent] EEO override: {_sf_label!r} → {_picked!r}")
+                        _sf["_eeo_resolved"] = True
 
                     # Fall back to LLM if no profile override matched
                     if not _picked:
@@ -1426,17 +1584,21 @@ async def run_apply_agent(
                         value = _legal
 
                 # ── Override ethnicity / hispanic-latino fields ────────────────
-                _label_lower_eth = label.lower()
-                if any(k in _label_lower_eth for k in ("hispanic", "latino")):
-                    # This is a Yes/No/Decline question about Hispanic/Latino identity,
-                    # NOT a race picker. Always "No" unless profile says hispanic.
-                    _eth_raw = profile.get("ethnicity_eeo") or "decline"
-                    value = "Yes" if _eth_raw == "hispanic" else "No"
-                elif any(k in _label_lower_eth for k in ("ethnicit", "race", "racial")):
-                    # Race/ethnicity picker — map through display strings for LLM to match
-                    _eth_raw = profile.get("ethnicity_eeo") or "decline"
-                    _eth_display = _GH_ETHNICITY_MAP.get(_eth_raw, "I don't wish to answer")
-                    value = _eth_display
+                # Skip if the post-detect resolve loop already picked the exact
+                # option (matched against live options) — don't clobber it with a
+                # generic value. This only pre-sets an intent for fields that never
+                # went through the resolve loop; _fill_react_combobox re-resolves
+                # EEO fields against the real options anyway (Step 3-EEO).
+                if not field.get("_eeo_resolved"):
+                    _label_lower_eth = label.lower()
+                    if any(k in _label_lower_eth for k in ("hispanic", "latino")):
+                        # Yes/No question about Hispanic/Latino identity, NOT a race picker.
+                        _eth_raw = profile.get("ethnicity_eeo") or "decline"
+                        value = "Yes" if _eth_raw == "hispanic" else "No"
+                    elif any(k in _label_lower_eth for k in ("ethnicit", "race", "racial")):
+                        # Race/ethnicity picker — map to display string; combobox maps to option.
+                        _eth_raw = profile.get("ethnicity_eeo") or "decline"
+                        value = _GH_ETHNICITY_MAP.get(_eth_raw, "I don't wish to answer")
 
                 # Free-text question -- write with LLM (or use fixed answer)
                 if field_type == "textarea" and _is_free_text_question(label):
@@ -1563,7 +1725,7 @@ async def run_apply_agent(
                 # React-Select or similar. Must come BEFORE GH select2 routing
                 # so these don't get misrouted to _fill_gh_select2.
                 if selector in _react_combobox_ids:
-                    ok = await _fill_react_combobox(page, selector, label, value)
+                    ok = await _fill_react_combobox(page, selector, label, value, profile=profile)
                     if ok:
                         filled_count += 1
                         yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
@@ -1899,9 +2061,14 @@ async def run_apply_agent(
                                 logger.warning(f"[browser_agent] Dynamic field {_nf_label!r}: no options scraped")
                                 continue
                             logger.info(f"[browser_agent] Dynamic field {_nf_label!r} options: {_nf_opts}")
-                            _nf_val = await _pick_safe_combobox_answer(_nf_label, _nf_opts, profile)
+                            # EEO fields (e.g. the race picker that appears after the
+                            # Hispanic answer) must be resolved from the profile, not
+                            # the generic safe-picker which would choose "Decline".
+                            _nf_val = _resolve_eeo_combobox(_nf_label, _nf_opts, profile)
+                            if not _nf_val:
+                                _nf_val = await _pick_safe_combobox_answer(_nf_label, _nf_opts, profile)
                             if _nf_val:
-                                ok = await _fill_react_combobox(page, _nf_id, _nf_label, _nf_val)
+                                ok = await _fill_react_combobox(page, _nf_id, _nf_label, _nf_val, profile=profile)
                                 if ok:
                                     filled_count += 1
                                     yield _step("ok", f'Filled "{_nf_label}" -> {_nf_val}')

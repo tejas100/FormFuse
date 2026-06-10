@@ -227,6 +227,7 @@ class ChatResponse(BaseModel):
     filter_label: Optional[str] = None  # human-readable label for the job table header
     apply_jobs: Optional[list] = None   # populated for route_to_apply — jobs to apply to
     resumes: Optional[list] = None      # populated for show_user_resumes
+    sort_by: Optional[str] = None       # "recent" | "score" — initial sort for show_matched_jobs toggle
 
 
 # ── Unified router system prompt ──────────────────────────────────────────────
@@ -489,14 +490,31 @@ async def _tool_get_user_resumes(user_uuid, db) -> dict:
 
 async def _tool_get_matched_jobs(user_uuid, db, min_score: int = 0, limit: int = 5, sort_by: str = "score", hours: int = 0) -> dict:
     from datetime import datetime, timezone, timedelta as _timedelta
+    from sqlalchemy import func as _func
+    from models.orm import ArchivedJobId as _ArchivedJobId
     limit = min(max(1, limit), 20)
     conditions = [_AutoMatchResult.user_id == user_uuid, _AutoMatchResult.score >= min_score]
+
+    # "Newest" = most recently POSTED. matched_at reflects when our pipeline last
+    # scored the job, which can lag the actual posting by weeks (the scorer runs in
+    # batches), so sorting/filtering by matched_at makes genuinely-old postings look
+    # "recent" and silently drops fresh ones. posted_at is the canonical recency
+    # signal used everywhere else (/auto/fresh, daily_slots). Coalesce to matched_at
+    # only as a fallback for the rare row with no posted_at.
+    _recency_col = _func.coalesce(_AutoMatchResult.posted_at, _AutoMatchResult.matched_at)
+
     if hours and hours > 0:
         cutoff = datetime.now(timezone.utc) - _timedelta(hours=hours)
-        conditions.append(_AutoMatchResult.matched_at >= cutoff)
+        conditions.append(_recency_col >= cutoff)
+
+    # Exclude jobs the user already archived/removed — keeps the chat list in sync
+    # with what Tracking shows (Tracking's /auto/fresh applies the same exclusion).
+    _archived_subq = _select(_ArchivedJobId.job_id).where(_ArchivedJobId.user_id == user_uuid)
+    conditions.append(_AutoMatchResult.job_id.notin_(_archived_subq))
+
     query = _select(_AutoMatchResult).where(*conditions)
     query = query.order_by(
-        _AutoMatchResult.matched_at.desc().nullslast()
+        _recency_col.desc().nullslast()
         if sort_by == "recent" or hours
         else _AutoMatchResult.score.desc()
     )
@@ -735,39 +753,16 @@ Call exactly ONE routing tool now."""
             # Fallback: assume JD so match pipeline runs
             return ChatResponse(tool="route_to_rank", intent="JD")
 
-        # ── Deterministic recency override ────────────────────────────────────
-        # Runs BEFORE the log so params are already corrected when logged.
-        # If the user's message contains recency keywords, force sort_by=recent
-        # and set hours regardless of what the router LLM extracted.
-        _RECENCY_KEYWORDS = [
-            'recently matched', 'recent match', 'recent jobs', 'recent ones',
-            'recently', 'latest jobs', 'latest matches', 'latest ones', 'new matches',
-            'new jobs', 'newly matched', "what's new", 'whats new',
-            'past few days', 'past 3 days', 'past three days', 'last 3 days',
-            'past week', 'last week', 'past 7 days',
-            'yesterday', 'today', 'jobs from today', 'jobs from yesterday',
-            'matched today', 'matched yesterday', 'matched recently',
-        ]
-        if selected_tool == "show_matched_jobs" and any(kw in text.lower() for kw in _RECENCY_KEYWORDS):
-            _txt_lower = text.lower()
-            if 'week' in _txt_lower or '7 day' in _txt_lower:
-                _hours = 168
-            elif 'yesterday' in _txt_lower or 'today' in _txt_lower:
-                _hours = 48
-            elif '3 day' in _txt_lower or 'three day' in _txt_lower or 'few day' in _txt_lower:
-                _hours = 72
-            else:
-                _hours = 72  # default "recently" window
-            tool_params = {**tool_params, "sort_by": "recent", "hours": _hours}
+        # ══ Deterministic routing intercepts ══════════════════════════════════
+        # The router LLM is the default, but a few high-stakes routing decisions
+        # are corrected deterministically so identical requests always behave the
+        # same way. These run in priority order BEFORE the log line so params are
+        # already corrected when logged.
+        _txt_lower = text.lower()
 
-        _chat_log.info(f"[chat] Router selected: {selected_tool} | user={user_id} | params={tool_params}")
-
-        # ── Step 2: Execute routing decision ──────────────────────────────────
-
-        # Deterministic apply-intent intercept — runs BEFORE any tool handler.
-        # Any message asking HOW/WHERE to apply always gets the Tracking redirect.
-        # This fires regardless of which tool the router picked, because "how do i apply"
-        # can slip through as route_to_apply, answer_career_question, or show_matched_jobs.
+        # ── Intercept 1: apply intent (highest priority, returns early) ────────
+        # Any message asking HOW/WHERE to apply always gets the Tracking redirect,
+        # regardless of which tool the router picked.
         _apply_kws = [
             'how do i apply', 'how can i apply', 'how should i apply',
             'how to apply', 'where do i apply', 'where can i apply',
@@ -775,8 +770,90 @@ Call exactly ONE routing tool now."""
             'apply for these', 'apply to these', 'how do i apply for',
             'how do you apply', 'how would i apply', 'how do we apply',
         ]
-        if any(kw in text.lower() for kw in _apply_kws):
+        if any(kw in _txt_lower for kw in _apply_kws):
             return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
+
+        # ── Intercept 2: show-matched-jobs ─────────────────────────────────────
+        # The router occasionally misclassifies "show me my recently matched jobs"
+        # as answer_career_question — which renders a plain-text answer instead of
+        # the structured job-table tiles. A job listing must ALWAYS render as tiles
+        # (score, badges, Apply button), never as text, so we correct it here.
+        # Length guard: a pasted JD is long; a "show me my matches" request is short.
+        # This prevents capturing a JD that happens to contain the word "matched".
+        _show_jobs_kws = [
+            'matched jobs', 'my matches', 'jobs that are matched', 'jobs matched',
+            'recently matched', 'newly matched', 'matched recently', 'new matches',
+            'all matched', 'all the jobs', 'my matched', 'jobs you found',
+            'jobs you matched', 'top jobs for me', 'best matches',
+            'show me jobs', 'show jobs', 'show me my matches', 'see my matches',
+            'view my matches', 'list my matches', 'list of all the jobs',
+        ]
+        if (len(text) < 200
+                and selected_tool not in ("route_to_rank", "show_matched_jobs")
+                and any(kw in _txt_lower for kw in _show_jobs_kws)):
+            _chat_log.info(f"[chat] Show-jobs intercept: router picked {selected_tool}, forcing show_matched_jobs")
+            selected_tool = "show_matched_jobs"
+
+        # ── Intercept 3: sort resolution ───────────────────────────────────────
+        # Runs AFTER the show-jobs intercept so a forced selection is caught too.
+        # Default sort for the matched-jobs view is RECENCY (newest first), to match
+        # the Tracking page default. Score sort is opt-in: it only kicks in when the
+        # user explicitly asks for the best/top/highest matches or a score threshold.
+        # Without this, "give me all my matched jobs" sorts by score and surfaces
+        # high-scoring-but-stale postings (e.g. a 60-day-old 88% match) at the top.
+        _RECENCY_KEYWORDS = [
+            'recently matched', 'recent match', 'recent jobs', 'recent ones',
+            'recently', 'latest jobs', 'latest matches', 'latest ones', 'new matches',
+            'new jobs', 'newly matched', "what's new", 'whats new',
+            'newest', 'most recent', 'sort by date', 'sort them', 'fresh',
+            'past few days', 'past 3 days', 'past three days', 'last 3 days',
+            'past week', 'last week', 'past 7 days',
+            'yesterday', 'today', 'jobs from today', 'jobs from yesterday',
+            'matched today', 'matched yesterday', 'matched recently',
+        ]
+        # Explicit score intent — the only thing that overrides the recency default.
+        _SCORE_KEYWORDS = [
+            'top ', 'best ', 'highest', 'strongest', 'top-scoring', 'top scoring',
+            'highest scoring', 'best match', 'best matches', 'best fit', 'best ranked',
+            'strong match', 'high score', 'high-score',
+            '85%', '85 %', '85+', '75%', '75 %', '75+', '90%', '90+', '80%', '80+',
+        ]
+        if selected_tool == "show_matched_jobs":
+            _has_recency = any(kw in _txt_lower for kw in _RECENCY_KEYWORDS)
+            _has_score   = any(kw in _txt_lower for kw in _SCORE_KEYWORDS)
+
+            if _has_recency:
+                # Explicit recency. Apply a hard time-window only when the user gives
+                # a concrete timeframe; a bare "recently/newest" means "all, newest first".
+                if 'week' in _txt_lower or '7 day' in _txt_lower:
+                    _hours = 168
+                elif 'yesterday' in _txt_lower or 'today' in _txt_lower:
+                    _hours = 48
+                elif '3 day' in _txt_lower or 'three day' in _txt_lower or 'few day' in _txt_lower:
+                    _hours = 72
+                else:
+                    _hours = 0
+                tool_params = {**tool_params, "sort_by": "recent", "hours": _hours}
+            elif _has_score:
+                # Explicit "top/best/85%+" → score sort (best matches first).
+                tool_params = {**tool_params, "sort_by": "score", "hours": 0}
+            else:
+                # DEFAULT: newest first, no window — mirrors the Tracking page default.
+                tool_params = {**tool_params, "sort_by": "recent", "hours": 0}
+
+        # ── Honor "all" — bump the limit so the full set is shown (capped at 20) ─
+        # Applies to both score-sorted ("all matched jobs") and recency-sorted
+        # ("all the recently matched jobs") requests. The frontend caps display at
+        # 20 and links out to Tracking for the rest.
+        if selected_tool == "show_matched_jobs" and any(
+            w in _txt_lower for w in ('all ', 'every', 'everything', 'full list', 'complete list')
+        ):
+            tool_params = {**tool_params, "limit": 20}
+
+        _chat_log.info(f"[chat] Router selected: {selected_tool} | user={user_id} | params={tool_params}")
+
+        # ── Step 2: Execute routing decision ──────────────────────────────────
+
 
         # Pure routing — no extra work needed
         if selected_tool == "route_to_rank":
@@ -925,12 +1002,16 @@ Call exactly ONE routing tool now."""
                     pass
 
             if jobs_list:
-                # Build label the same way the old FILTER_RESULT path did
+                # Label reflects what the user asked for, not the internal sort.
+                # (The view defaults to recency under the hood, but a bare "all
+                # matched jobs" should still read "All matched jobs", while an
+                # explicit "recently matched" reads "Newly matched jobs".)
+                _explicit_recency = any(kw in _txt_lower for kw in _RECENCY_KEYWORDS)
                 if hours > 0:
                     label = (f"Jobs matched in the past hour" if hours == 1
                              else f"Jobs matched in the past {hours}h" if hours <= 24
                              else f"Jobs matched in the past {hours // 24} day{'s' if hours // 24 != 1 else ''}")
-                elif sort_by == "recent":
+                elif sort_by == "recent" and _explicit_recency:
                     label = "Newly matched jobs"
                 elif min_score >= 85:
                     label = "85%+ match jobs"
@@ -941,18 +1022,35 @@ Call exactly ONE routing tool now."""
                 else:
                     label = f"Top {limit} matched jobs" if limit < 20 else "All matched jobs"
 
-                # Build a personalized LLM intro message for above the job table
-                _intro_reply = None
+                # Build the intro shown above the job table.
+                # A deterministic fallback is set FIRST so there is ALWAYS an intro
+                # line, even if the LLM enhancement below fails or times out. The LLM
+                # call overwrites it with a warmer, personalized version on success.
                 top_job = jobs_list[0] if jobs_list else None
+                _nm = f" {_display_name}" if _display_name else ""
+                if top_job:
+                    if sort_by == "recent" or hours > 0:
+                        _intro_reply = (
+                            f"Sure{_nm} — here are your matched jobs, newest first. "
+                            f"The most recent is {top_job['job_title']} at {top_job['company']}, a {top_job['score']}% match."
+                        )
+                    else:
+                        _intro_reply = (
+                            f"Sure{_nm} — here are your strongest matches by score. "
+                            f"Top of the list is {top_job['job_title']} at {top_job['company']}, a {top_job['score']}% match."
+                        )
+                else:
+                    _intro_reply = f"Here are your matched jobs{_nm}."
                 try:
                     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-                    _is_recent_query = sort_by == "recent" or hours > 0
 
-                    # Find freshly matched jobs (within last 48h) regardless of sort mode
+                    # Find fresh jobs (posted within last 48h) regardless of sort mode.
+                    # Urgency is about the POSTING being active, so key off posted_at
+                    # (matched_at only as fallback) — same recency signal as the sort.
                     _now = _dt.now(_tz.utc)
                     _fresh_jobs = []
                     for _j in jobs_list:
-                        _mat = _j.get("matched_at")
+                        _mat = _j.get("posted_at") or _j.get("matched_at")
                         if _mat:
                             try:
                                 _mat_dt = _dt.fromisoformat(_mat.replace("Z", "+00:00"))
@@ -962,33 +1060,38 @@ Call exactly ONE routing tool now."""
                                 pass
 
                     _has_fresh = len(_fresh_jobs) > 0
+                    _sorted_recent = sort_by == "recent" or hours > 0
 
-                    if _is_recent_query:
-                        _top_part = (
-                            f" The most recently matched role is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — I'd suggest applying soon while it's fresh."
-                            if top_job else ""
-                        )
-                        _context_hint = (
-                            f"The user asked for their RECENTLY matched jobs (sorted by match date, past {hours}h). "
-                            f"Emphasize recency and urgency — these are fresh matches, they should apply soon."
-                        )
-                    elif _has_fresh:
+                    if _sorted_recent and _has_fresh:
+                        # Newest-first AND there are genuinely fresh postings → urgency is real.
                         _newest = _fresh_jobs[0]
                         _top_part = (
-                            f" The top match is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match). "
-                            f"Heads up — {len(_fresh_jobs)} of these {'was' if len(_fresh_jobs) == 1 else 'were'} matched in the last 48 hours, including **{_newest['job_title']} at {_newest['company']}** — worth applying soon while the posting is active."
+                            f" The newest is **{_newest['job_title']} at {_newest['company']}** ({_newest['score']}% match) — {len(_fresh_jobs)} of these went up in the last 48 hours, so apply soon while they're live."
                         )
+                        _window_phrase = f"from the past {hours}h" if hours and hours > 0 else "newest first"
                         _context_hint = (
-                            f"The user asked for all their matched jobs (sorted by score). "
-                            f"There are {len(_fresh_jobs)} freshly matched jobs in the list (matched within last 48 hours). "
-                            f"Mention both the top-scoring match AND the recency of fresh matches — suggest they apply to the new ones soon."
+                            f"The user is viewing their matched jobs sorted by posting date ({_window_phrase}). "
+                            f"{len(_fresh_jobs)} were posted in the last 48 hours. Emphasize that these are fresh and worth applying to soon."
+                        )
+                    elif _sorted_recent:
+                        # Newest-first but nothing is brand new → present honestly, no fake urgency.
+                        _top_part = (
+                            f" The most recently posted is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match)."
+                            if top_job else ""
+                        )
+                        _window_phrase = f"posted within the past {hours}h" if hours and hours > 0 else "ordered newest first"
+                        _context_hint = (
+                            f"The user is viewing their matched jobs {_window_phrase}. "
+                            f"Nothing was posted in the last 48 hours, so do NOT claim these are brand new or urgent. "
+                            f"Just introduce them warmly as their most recent matches and mention the top one."
                         )
                     else:
+                        # Score-sorted — best matches first.
                         _top_part = (
                             f" The top pick is **{top_job['job_title']} at {top_job['company']}** ({top_job['score']}% match) — it lines up really well with your profile."
                             if top_job else ""
                         )
-                        _context_hint = "The user asked for their top matched jobs (sorted by score). Mention the top match and express genuine enthusiasm."
+                        _context_hint = "The user asked for their best/top matched jobs (sorted by score). Mention the top match and express genuine enthusiasm. Do not imply these are new postings."
 
                     _intro_prompt = (
                         f"You are RACK's job search assistant. {_context_hint} "
@@ -1010,7 +1113,9 @@ Call exactly ONE routing tool now."""
                         },
                         timeout=6.0,
                     )
-                    _intro_reply = _intro_res.json()["choices"][0]["message"]["content"].strip().strip('"')
+                    _llm_intro = _intro_res.json()["choices"][0]["message"]["content"].strip().strip('"').replace("**", "")
+                    if _llm_intro:
+                        _intro_reply = _llm_intro
                 except Exception:
                     pass
 
@@ -1018,6 +1123,7 @@ Call exactly ONE routing tool now."""
                     tool="show_matched_jobs", intent="FILTER_RESULT",
                     jobs=jobs_list, filter_label=label,
                     reply=_intro_reply,  # personal intro shown above the job table
+                    sort_by=("recent" if (sort_by == "recent" or hours > 0) else "score"),
                 )
             # No rows — fall through to career question answering so LLM can explain
             selected_tool = "answer_career_question"
@@ -1100,4 +1206,3 @@ Call exactly ONE routing tool now."""
             return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
 
         return ChatResponse(tool="answer_career_question", intent="CAREER_QUESTION", reply=reply)
-    
