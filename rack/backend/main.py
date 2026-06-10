@@ -7,6 +7,9 @@ Admin dashboard: http://localhost:8000/admin
   - Localhost-only — blocked for any external IP
 """
 
+
+
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -21,6 +24,7 @@ file_handler.setFormatter(logging.Formatter(
 ))
 logging.getLogger().addHandler(file_handler)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 # ── Suppress noisy third-party loggers ───────────────────────────────────────
 # httpx logs every single HTTP request at INFO — kills readability
@@ -37,7 +41,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from routers import resumes, match, tracking, account, auth, chat, admin, apply, voice
+from routers import resumes, match, tracking, account, auth, chat, admin, apply, voice, command_center
+
+
 
 
 @asynccontextmanager
@@ -80,6 +86,7 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(apply.router)
 app.include_router(voice.router)
+app.include_router(command_center.router)  # /api/chat/command-center + /api/chat/history
 
 # ── Admin dashboard — localhost only, HTTP Basic Auth ─────────────────────────
 # Accessible at: http://localhost:8000/admin

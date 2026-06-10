@@ -627,3 +627,47 @@ async def speak(
         media_type="audio/mpeg",
         headers={"Cache-Control": "no-cache"},
     )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /api/voice/transcribe — standalone Whisper STT for the chat mic button
+#
+# Unlike /turn (onboarding: STT → conversation LLM → TTS), this is pure
+# speech-to-text: audio blob in, transcript out. No auth required — anon
+# users can dictate a JD too (progressive-auth philosophy). Whisper cost
+# is ~$0.006/min; add rate limiting here alongside the apply endpoint
+# limits before public launch.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MAX_TRANSCRIBE_BYTES = 25 * 1024 * 1024  # Whisper API hard limit
+
+
+@router.post("/api/voice/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    if len(audio_bytes) > _MAX_TRANSCRIBE_BYTES:
+        raise HTTPException(status_code=413, detail="Audio too large (max 25MB)")
+
+    filename = file.filename or "voice.webm"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            whisper_res = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                files={"file": (filename, audio_bytes, file.content_type or "audio/webm")},
+                data={"model": "whisper-1", "language": "en"},
+            )
+    except httpx.HTTPError as e:
+        logger.error(f"[voice/transcribe] Whisper request failed: {e}")
+        raise HTTPException(status_code=502, detail="Transcription service unavailable")
+
+    if whisper_res.status_code != 200:
+        logger.error(f"[voice/transcribe] Whisper error {whisper_res.status_code}: {whisper_res.text[:200]}")
+        raise HTTPException(status_code=502, detail="Transcription failed")
+
+    return {"text": whisper_res.json().get("text", "").strip()}

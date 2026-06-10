@@ -1347,6 +1347,227 @@ export default function Home() {
   const chatScrollRef  = useRef(null)
   const textareaRef    = useRef(null)
 
+  // ── Voice input — mic button in the chat input bar ──────────────
+  // Flow: tap 🎙 → record with live waveform → two ways to finish:
+  //   ↑ (send)  → stop → Whisper STT → auto-submit through handleMatch
+  //   ⏹ (stop)  → stop → Whisper STT → text pasted into the textarea
+  //   ✕ (cancel)→ discard recording entirely
+  // micState: null | 'recording' | 'transcribing'
+  const [micState, setMicState] = useState(null)
+  const [micError, setMicError] = useState(null)
+  const [micSeconds, setMicSeconds] = useState(0)
+  const mediaRecorderRef    = useRef(null)
+  const micChunksRef        = useRef([])
+  const micStreamRef        = useRef(null)
+  const micAudioCtxRef      = useRef(null)
+  const micAnalyserRef      = useRef(null)
+  const micRafRef           = useRef(null)
+  const micCanvasRef        = useRef(null)
+  const micHistoryRef       = useRef([])    // committed amplitude bars
+  const micLastPushRef      = useRef(0)     // timestamp of last committed bar
+  const micPeakRef          = useRef(0)     // loudest frame since last commit
+  const micSubmitOnStopRef  = useRef(false)  // true → auto-submit after STT
+  const micDiscardRef       = useRef(false)  // true → throw recording away
+  const pendingVoiceSubmitRef = useRef(false)
+
+  // ChatGPT-style waveform. Two clocks, deliberately decoupled:
+  //   • RAF (60fps) — samples loudness + redraws, so motion is buttery
+  //   • BAR_INTERVAL (90ms) — commits ONE new bar, so the waveform marches
+  //     at a calm ~11 bars/sec instead of a frantic 60/sec
+  // Layout: dotted baseline spans the full width; bars grow left→right from
+  // the start of speech, and only begin scrolling once they fill the width.
+  // CRITICAL: the loop must ALWAYS reschedule itself even when the canvas
+  // ref is momentarily null (first frames before React commits the UI).
+  const _MIC_BAR_INTERVAL = 90  // ms per bar — the march speed
+
+  const _drawWaveform = () => {
+    const canvas   = micCanvasRef.current
+    const analyser = micAnalyserRef.current
+    if (canvas && analyser) {
+      const ctx  = canvas.getContext('2d')
+      const data = new Uint8Array(analyser.fftSize)
+      analyser.getByteTimeDomainData(data)
+
+      // RMS loudness of this frame — track the peak between bar commits
+      let sum = 0
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128
+        sum += v * v
+      }
+      const rms = Math.sqrt(sum / data.length)
+      micPeakRef.current = Math.max(micPeakRef.current, Math.min(1, rms * 3.5))
+
+      // Commit one bar per interval, lightly smoothed against its neighbor
+      const now = performance.now()
+      if (now - micLastPushRef.current >= _MIC_BAR_INTERVAL) {
+        const hist = micHistoryRef.current
+        const prev = hist.length ? hist[hist.length - 1] : 0
+        hist.push(prev * 0.3 + micPeakRef.current * 0.7)
+        micPeakRef.current = 0
+        micLastPushRef.current = now
+      }
+
+      // ── Draw (CSS pixels — context pre-scaled for devicePixelRatio) ──
+      const W = canvas.offsetWidth, H = canvas.offsetHeight
+      const BAR_W = 2.5, GAP = 3, STEP = BAR_W + GAP
+      const maxBars = Math.max(8, Math.floor(W / STEP))
+      ctx.clearRect(0, 0, W, H)
+
+      const hist    = micHistoryRef.current
+      const visible = hist.slice(-maxBars)
+      const scrolled = hist.length > maxBars
+
+      // Bars: grow from the left; pin to the right edge once scrolling
+      const startX = scrolled ? W - visible.length * STEP : 0
+      ctx.fillStyle = 'rgba(232,255,107,0.75)'
+      for (let i = 0; i < visible.length; i++) {
+        const h = Math.max(3, visible[i] * H * 0.92)
+        const x = startX + i * STEP
+        const y = (H - h) / 2
+        if (ctx.roundRect) {
+          ctx.beginPath()
+          ctx.roundRect(x, y, BAR_W, h, 1.25)
+          ctx.fill()
+        } else {
+          ctx.fillRect(x, y, BAR_W, h)
+        }
+      }
+
+      // Dotted baseline fills the space bars haven't reached yet
+      ctx.fillStyle = 'rgba(255,255,255,0.22)'
+      const dotsFrom = scrolled ? 0 : visible.length * STEP
+      for (let x = dotsFrom; x < (scrolled ? 0 : W); x += STEP) {
+        ctx.beginPath()
+        ctx.arc(x + BAR_W / 2, H / 2, 1.1, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+    micRafRef.current = requestAnimationFrame(_drawWaveform)
+  }
+
+  // Drive the waveform + timer from React state, not from startRecording.
+  // This guarantees the canvas exists (the effect runs AFTER the recording
+  // UI commits), sizes it for retina, and tears everything down cleanly.
+  useEffect(() => {
+    if (micState !== 'recording') return
+    const canvas = micCanvasRef.current
+    if (canvas) {
+      const dpr = window.devicePixelRatio || 1
+      canvas.width  = canvas.offsetWidth * dpr
+      canvas.height = canvas.offsetHeight * dpr
+      canvas.getContext('2d').scale(dpr, dpr)
+    }
+    micHistoryRef.current = []
+    micPeakRef.current = 0
+    micLastPushRef.current = performance.now()
+    setMicSeconds(0)
+    const timer = setInterval(() => setMicSeconds(s => s + 1), 1000)
+    micRafRef.current = requestAnimationFrame(_drawWaveform)
+    return () => {
+      clearInterval(timer)
+      cancelAnimationFrame(micRafRef.current)
+    }
+  }, [micState]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const _cleanupMicHardware = () => {
+    cancelAnimationFrame(micRafRef.current)
+    try { micStreamRef.current?.getTracks().forEach(t => t.stop()) } catch { /* already stopped */ }
+    try { micAudioCtxRef.current?.close() } catch { /* already closed */ }
+    micStreamRef.current = null
+    micAudioCtxRef.current = null
+    micAnalyserRef.current = null
+  }
+
+  const transcribeBlob = async (blob, submitAfter) => {
+    setMicState('transcribing')
+    try {
+      const fd = new FormData()
+      const ext = (blob.type || '').includes('mp4') ? 'mp4' : 'webm'
+      fd.append('file', blob, `voice.${ext}`)
+      const headers = isAuthed ? await getAuthHeaders() : {}
+      const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+        method: 'POST',
+        headers,            // FormData sets its own Content-Type boundary — don't override
+        body: fd,
+      })
+      if (!res.ok) throw new Error(`STT ${res.status}`)
+      const data = await res.json()
+      const text = (data.text || '').trim()
+      if (text) {
+        if (submitAfter) pendingVoiceSubmitRef.current = true
+        setJd(prev => (prev.trim() ? prev.trimEnd() + ' ' + text : text))
+        if (!submitAfter) setTimeout(() => textareaRef.current?.focus(), 50)
+      }
+    } catch {
+      setMicError('Transcription failed — try again')
+      setTimeout(() => setMicError(null), 3500)
+    } finally {
+      setMicState(null)
+    }
+  }
+
+  const startRecording = async () => {
+    setMicError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      micStreamRef.current = stream
+      const AudioCtx = window.AudioContext || window.webkitAudioContext
+      const audioCtx = new AudioCtx()
+      micAudioCtxRef.current = audioCtx
+      const source   = audioCtx.createMediaStreamSource(stream)
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      micAnalyserRef.current = analyser
+
+      // Safari records audio/mp4; Chrome/Firefox prefer webm+opus. Whisper accepts both.
+      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+        .find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || ''
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+      micChunksRef.current = []
+      micSubmitOnStopRef.current = false
+      micDiscardRef.current = false
+      rec.ondataavailable = e => { if (e.data.size > 0) micChunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        const blob = new Blob(micChunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        _cleanupMicHardware()
+        if (micDiscardRef.current) { micDiscardRef.current = false; setMicState(null); return }
+        if (blob.size < 1000) { setMicState(null); return }  // accidental tap — nothing recorded
+        transcribeBlob(blob, micSubmitOnStopRef.current)
+      }
+      mediaRecorderRef.current = rec
+      rec.start()
+      setMicState('recording')  // the micState effect sizes the canvas + starts the draw loop
+    } catch {
+      _cleanupMicHardware()
+      setMicError('Microphone access denied — check browser permissions')
+      setTimeout(() => setMicError(null), 3500)
+    }
+  }
+
+  const stopRecording = (submitAfter) => {
+    micSubmitOnStopRef.current = !!submitAfter
+    try { mediaRecorderRef.current?.stop() } catch { setMicState(null) }
+  }
+
+  const cancelRecording = () => {
+    micDiscardRef.current = true
+    try { mediaRecorderRef.current?.stop() } catch { setMicState(null) }
+  }
+
+  // Voice auto-submit: handleMatch reads `jd` from its render closure, so we
+  // can't call it in the same tick as setJd. This effect fires on the render
+  // AFTER the transcript lands in state — handleMatch sees the new value.
+  useEffect(() => {
+    if (pendingVoiceSubmitRef.current && jd.trim()) {
+      pendingVoiceSubmitRef.current = false
+      handleMatch()
+    }
+  }, [jd]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Release the mic if the component unmounts mid-recording
+  useEffect(() => () => { micDiscardRef.current = true; try { mediaRecorderRef.current?.stop() } catch { /* noop */ } _cleanupMicHardware() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Creature mood — derived from app state ──────────────────────
   const [creatureMood, setCreatureMood] = useState('idle')
   const [startleCount, setStartleCount] = useState(0)
@@ -1594,6 +1815,79 @@ export default function Home() {
     }, 300)
     return () => clearTimeout(t)
   }, [messages, _chatHistoryKey])
+
+  // ── Durable chat memory — Supabase mirror of the local history ──
+  // localStorage stays the fast cache; the server copy survives cache
+  // clears and follows the user across devices. Sync model: full-replace,
+  // last-write-wins — identical semantics to the localStorage write above.
+  const serverHydratedRef = useRef(false)   // hydration attempted this session
+  const serverSyncRef     = useRef(null)    // debounce timer for PUT
+  const lastSyncedJsonRef = useRef(null)    // skip no-op PUTs
+
+  // Hydrate from server once per session, only when local history is empty.
+  // Local wins when present — it's the same device and strictly fresher.
+  useEffect(() => {
+    if (!isAuthed || !user?.id || serverHydratedRef.current) return
+    serverHydratedRef.current = true
+    ;(async () => {
+      try {
+        const headers = await getAuthHeaders()
+        const res = await fetch(`${API_BASE}/api/chat/history`, { headers })
+        if (!res.ok) return
+        const data = await res.json()
+        const serverMsgs = (data.messages || []).filter(m =>
+          m && !m.isThinkingPlaceholder && !m.isUploadStatus && !m.loading
+        ).map(m => ({ ...m, loading: false }))
+        if (serverMsgs.length === 0) return
+        // Only restore into an empty thread — never clobber live local state.
+        setMessages(prev => (prev.length === 0 ? serverMsgs : prev))
+        lastSyncedJsonRef.current = JSON.stringify(serverMsgs.slice(-40))
+      } catch { /* offline or cold backend — local cache still works */ }
+    })()
+  }, [isAuthed, user?.id])
+
+  // Push completed messages up to the server, debounced. Fire-and-forget.
+  useEffect(() => {
+    if (!isAuthed || !user?.id) return
+    clearTimeout(serverSyncRef.current)
+    serverSyncRef.current = setTimeout(async () => {
+      try {
+        const toStore = messages.filter(m =>
+          !m.isThinkingPlaceholder && !m.isUploadStatus && !m.loading
+        ).slice(-40)
+        if (toStore.length === 0) return
+        const json = JSON.stringify(toStore)
+        if (json === lastSyncedJsonRef.current) return  // nothing changed
+        const headers = await getAuthHeaders()
+        const res = await fetch(`${API_BASE}/api/chat/history`, {
+          method: 'PUT',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: toStore }),
+        })
+        if (res.ok) lastSyncedJsonRef.current = json
+      } catch { /* fail silently — next message change retries */ }
+    }, 2500)
+    return () => clearTimeout(serverSyncRef.current)
+  }, [messages, isAuthed, user?.id])
+
+  // ── Command Center — "what happened while you were gone" ────────
+  // Fetched once per session for auth'd users. Drives the status strip
+  // in the greeting state. Backend advances last_seen_at on each call,
+  // so new_matches is always relative to the PREVIOUS visit.
+  const [commandCenter, setCommandCenter] = useState(null)
+  const ccFetchedRef = useRef(false)
+
+  useEffect(() => {
+    if (!isAuthed || !user?.id || onboardingStep !== 'done' || ccFetchedRef.current) return
+    ccFetchedRef.current = true
+    ;(async () => {
+      try {
+        const headers = await getAuthHeaders()
+        const res = await fetch(`${API_BASE}/api/chat/command-center`, { headers })
+        if (res.ok) setCommandCenter(await res.json())
+      } catch { /* non-critical — greeting falls back to static chips */ }
+    })()
+  }, [isAuthed, user?.id, onboardingStep])
 
   // ── Auto-scroll chat area to bottom when new messages arrive ──
   // typewriterText included so scroll tracks content growing during typewriter animation
@@ -3105,7 +3399,18 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
         {/* "new chat" pill — floats top-right inside scroll area when a convo is active */}
         {hasConversation && !steelViewer && (
           <button
-            onClick={() => { setMessages([]); setJd(''); setExpandedIds(new Set()); localStorage.removeItem(_chatHistoryKey) }}
+            onClick={() => {
+              setMessages([]); setJd(''); setExpandedIds(new Set())
+              localStorage.removeItem(_chatHistoryKey)
+              lastSyncedJsonRef.current = null
+              if (isAuthed) {
+                // Wipe the durable copy too — otherwise hydration resurrects
+                // the thread on next reload. Fire-and-forget.
+                getAuthHeaders()
+                  .then(headers => fetch(`${API_BASE}/api/chat/history`, { method: 'DELETE', headers }))
+                  .catch(() => {})
+              }
+            }}
             style={{
               position: 'sticky', top: '0px', alignSelf: 'flex-end',
               fontSize: '11px', padding: '5px 12px', borderRadius: '20px',
@@ -3212,7 +3517,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
             <div className="rack-greeting-hero">
               <div className="rack-greeting-eyebrow">
                 <span style={{width:4,height:4,borderRadius:'50%',background:'var(--accent)',display:'inline-block',boxShadow:'0 0 6px var(--accent)'}}/>
-                scanning 152 boards
+                {isAuthed && commandCenter?.display_name
+                  ? `welcome back, ${commandCenter.display_name.split(' ')[0].toLowerCase()}`
+                  : 'scanning 152 boards'}
               </div>
               <h1 className="rack-greeting-title">
                 Drop the JD.<br />
@@ -3224,6 +3531,80 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                 Paste any job description below and instantly rank your resume versions.
               </p>
             </div>
+
+            {/* ── Command Center strip — live status since last visit ──
+                Only for auth'd users with data. Each stat is a tappable
+                action that fires the existing filter handlers. Falls back
+                silently to the plain hero if the fetch failed. */}
+            {onboardingStep === 'done' && isAuthed && commandCenter && commandCenter.total_matches > 0 && (
+              <div style={{
+                display: 'flex', flexWrap: 'wrap', justifyContent: 'center',
+                gap: 8, margin: '4px 0 14px',
+                animation: 'greetingFade 0.5s cubic-bezier(0.22,1,0.36,1) 0.12s both',
+              }}>
+                {commandCenter.new_matches > 0 && (
+                  <button
+                    onClick={() => handleAutoMatchFilter('filter:new')}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                      padding: '8px 14px', borderRadius: 20, cursor: 'pointer',
+                      background: 'rgba(232,255,107,0.08)',
+                      border: '1px solid rgba(232,255,107,0.3)',
+                      color: 'var(--accent)', fontSize: 13, fontWeight: 600,
+                    }}
+                  >
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)', animation: 'pulse 1.6s ease-in-out infinite' }} />
+                    {commandCenter.new_matches} new match{commandCenter.new_matches !== 1 ? 'es' : ''} since your last visit
+                  </button>
+                )}
+                {commandCenter.fresh_jobs > 0 && (
+                  <button
+                    onClick={() => handleAutoMatchFilter('filter:new')}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                      padding: '8px 14px', borderRadius: 20, cursor: 'pointer',
+                      background: 'rgba(251,146,60,0.07)',
+                      border: '1px solid rgba(251,146,60,0.3)',
+                      color: '#fdba74', fontSize: 13, fontWeight: 600,
+                    }}
+                  >
+                    {commandCenter.fresh_jobs} posted in the last 48h — apply while they're live
+                  </button>
+                )}
+                {commandCenter.top_match && (
+                  <button
+                    onClick={() => handleAutoMatchFilter('filter:all')}
+                    title="View all matched jobs"
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                      padding: '8px 14px', borderRadius: 20, cursor: 'pointer',
+                      background: 'rgba(255,255,255,0.03)',
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      color: 'var(--text-mid)', fontSize: 13, fontWeight: 500,
+                    }}
+                  >
+                    Top: <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+                      {commandCenter.top_match.job_title} · {commandCenter.top_match.company}
+                    </span>
+                    <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{commandCenter.top_match.score}%</span>
+                  </button>
+                )}
+                {commandCenter.profile && commandCenter.profile.missing.length > 0 && (
+                  <div
+                    title={`Missing: ${commandCenter.profile.missing.join(', ')} — complete it in the Account tab so auto-apply can fill every form field.`}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                      padding: '8px 14px', borderRadius: 20,
+                      background: 'rgba(255,255,255,0.02)',
+                      border: '1px dashed rgba(255,255,255,0.15)',
+                      color: 'var(--text-dim)', fontSize: 13, fontWeight: 500,
+                    }}
+                  >
+                    Profile {commandCenter.profile.percent}% — missing {commandCenter.profile.missing[0]}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Suggestion chips — context-aware; hidden during onboarding */}
             {onboardingStep === 'done' && (
@@ -4562,6 +4943,44 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
 
           {/* Creature walks along the top edge of this box */}
           <RackCreature mood={creatureMood} startle={startleCount} forceBubble={creatureBubble} />
+
+          {/* ── While recording, the textarea ITSELF becomes the waveform ──
+              Same flex slot, same dimensions — it physically cannot misalign
+              with the input pill. ChatGPT pattern: red dot + timer + waveform
+              filling the full input width, ✕ to discard at the right edge. */}
+          {micState === 'recording' ? (
+            <div style={{
+              flex: 1, minWidth: 0, alignSelf: 'stretch',
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '4px 6px',
+              animation: 'bubbleIn 0.2s ease both',
+            }}>
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%', background: '#f87171',
+                boxShadow: '0 0 10px rgba(248,113,113,0.9)', flexShrink: 0,
+                animation: 'pulse 1.4s ease-in-out infinite',
+              }} />
+              <span style={{
+                fontVariantNumeric: 'tabular-nums', fontSize: 13, fontWeight: 600,
+                color: 'var(--text-mid)', flexShrink: 0, minWidth: 32,
+              }}>
+                {Math.floor(micSeconds / 60)}:{String(micSeconds % 60).padStart(2, '0')}
+              </span>
+              <canvas
+                ref={micCanvasRef}
+                style={{ flex: 1, height: 34, display: 'block', minWidth: 0 }}
+              />
+              <button
+                onClick={cancelRecording}
+                title="Discard recording"
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--text-dim)', fontSize: 14, padding: '4px',
+                  lineHeight: 1, flexShrink: 0,
+                }}
+              >✕</button>
+            </div>
+          ) : (
           <textarea
             ref={textareaRef}
             className="rack-chat-textarea"
@@ -4591,24 +5010,77 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               }
             }}
           />
+          )}
 
           <div className="rack-chat-input-actions">
-            {/* Attach button — all users, capped at effectiveCap */}
+            {/* Mic button — idle: start recording · recording: stop → paste as text · transcribing: spinner */}
             <button
               className="rack-chat-attach-btn"
-              onClick={() => { if (!atCap) fileInputRef.current?.click() }}
-              disabled={atCap}
-              title={atCap ? `${effectiveCap}-resume limit reached` : 'Attach resume(s)'}
+              onClick={() => {
+                if (micState === 'recording') stopRecording(false)
+                else if (!micState) startRecording()
+              }}
+              disabled={micState === 'transcribing' || loading || tailorLoading}
+              title={
+                micState === 'recording'    ? 'Stop — insert transcript into the input' :
+                micState === 'transcribing' ? 'Transcribing…' :
+                'Dictate with your voice'
+              }
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                ...(micState === 'recording' ? { color: '#f87171' } : {}),
+              }}
             >
-              📎
+              {micState === 'transcribing'
+                ? <div style={{ width: 12, height: 12, border: '2px solid rgba(232,255,107,0.3)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                : micState === 'recording'
+                ? (
+                  // Stop — filled rounded square, inherits the red recording color
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="5" y="5" width="14" height="14" rx="2.5" />
+                  </svg>
+                )
+                : (
+                  // Microphone — monochrome stroke, inherits button color + hover
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="9" y="2.5" width="6" height="11" rx="3" />
+                    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" />
+                    <line x1="12" y1="18" x2="12" y2="21.5" />
+                  </svg>
+                )
+              }
             </button>
 
-            {/* Send button */}
+            {/* Attach button — all users, capped at effectiveCap; hidden while recording to save row width */}
+            {micState !== 'recording' && (
+              <button
+                className="rack-chat-attach-btn"
+                onClick={() => { if (!atCap) fileInputRef.current?.click() }}
+                disabled={atCap}
+                title={atCap ? `${effectiveCap}-resume limit reached` : 'Attach resume(s)'}
+              >
+                📎
+              </button>
+            )}
+
+            {/* Send button — during recording it becomes "stop, transcribe & send" */}
             <button
               className="rack-chat-send-btn"
-              onClick={handleMatch}
-              disabled={!jd.trim() || loading || tailorLoading || onboardingLoading}
-              title={activeMode === 'tailor' ? 'Tailor resume (⌘+Enter)' : activeMode === 'rank' ? 'Rank resumes (⌘+Enter)' : 'Match (⌘+Enter)'}
+              onClick={() => {
+                if (micState === 'recording') stopRecording(true)
+                else handleMatch()
+              }}
+              disabled={
+                micState === 'recording'
+                  ? false  // always sendable while recording — the voice IS the input
+                  : (!jd.trim() || loading || tailorLoading || onboardingLoading || micState === 'transcribing')
+              }
+              title={
+                micState === 'recording' ? 'Stop recording & send' :
+                activeMode === 'tailor'  ? 'Tailor resume (⌘+Enter)' :
+                activeMode === 'rank'    ? 'Rank resumes (⌘+Enter)' : 'Match (⌘+Enter)'
+              }
             >
               {loading
                 ? <div style={{ width:14, height:14, border:'2px solid rgba(0,0,0,0.25)', borderTopColor:'var(--accent-contrast)', borderRadius:'50%', animation:'spin 0.7s linear infinite' }} />
@@ -4620,13 +5092,22 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
 
         {/* Input meta: warnings + char count */}
         <div className="rack-input-meta">
-          {capWarning && (
+          {micError && (
+            <span style={{ color:'#f87171' }}>⚠ {micError}</span>
+          )}
+          {!micError && micState === 'recording' && (
+            <span style={{ color:'var(--accent)' }}>Listening… tap ↑ to send, ⏹ to insert as text, ✕ to discard</span>
+          )}
+          {!micError && micState === 'transcribing' && (
+            <span style={{ color:'var(--text-mid)' }}>Transcribing your voice…</span>
+          )}
+          {!micError && !micState && capWarning && (
             <span style={{ color:'#fbbf24' }}>⚠ {droppedCount} file{droppedCount !== 1 ? 's' : ''} dropped — {effectiveCap}-resume limit</span>
           )}
-          {resumeWarning === true && (
+          {!micError && !micState && resumeWarning === true && (
             <span style={{ color:'#fbbf24' }}>⚠ Attach at least one resume to match</span>
           )}
-          {!capWarning && resumeWarning !== true && (
+          {!micError && !micState && !capWarning && resumeWarning !== true && (
             <span>
               {atCap
                 ? `${effectiveCap}/${effectiveCap} · ${isAuthed ? 'manage in Resumes tab' : 'sign in to upload more'}`

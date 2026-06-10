@@ -59,6 +59,14 @@ class User(Base):
     )
     preferences: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
+    # ── Command Center ──────────────────────────────────────────────────────────
+    # last_seen_at: advanced by GET /api/chat/command-center on each Home load.
+    # "New matches since your last visit" diffs matched_at against the PREVIOUS
+    # value of this column. NULL = user has never loaded the command center.
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ── Admin / access control ─────────────────────────────────────────────────
     # role:          'free' | 'pro' | 'admin'
     #                admin  → full access + can see /admin dashboard
@@ -90,6 +98,9 @@ class User(Base):
     )
     daily_slot_logs: Mapped[list["DailySlotLog"]] = relationship(
         "DailySlotLog", back_populates="user", cascade="all, delete-orphan"
+    )
+    chat_messages: Mapped[list["ChatMessage"]] = relationship(
+        "ChatMessage", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -284,3 +295,32 @@ class DailySlotLog(Base):
     )
 
     user: Mapped["User"] = relationship("User", back_populates="daily_slot_logs")
+
+# ── Chat Messages ──────────────────────────────────────────────────────────────
+# Durable chat history — one row per persisted Home.jsx message payload.
+#
+# Sync model: full-replace (last-write-wins). The frontend mirrors its capped
+# localStorage message list via PUT /api/chat/history, which deletes all rows
+# for the user and re-inserts in order. `position` defines ordering; row ids
+# are ephemeral and never referenced by the client.
+#
+# payload: the exact message object Home.jsx renders (rank results, filter
+# tables, apply results, etc.) — stored as-is so rehydration is a straight
+# setMessages(payloads) with no transformation layer to drift.
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="chat_messages")
