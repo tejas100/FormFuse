@@ -380,3 +380,285 @@ async def confirm_review(
         _pending_reviews.pop(session_id, None)
         logger.info(f"[apply/confirm] Review cancelled — session_id={session_id}")
         return {"ok": True, "message": "Application cancelled."}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BATCH AUTO-APPLY — Phase 1 (Fill & Capture) + Phase 2 (Replay & Submit)
+#
+# POST /api/apply/batch              — create a batch from matched jobs, start Phase 1
+# GET  /api/apply/review             — jobs awaiting review (drafts + signed screenshots)
+# GET  /api/apply/batch/{batch_id}   — batch progress summary
+# POST /api/apply/jobs/{id}/decision — approve (with optional edits) / skip / retry
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from typing import List
+
+
+async def _require_user(credentials, db):
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        return await get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+
+
+class BatchCreateRequest(BaseModel):
+    job_ids:   Optional[List[str]] = None   # auto_match_results.job_id values; None = recent matches
+    resume_id: Optional[str]       = None
+    limit:     int                 = 7      # cap when auto-selecting
+
+
+def _job_url_from_data(jd: dict) -> str:
+    """job_data JSONB key names vary by source — probe the known ones."""
+    return (
+        jd.get("absolute_url") or jd.get("url") or jd.get("job_url")
+        or jd.get("apply_url") or jd.get("applyUrl") or ""
+    )
+
+
+@router.post("/batch")
+async def create_apply_batch(
+    body:        BatchCreateRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:          AsyncSession = Depends(get_db),
+):
+    """
+    Create an apply batch and start Phase 1 (autonomous headless fill & capture).
+    Nothing is ever submitted in Phase 1 — every job stops at awaiting_review.
+    """
+    current_user = await _require_user(credentials, db)
+
+    from models.orm import AutoMatchResult
+    from models.orm import ApplyBatch, ApplyJob
+
+    limit = max(1, min(body.limit or 7, 10))
+
+    # Resolve target jobs
+    q = select(AutoMatchResult).where(
+        AutoMatchResult.user_id == current_user.id,
+        AutoMatchResult.applied.isnot(True),
+    )
+    if body.job_ids:
+        q = q.where(AutoMatchResult.job_id.in_(body.job_ids))
+    else:
+        q = q.order_by(AutoMatchResult.matched_at.desc()).limit(limit)
+
+    rows = list((await db.execute(q)).scalars())
+    if not rows:
+        raise HTTPException(status_code=404, detail="No matched, un-applied jobs found to apply to.")
+
+    # Exclude jobs already in an active batch pipeline
+    active = list((await db.execute(
+        select(ApplyJob.job_id).where(
+            ApplyJob.user_id == current_user.id,
+            ApplyJob.status.in_(["queued", "filling", "awaiting_review", "approved", "replaying"]),
+        )
+    )).scalars())
+    active_set = {a for a in active if a}
+    rows = [r for r in rows if r.job_id not in active_set]
+    # Hard cap regardless of selection path. Auto-select is already bounded by
+    # `limit`, but explicit job_ids could otherwise create an unbounded batch
+    # ("apply to all of them" on a 20-row table → 20 sequential headless fills).
+    rows = rows[:10]
+    if not rows:
+        raise HTTPException(status_code=409, detail="All selected jobs are already in an active apply batch.")
+
+    batch = ApplyBatch(
+        user_id   = current_user.id,
+        status    = "pending",
+        job_count = len(rows),
+        resume_id = _uuid.UUID(body.resume_id) if body.resume_id else None,
+    )
+    db.add(batch)
+    await db.flush()
+
+    skipped_no_url = 0
+    created = []
+    for r in rows:
+        jd  = r.job_data or {}
+        url = _job_url_from_data(jd)
+        if not url:
+            skipped_no_url += 1
+            continue
+        aj = ApplyJob(
+            batch_id  = batch.id,
+            user_id   = current_user.id,
+            job_id    = r.job_id,
+            job_url   = url,
+            job_title = jd.get("title") or jd.get("job_title") or "",
+            company   = jd.get("company") or jd.get("company_name") or "",
+            status    = "queued",
+        )
+        db.add(aj)
+        created.append(aj)
+
+    if not created:
+        raise HTTPException(status_code=422, detail="Selected jobs have no application URL in job_data.")
+    batch.job_count = len(created)
+    await db.commit()
+
+    # Kick Phase 1 in the background — survives this request ending
+    from services.apply_worker import process_batch
+    asyncio.create_task(process_batch(batch.id))
+
+    logger.info(f"[apply/batch] user={current_user.email} batch={batch.id} jobs={len(created)}")
+    return {
+        "ok":         True,
+        "batch_id":   str(batch.id),
+        "job_count":  len(created),
+        "skipped_no_url": skipped_no_url,
+        "message":    f"Rack is filling {len(created)} application(s) in the background. "
+                      f"You'll get an email when they're ready for review.",
+    }
+
+
+@router.get("/batch/{batch_id}")
+async def get_batch_status(
+    batch_id:    str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:          AsyncSession = Depends(get_db),
+):
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyBatch, ApplyJob
+
+    bres = await db.execute(select(ApplyBatch).where(
+        ApplyBatch.id == _uuid.UUID(batch_id), ApplyBatch.user_id == current_user.id))
+    batch = bres.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    jrows = list((await db.execute(
+        select(ApplyJob).where(ApplyJob.batch_id == batch.id).order_by(ApplyJob.created_at.asc())
+    )).scalars())
+
+    return {
+        "batch_id":  str(batch.id),
+        "status":    batch.status,
+        "job_count": batch.job_count,
+        "jobs": [
+            {
+                "id":                str(j.id),
+                "job_id":            j.job_id,
+                "job_title":         j.job_title,
+                "company":           j.company,
+                "status":            j.status,
+                "filled_count":      j.filled_count,
+                "validation_errors": j.validation_errors,
+                "error":             j.error,
+            } for j in jrows
+        ],
+    }
+
+
+@router.get("/review")
+async def list_review_queue(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:          AsyncSession = Depends(get_db),
+):
+    """
+    Everything the user needs to review: awaiting_review jobs with their draft
+    (readable Q&A) and signed screenshot URLs, plus needs_attention items.
+    """
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyJob
+    from services.apply_worker import signed_screenshot_url
+
+    jrows = list((await db.execute(
+        select(ApplyJob).where(
+            ApplyJob.user_id == current_user.id,
+            ApplyJob.status.in_(["awaiting_review", "needs_attention", "approved", "replaying"]),
+        ).order_by(ApplyJob.created_at.asc())
+    )).scalars())
+
+    out = []
+    for j in jrows:
+        shots = []
+        for p in (j.screenshot_paths or []):
+            u = await signed_screenshot_url(p)
+            if u:
+                shots.append(u)
+        confirm_url = None
+        if j.confirmation_screenshot:
+            confirm_url = await signed_screenshot_url(j.confirmation_screenshot)
+        out.append({
+            "id":                 str(j.id),
+            "batch_id":           str(j.batch_id),
+            "job_id":             j.job_id,
+            "job_title":          j.job_title,
+            "company":            j.company,
+            "job_url":            j.job_url,
+            "status":             j.status,
+            "filled_count":       j.filled_count,
+            "validation_errors":  j.validation_errors,
+            # Draft shown as readable Q&A — only what was actually filled
+            "answers": [
+                {"label": f.get("field_label", ""), "value": f.get("value", "")}
+                for f in (j.draft or []) if not f.get("skip") and f.get("value")
+            ],
+            "screenshots":            shots,
+            "confirmation_screenshot": confirm_url,
+            "error":                  j.error,
+        })
+    return {"jobs": out}
+
+
+class DecisionRequest(BaseModel):
+    action: str                            # "approve" | "skip" | "retry"
+    edits:  Optional[List[dict]] = None    # [{field_label, new_value}]
+
+
+@router.post("/jobs/{apply_job_id}/decision")
+async def decide_apply_job(
+    apply_job_id: str,
+    body:         DecisionRequest,
+    credentials:  Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:           AsyncSession = Depends(get_db),
+):
+    """
+    approve — replay the (optionally edited) draft and submit. Phase 2 starts now.
+    skip    — decline this application; nothing is submitted.
+    retry   — re-queue a failed/recovered job for another Phase 1 pass.
+    """
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyJob
+    from datetime import datetime, timezone
+
+    jres = await db.execute(select(ApplyJob).where(
+        ApplyJob.id == _uuid.UUID(apply_job_id), ApplyJob.user_id == current_user.id))
+    job = jres.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Apply job not found.")
+
+    if body.action == "approve":
+        if job.status != "awaiting_review":
+            raise HTTPException(status_code=409, detail=f"Job is not awaiting review (status={job.status}).")
+        job.status     = "approved"
+        job.user_edits = body.edits or None
+        job.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        from services.apply_worker import process_approval
+        asyncio.create_task(process_approval(job.id))
+        return {"ok": True, "message": f"Submitting your application to {job.company} now."}
+
+    elif body.action == "skip":
+        if job.status not in ("awaiting_review", "failed", "needs_attention"):
+            raise HTTPException(status_code=409, detail=f"Job cannot be skipped (status={job.status}).")
+        job.status     = "skipped"
+        job.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {"ok": True, "message": "Application skipped — nothing was submitted."}
+
+    elif body.action == "retry":
+        if job.status not in ("failed", "queued"):
+            raise HTTPException(status_code=409, detail=f"Job cannot be retried (status={job.status}).")
+        job.status     = "queued"
+        job.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        from services.apply_worker import process_batch
+        asyncio.create_task(process_batch(job.batch_id))
+        return {"ok": True, "message": "Retrying this application."}
+
+    raise HTTPException(status_code=400, detail="action must be approve, skip, or retry.")

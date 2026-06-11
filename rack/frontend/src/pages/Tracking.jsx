@@ -106,9 +106,10 @@ async function downloadResume(resumeId, resumeName, fileExt) {
 /* ══════════════════════════════════════════════════════════════════
    TAB BAR — subtle two-tab switcher
    ══════════════════════════════════════════════════════════════════ */
-function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, appliedCount, isPowerUser }) {
+function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, appliedCount, reviewCount, isPowerUser }) {
   const allTabs = [
     { id: "auto",    label: "Auto Matches",  icon: "✦", count: autoCount,    power: false },
+    { id: "review",  label: "Review",        icon: "◎", count: reviewCount,  power: false },
     { id: "applied", label: "Applied",        icon: "✓", count: appliedCount, power: false },
     { id: "fresh",   label: "Fresh Jobs",    icon: "◈", count: freshCount,   power: true  },
     { id: "custom",  label: "Custom Search", icon: "⚙", count: customCount,  power: true  },
@@ -2680,14 +2681,420 @@ function CustomSearchTab({ profile }) {
 /* ══════════════════════════════════════════════════════════════════
    MAIN PAGE
    ══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+   REVIEW TAB — batch auto-apply review queue
+   Drafts captured by headless Phase 1, waiting for explicit approval.
+   Nothing is EVER submitted without the user approving it here.
+   ══════════════════════════════════════════════════════════════════ */
+
+function ReviewTab({ onCountChange }) {
+  const [jobs, setJobs]                   = useState([]);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState(null);
+  const [deciding, setDeciding]           = useState(new Set());  // job ids with in-flight decision POSTs
+  const [editingId, setEditingId]         = useState(null);       // job id in per-field edit mode
+  const [editValues, setEditValues]       = useState({});         // { field_label: value } while editing
+  const [expandedAnswers, setExpandedAnswers] = useState(new Set());
+  const [approvingAll, setApprovingAll]   = useState(false);
+  const [recentlySubmitted, setRecentlySubmitted] = useState([]); // [{ id, job_title, company }]
+  const pollRef         = useRef(null);
+  const inFlightRef     = useRef(new Map()); // id → {job_title, company} for approved/replaying jobs
+
+  const awaiting = jobs.filter(j => j.status === "awaiting_review");
+  const inFlight = jobs.filter(j => j.status === "approved" || j.status === "replaying");
+  const attention = jobs.filter(j => j.status === "needs_attention");
+
+  const load = useCallback(async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${API_BASE}/api/apply/review`, { headers });
+      if (!res.ok) throw new Error(`Server error (${res.status})`);
+      const data = await res.json();
+      const list = data.jobs || [];
+
+      // Any job that was approved/replaying last poll and is now gone from the
+      // queue has finished Phase 2 — surface it as submitted.
+      const liveIds = new Set(list.map(j => j.id));
+      const finished = [];
+      inFlightRef.current.forEach((meta, id) => {
+        if (!liveIds.has(id)) finished.push({ id, ...meta });
+      });
+      if (finished.length > 0) {
+        setRecentlySubmitted(prev => [...prev, ...finished]);
+      }
+      inFlightRef.current = new Map(
+        list.filter(j => j.status === "approved" || j.status === "replaying")
+            .map(j => [j.id, { job_title: j.job_title, company: j.company }])
+      );
+
+      setJobs(list);
+      setError(null);
+    } catch (e) {
+      setError(e.message || "Could not load the review queue.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Tab badge count — single source of truth, recomputed on every jobs change
+  // (covers fresh loads, optimistic approve/skip, and poll updates).
+  useEffect(() => {
+    if (onCountChange) {
+      onCountChange(jobs.filter(j => j.status === "awaiting_review" || j.status === "needs_attention").length);
+    }
+  }, [jobs, onCountChange]);
+
+  // Poll while anything is mid-Phase-2 so "Submitting…" resolves live.
+  useEffect(() => {
+    const anyInFlight = jobs.some(j => j.status === "approved" || j.status === "replaying");
+    if (anyInFlight && !pollRef.current) {
+      pollRef.current = setInterval(load, 8000);
+    } else if (!anyInFlight && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [jobs, load]);
+
+  const decide = async (job, action, edits = null) => {
+    setDeciding(prev => new Set(prev).add(job.id));
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${API_BASE}/api/apply/jobs/${job.id}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ action, ...(edits && edits.length > 0 ? { edits } : {}) }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error (${res.status})`);
+      }
+      if (action === "approve") {
+        // Optimistic: flip to approved so the spinner shows immediately;
+        // the poll loop takes over from here.
+        inFlightRef.current.set(job.id, { job_title: job.job_title, company: job.company });
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: "approved" } : j));
+      } else if (action === "skip") {
+        setJobs(prev => prev.filter(j => j.id !== job.id));
+      }
+      setEditingId(null);
+      setEditValues({});
+      return true;
+    } catch (e) {
+      setError(e.message || "Action failed — try again.");
+      return false;
+    } finally {
+      setDeciding(prev => { const n = new Set(prev); n.delete(job.id); return n; });
+    }
+  };
+
+  const approveAll = async () => {
+    setApprovingAll(true);
+    // Sequential on purpose — the backend serializes browser work anyway,
+    // and sequential POSTs keep the optimistic UI updates orderly.
+    for (const job of awaiting) {
+      // eslint-disable-next-line no-await-in-loop
+      await decide(job, "approve");
+    }
+    setApprovingAll(false);
+  };
+
+  const startEditing = (job) => {
+    const vals = {};
+    (job.answers || []).forEach(a => { vals[a.label] = a.value; });
+    setEditValues(vals);
+    setEditingId(job.id);
+  };
+
+  const approveWithEdits = async (job) => {
+    const edits = (job.answers || [])
+      .filter(a => editValues[a.label] !== undefined && editValues[a.label] !== a.value)
+      .map(a => ({ field_label: a.label, new_value: editValues[a.label] }));
+    await decide(job, "approve", edits);
+  };
+
+  /* ── Shared bits ─────────────────────────────────────────────── */
+
+  const btn = (primary) => ({
+    padding: "7px 16px", borderRadius: 20, cursor: "pointer", fontFamily: "inherit",
+    fontSize: 12, fontWeight: primary ? 600 : 400,
+    border: primary ? "1px solid rgba(232,255,107,0.4)" : "1px solid var(--border)",
+    background: primary ? "rgba(232,255,107,0.12)" : "transparent",
+    color: primary ? "var(--accent)" : "var(--text-dim)",
+  });
+
+  const renderAnswerList = (job) => {
+    const answers  = job.answers || [];
+    const isEditing = editingId === job.id;
+    const expanded  = expandedAnswers.has(job.id);
+    const shown     = isEditing || expanded ? answers : answers.slice(0, 6);
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+        {shown.map((a, i) => (
+          <div key={i} style={{
+            display: "flex", flexDirection: "column", gap: 3, padding: "8px 0",
+            borderBottom: i < shown.length - 1 ? "1px solid var(--border)" : "none",
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" }}>
+              {a.label}
+            </div>
+            {isEditing ? (
+              <textarea
+                value={editValues[a.label] ?? a.value}
+                onChange={e => setEditValues(prev => ({ ...prev, [a.label]: e.target.value }))}
+                rows={Math.min(5, Math.max(1, Math.ceil((editValues[a.label] ?? a.value ?? "").length / 80)))}
+                style={{
+                  width: "100%", boxSizing: "border-box", resize: "vertical",
+                  background: "var(--surface2)", border: "1px solid var(--border)",
+                  borderRadius: 8, padding: "8px 10px", color: "var(--text)",
+                  fontSize: 12, fontFamily: "inherit", lineHeight: 1.5,
+                }}
+              />
+            ) : (
+              <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 300, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {a.value}
+              </div>
+            )}
+          </div>
+        ))}
+        {!isEditing && answers.length > 6 && (
+          <button
+            onClick={() => setExpandedAnswers(prev => {
+              const n = new Set(prev);
+              n.has(job.id) ? n.delete(job.id) : n.add(job.id);
+              return n;
+            })}
+            style={{
+              alignSelf: "flex-start", marginTop: 8, padding: 0, border: "none",
+              background: "transparent", color: "var(--accent)", fontSize: 12,
+              fontWeight: 500, cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            {expanded ? "Show fewer answers" : `Show all ${answers.length} answers`}
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const renderReviewCard = (job) => {
+    const isEditing  = editingId === job.id;
+    const isDeciding = deciding.has(job.id);
+    const isAttention = job.status === "needs_attention";
+    const isInFlight  = job.status === "approved" || job.status === "replaying";
+    const screenshot  = (job.screenshots || [])[0] || job.confirmation_screenshot;
+
+    return (
+      <div style={{
+        background: "var(--surface)",
+        border: `1px solid ${isAttention ? "rgba(251,146,60,0.3)" : "var(--border)"}`,
+        borderRadius: 12, padding: "16px 18px",
+        display: "flex", flexDirection: "column", gap: 12,
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text)", lineHeight: 1.4, wordBreak: "break-word" }}>
+              {job.job_title || "Unknown role"}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", fontWeight: 300, marginTop: 2 }}>
+              {job.company}
+              {job.job_url && (
+                <a href={job.job_url} target="_blank" rel="noopener noreferrer"
+                   style={{ color: "var(--accent)", textDecoration: "none", marginLeft: 8, fontWeight: 500 }}>
+                  View posting ↗
+                </a>
+              )}
+            </div>
+          </div>
+          {isInFlight ? (
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 600, color: "var(--accent3)", flexShrink: 0 }}>
+              <span style={{
+                width: 9, height: 9, borderRadius: "50%", display: "inline-block",
+                border: "2px solid var(--accent3)", borderTopColor: "transparent",
+                animation: "spin 0.7s linear infinite",
+              }} />
+              Submitting…
+            </span>
+          ) : (
+            <span style={{
+              fontSize: 9, fontWeight: 700, padding: "3px 10px", borderRadius: 20, flexShrink: 0,
+              textTransform: "uppercase", letterSpacing: "0.1em",
+              background: isAttention ? "rgba(251,146,60,0.12)" : "rgba(232,255,107,0.1)",
+              color: isAttention ? "#fb923c" : "var(--accent)",
+            }}>
+              {isAttention ? "Needs attention" : "Awaiting review"}
+            </span>
+          )}
+        </div>
+
+        {/* needs_attention explainer */}
+        {isAttention && (
+          <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 300, lineHeight: 1.6,
+                        background: "rgba(251,146,60,0.06)", border: "1px solid rgba(251,146,60,0.18)",
+                        borderRadius: 10, padding: "10px 12px" }}>
+            ⚠ Rack clicked Submit but couldn't confirm the application went through.
+            <strong style={{ fontWeight: 500 }}> Check the company's job portal before doing anything else</strong> —
+            your application may already be in. Rack will never auto-retry this one.
+            {job.error && <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 6 }}>{job.error}</div>}
+          </div>
+        )}
+
+        {/* Screenshot */}
+        {screenshot && (
+          <img
+            src={screenshot}
+            alt={`Filled application — ${job.job_title}`}
+            onClick={() => window.open(screenshot, "_blank", "noopener")}
+            style={{
+              width: "100%", maxHeight: 220, objectFit: "cover", objectPosition: "top",
+              borderRadius: 10, border: "1px solid var(--border)", cursor: "zoom-in",
+            }}
+          />
+        )}
+
+        {/* Fill summary */}
+        {!isAttention && (
+          <div style={{ fontSize: 12, color: "var(--text-dim)", fontWeight: 300 }}>
+            {job.filled_count || 0} field{(job.filled_count || 0) !== 1 ? "s" : ""} filled
+            {job.validation_errors > 0 && (
+              <span style={{ color: "#fb923c", marginLeft: 8 }}>
+                ⚠ {job.validation_errors} validation warning{job.validation_errors !== 1 ? "s" : ""} — double-check the answers below
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Q&A draft */}
+        {(job.answers || []).length > 0 && !isAttention && renderAnswerList(job)}
+
+        {/* Actions */}
+        {!isInFlight && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {isAttention ? (
+              <button style={btn(false)} disabled={isDeciding} onClick={() => decide(job, "skip")}>
+                {isDeciding ? "…" : "Dismiss"}
+              </button>
+            ) : isEditing ? (
+              <>
+                <button style={btn(true)} disabled={isDeciding} onClick={() => approveWithEdits(job)}>
+                  {isDeciding ? "Submitting…" : "Approve with edits ✓"}
+                </button>
+                <button style={btn(false)} disabled={isDeciding}
+                        onClick={() => { setEditingId(null); setEditValues({}); }}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <button style={btn(true)} disabled={isDeciding} onClick={() => decide(job, "approve")}>
+                  {isDeciding ? "Submitting…" : "Approve & submit ✓"}
+                </button>
+                {(job.answers || []).length > 0 && (
+                  <button style={btn(false)} disabled={isDeciding} onClick={() => startEditing(job)}>
+                    Edit answers
+                  </button>
+                )}
+                <button style={btn(false)} disabled={isDeciding} onClick={() => decide(job, "skip")}>
+                  Skip
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  /* ── Render ──────────────────────────────────────────────────── */
+
+  if (loading) {
+    return (
+      <div style={{ textAlign: "center", padding: "48px 0", color: "var(--text-dim)", fontSize: 13 }}>
+        Loading your review queue…
+      </div>
+    );
+  }
+
+  const totalActionable = awaiting.length + attention.length;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {error && (
+        <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.18)",
+                      borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "var(--danger)" }}>
+          {error}
+        </div>
+      )}
+
+      {/* Recently submitted toasts */}
+      {recentlySubmitted.map(s => (
+        <div key={s.id} style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.18)",
+                                  borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "var(--accent3)" }}>
+          ✓ Submitted: {s.job_title} at {s.company} — confirmation saved, see the Applied tab.
+        </div>
+      ))}
+
+      {totalActionable === 0 && inFlight.length === 0 ? (
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10,
+                      padding: "48px 24px", textAlign: "center" }}>
+          <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
+            nothing waiting for review
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 400, margin: "0 auto", lineHeight: 1.6 }}>
+            Ask Rack to <em>"apply to my recently matched jobs"</em> in chat. It fills the applications
+            in the background and they land here for your approval — nothing is submitted without you.
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Honest urgency header — no fake deadlines */}
+          {awaiting.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 220, fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6 }}>
+                Nothing is submitted until you approve it. Jobs can close without warning,
+                so approving today is safer than tomorrow.
+              </div>
+              {awaiting.length > 1 && (
+                <button style={{ ...btn(true), padding: "9px 20px" }} disabled={approvingAll} onClick={approveAll}>
+                  {approvingAll ? "Approving…" : `Approve all ${awaiting.length} ✓`}
+                </button>
+              )}
+            </div>
+          )}
+
+          {attention.map(job => <div key={job.id}>{renderReviewCard(job)}</div>)}
+          {awaiting.map(job => <div key={job.id}>{renderReviewCard(job)}</div>)}
+          {inFlight.map(job => <div key={job.id}>{renderReviewCard(job)}</div>)}
+        </>
+      )}
+    </div>
+  );
+}
+
+
 export default function Tracking() {
-  const [activeTab, setActiveTab] = useState("auto");
+  // Deep-link support: Home's BatchApplyCard sets rack_tracking_tab before
+  // dispatching rack:navigate, so "Review & approve" lands directly here.
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const t = sessionStorage.getItem("rack_tracking_tab");
+      if (t) { sessionStorage.removeItem("rack_tracking_tab"); return t; }
+    } catch { /* storage unavailable */ }
+    return "auto";
+  });
   const [profile, setProfile] = useState(null);
   const [userRole, setUserRole] = useState(null); // null = loading
   const [autoMatches, setAutoMatches] = useState([]);
   const [appliedCount, setAppliedCount] = useState(0);
   const [freshCount, setFreshCount] = useState(0);
   const [customMatches, setCustomMatches] = useState([]);
+  const [reviewCount, setReviewCount] = useState(0);
 
   const isPowerUser = userRole === "admin" || userRole === "pro";
 
@@ -2696,12 +3103,13 @@ export default function Tracking() {
     (async () => {
       try {
         const headers = await getAuthHeaders();
-        const [pr, me, am, fr, cm] = await Promise.all([
+        const [pr, me, am, fr, cm, rv] = await Promise.all([
           fetch(`${PROFILE_API}/profile`, { headers }),
           fetch(`${API_BASE}/api/auth/me`, { headers }),
           fetch(`${API}/auto/matches`, { headers }),
           fetch(`${API}/auto/fresh?hours=1`, { headers }),
           fetch(`${API}/matches?limit=50`),
+          fetch(`${API_BASE}/api/apply/review`, { headers }),
         ]);
         if (pr.ok) setProfile(await pr.json());
         if (me.ok) { const d = await me.json(); setUserRole(d.role || "free"); }
@@ -2714,13 +3122,17 @@ export default function Tracking() {
         }
         if (fr.ok) { const d = await fr.json(); setFreshCount(d.total || 0); }
         if (cm.ok) { const d = await cm.json(); setCustomMatches(Array.isArray(d) ? d : []); }
+        if (rv.ok) {
+          const d = await rv.json();
+          setReviewCount((d.jobs || []).filter(j => j.status === "awaiting_review" || j.status === "needs_attention").length);
+        }
       } catch { setUserRole("free"); }
     })();
   }, []);
 
   // Force tab back to "auto" if user is free and somehow on a power-only tab
   useEffect(() => {
-    if (userRole && !isPowerUser && activeTab !== "auto" && activeTab !== "applied") {
+    if (userRole && !isPowerUser && activeTab !== "auto" && activeTab !== "applied" && activeTab !== "review") {
       setActiveTab("auto");
     }
   }, [userRole]);
@@ -2748,6 +3160,7 @@ export default function Tracking() {
             onSwitch={setActiveTab}
             autoCount={autoMatches.length}
             appliedCount={appliedCount}
+            reviewCount={reviewCount}
             freshCount={isPowerUser ? freshCount : 0}
             customCount={isPowerUser ? customMatches.length : 0}
             isPowerUser={isPowerUser}
@@ -2755,6 +3168,9 @@ export default function Tracking() {
         )}
 
         {/* ── Tab content ─────────────────────────────────────── */}
+        {activeTab === "review" && userRole !== null && (
+          <ReviewTab onCountChange={setReviewCount} />
+        )}
         {activeTab === "auto" && userRole !== null && (
           <AutoMatchesTab profile={profile} isPowerUser={isPowerUser} />
         )}

@@ -218,7 +218,11 @@ class ChatResponse(BaseModel):
     # Routing tool selected by the LLM — the single source of truth for frontend routing
     # tool: "route_to_rank" | "route_to_tailor" | "route_to_refine" |
     #        "answer_career_question" | "show_matched_jobs" | "route_off_topic" |
-    #        "route_to_apply"
+    #        "route_to_apply" | "start_batch_apply"
+    #
+    # start_batch_apply — auth'd imperative apply intent. params carries the job
+    # selection hints ({apply_all, job_indices, limit}); the frontend resolves
+    # them against its visible job table and calls POST /api/apply/batch.
     tool: str
     intent: str                         # legacy alias for tool — kept for backward compat
     params: Optional[dict] = None       # tool-specific params (jd_text, modification_hint, etc.)
@@ -252,7 +256,7 @@ show_matched_jobs: User wants to SEE their matched jobs as a list/table. Trigger
 
 route_off_topic: Anything not related to jobs, careers, resumes, or professional development. This includes pure greetings ("hi", "hello", "hey", "what's up", "how are you"), small talk, and genuinely off-topic topics. Route greetings here — the LLM will generate a warm, natural response.
 
-route_to_apply: User explicitly wants to auto-fill and submit job applications RIGHT NOW. Triggers on: "apply to this", "fill the form", "start applying", "apply to all of them", "submit my application". CRITICAL: Questions like "how do I apply?", "how can I apply?", "how should I apply?", "what's the process to apply?", "how do these apply buttons work?" are CAREER QUESTIONS — route those to answer_career_question, NOT route_to_apply. Only use route_to_apply for clear imperative commands to take action, not informational questions about applying.
+route_to_apply: User wants RACK to apply to jobs FOR them. Triggers on imperative commands: "apply to my recently matched jobs", "apply to these", "apply to the first two", "start applying", "apply to all of them", "fill out my applications", "submit my application". Set apply_all=true when they say "all"/"all of them". Set job_indices when they reference specific positions in a job list they were just shown ("the first one" → [0], "the top 3" → [0,1,2]). Set limit when they give a count without referencing visible jobs ("apply to 5 jobs" → limit=5). CRITICAL: Questions like "how do I apply?", "how can I apply?", "how should I apply?", "what's the process to apply?", "how do these apply buttons work?" are CAREER QUESTIONS — route those to answer_career_question, NOT route_to_apply. Only use route_to_apply for clear imperative commands to take action, not informational questions about applying.
 
 MODE HINT: If a mode_hint is provided ("tailor" or "rank"), treat it as a strong signal toward that routing tool but the message content still matters."""
 
@@ -368,7 +372,7 @@ _ROUTER_TOOLS = [
         "type": "function",
         "function": {
             "name": "route_to_apply",
-            "description": "User wants to auto-apply to one or more matched jobs. Triggers on: 'apply', 'fill the form', 'start applying', 'apply to all', 'apply to these jobs', 'submit my application'. Only use when the user is referencing specific jobs they have already seen in matched results.",
+            "description": "User wants RACK to auto-apply to matched jobs for them. Triggers on imperative commands: 'apply', 'apply to my recently matched jobs', 'fill the form', 'start applying', 'apply to all', 'apply to these jobs', 'submit my application'. Works whether or not specific jobs are visible — RACK can auto-select their recent matches.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -379,7 +383,11 @@ _ROUTER_TOOLS = [
                     "job_indices": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "0-based indices of the specific jobs the user wants to apply to (e.g. [0] for the first job, [0,1,2] for first three). Empty if apply_all=true.",
+                        "description": "0-based indices of the specific jobs the user wants to apply to (e.g. [0] for the first job, [0,1,2] for first three). Empty if apply_all=true or no visible list referenced.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of jobs to apply to when the user gives a count without referencing a visible list ('apply to 5 jobs' → 5). Omit otherwise.",
                     },
                 },
                 "required": [],
@@ -760,14 +768,16 @@ Call exactly ONE routing tool now."""
         # already corrected when logged.
         _txt_lower = text.lower()
 
-        # ── Intercept 1: apply intent (highest priority, returns early) ────────
+        # ── Intercept 1: apply HOW-TO questions (highest priority, returns early) ─
         # Any message asking HOW/WHERE to apply always gets the Tracking redirect,
-        # regardless of which tool the router picked.
+        # regardless of which tool the router picked. NOTE: imperative commands
+        # ("apply to these jobs") must NOT be in this list — those are real apply
+        # intent and flow to the batch path via route_to_apply below.
         _apply_kws = [
             'how do i apply', 'how can i apply', 'how should i apply',
             'how to apply', 'where do i apply', 'where can i apply',
             'how do i submit', 'process to apply', 'steps to apply',
-            'apply for these', 'apply to these', 'how do i apply for',
+            'how do i apply for',
             'how do you apply', 'how would i apply', 'how do we apply',
         ]
         if any(kw in _txt_lower for kw in _apply_kws):
@@ -913,8 +923,37 @@ Call exactly ONE routing tool now."""
             )
 
         if selected_tool == "route_to_apply":
-            # Always redirect to Tracking — the auto-apply agent is not active.
-            # apply_jobs=[] signals the frontend to show the Tracking CTA card.
+            # Imperative apply intent → BATCH auto-apply (headless Phase 1).
+            # The frontend resolves WHICH jobs — mapping job_indices against the
+            # job table it is currently displaying, or letting the server pick
+            # recent matches — then calls POST /api/apply/batch. That endpoint
+            # is the single entry point for batch creation; no logic duplicated
+            # here. Steel watch mode remains exclusive to the per-job Apply
+            # button in the chat job table.
+            # Anonymous users have no matched jobs to batch → Tracking CTA
+            # (which sign-in gates them).
+            _is_uuid_user = False
+            if user_id:
+                try:
+                    import uuid as _uuid_chk
+                    _uuid_chk.UUID(user_id)
+                    _is_uuid_user = True
+                except (ValueError, AttributeError, TypeError):
+                    pass
+            if _is_uuid_user:
+                _b_limit = tool_params.get("limit")
+                try:
+                    _b_limit = max(1, min(int(_b_limit), 10)) if _b_limit else None
+                except (TypeError, ValueError):
+                    _b_limit = None
+                return ChatResponse(
+                    tool="start_batch_apply", intent="APPLY",
+                    params={
+                        "apply_all":   bool(tool_params.get("apply_all", False)),
+                        "job_indices": tool_params.get("job_indices") or [],
+                        "limit":       _b_limit,
+                    },
+                )
             return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
 
         if selected_tool == "route_off_topic":

@@ -5,6 +5,7 @@ import { getAuthHeaders } from '../utils/api'
 import RackCreature from '../components/RackCreature'
 import VoiceOnboarding from '../components/VoiceOnboarding'
 import ApplyAgentCard from '../components/ApplyAgentCard'
+import BatchApplyCard from '../components/BatchApplyCard'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -1322,6 +1323,9 @@ export default function Home() {
   const [tailorLoading, setTailorLoading] = useState(false)
   const [applyLoading, setApplyLoading]   = useState(false)
   const applyInProgressRef               = useRef(false)  // sync guard — prevents double-stream on fast double-click
+  // Batch apply pollers — { [batchId]: intervalId }. Cleared on unmount and
+  // when a batch reaches a terminal status. Rehydrated batches resume polling.
+  const batchPollersRef                  = useRef({})
   // Steel live browser viewer — null when no session active
   // { liveViewUrl, sessionId, interactive }
   const [steelViewer, setSteelViewer]     = useState(null)
@@ -2663,10 +2667,20 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
       return
     }
 
+    // ── start_batch_apply — batch auto-apply kicked off from chat ──────────
+    // Auth'd imperative apply intent ("apply to my recently matched jobs").
+    // Headless Phase 1 fills in the background; the BatchApplyCard tracks it
+    // live via polling. Steel watch mode is untouched — it remains exclusive
+    // to the per-job Apply button.
+    if (tool === 'start_batch_apply') {
+      await handleStartBatchApply(triage.params || {}, msgId, thinkingId, capturedJd)
+      return
+    }
+
     // ── route_to_apply — redirect to Tracking tab ──────────────────────────
-    // The auto-apply agent is experimental. For now, any apply intent gets
-    // a warm redirect to Tracking where the user can review and apply manually.
-    // This also catches "how do I apply?" questions that slip past the router.
+    // Reached only for "how do I apply?" informational questions (Intercept 1)
+    // and anonymous users (who have no matched jobs to batch). Authenticated
+    // imperative apply intent routes to start_batch_apply above.
     if (tool === 'route_to_apply') {
       setLoading(false)
       const redirectMsg = {
@@ -3101,6 +3115,147 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
       }
     } catch (err) {
       console.error('[handleConfirmSubmit] Error:', err)
+    }
+  }
+
+
+  // ── Batch auto-apply (headless Phase 1) ─────────────────────────
+  // Triggered by the router's start_batch_apply tool. Mode split:
+  //   Steel watch mode  → per-job Apply button only (live viewer, unchanged)
+  //   Batch mode        → ALL typed apply intent ("apply to my matches")
+  // POST /api/apply/batch → headless fill & capture → ONE review email →
+  // user approves in Tracking → Review. Nothing submits without approval.
+
+  const openReviewTab = () => {
+    // Tracking reads this on mount to land directly on the Review tab
+    try { sessionStorage.setItem('rack_tracking_tab', 'review') } catch { /* storage unavailable */ }
+    window.dispatchEvent(new CustomEvent('rack:navigate', { detail: { tab: 'Tracking' } }))
+  }
+
+  const stopBatchPoll = (batchId) => {
+    const t = batchPollersRef.current[batchId]
+    if (t) { clearInterval(t); delete batchPollersRef.current[batchId] }
+  }
+
+  const pollBatchOnce = async (batchId, msgId) => {
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE}/api/apply/batch/${batchId}`, { headers })
+      if (!res.ok) {
+        // 404 = batch gone (deleted user data) — stop polling, leave card as-is
+        if (res.status === 404) stopBatchPoll(batchId)
+        return
+      }
+      const data = await res.json()
+      setMessages(prev => prev.map(m => m.id === msgId
+        ? { ...m, batchJobs: data.jobs || [], batchStatus: data.status, jobCount: data.job_count }
+        : m
+      ))
+      // Terminal: batch landed AND nothing is still queued/filling
+      const inFlight = (data.jobs || []).some(j => j.status === 'queued' || j.status === 'filling')
+      if ((data.status === 'awaiting_review' || data.status === 'failed') && !inFlight) {
+        stopBatchPoll(batchId)
+      }
+    } catch { /* transient network error — next tick retries */ }
+  }
+
+  const startBatchPoll = (batchId, msgId) => {
+    if (!batchId || batchPollersRef.current[batchId]) return   // already polling
+    pollBatchOnce(batchId, msgId)
+    batchPollersRef.current[batchId] = setInterval(() => pollBatchOnce(batchId, msgId), 5000)
+  }
+
+  // Retry a single failed job — re-queues it and re-kicks Phase 1
+  const handleBatchRetry = async (applyJobId, batchId, msgId) => {
+    try {
+      const headers = await getAuthHeaders()
+      await fetch(`${API_BASE}/api/apply/jobs/${applyJobId}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ action: 'retry' }),
+      })
+      startBatchPoll(batchId, msgId)
+    } catch { /* network hiccup — user can click Retry again */ }
+  }
+
+  // Resume polling for non-terminal batches whenever messages change —
+  // covers localStorage rehydration AND the later server-history hydration.
+  // startBatchPoll no-ops for batches already being polled, and terminal
+  // batches are skipped, so this is idempotent.
+  useEffect(() => {
+    messages.forEach(m => {
+      if (m.isBatchApply && m.batchId
+          && m.batchStatus !== 'awaiting_review' && m.batchStatus !== 'failed') {
+        startBatchPoll(m.batchId, m.id)
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages])
+
+  // Clear all batch pollers on unmount
+  useEffect(() => () => {
+    Object.values(batchPollersRef.current).forEach(clearInterval)
+    batchPollersRef.current = {}
+  }, [])
+
+  // Kick off a batch from chat intent. params = { apply_all, job_indices, limit }
+  const handleStartBatchApply = async (params, msgId, thinkingId, capturedJd) => {
+    // Resolve WHICH jobs against the most recent job table in the thread.
+    // job_indices → those rows; apply_all → every visible row (capped);
+    // otherwise undefined → the server auto-selects recent un-applied matches.
+    let jobIds
+    const lastTableMsg = [...messages].reverse().find(m => m.isFilterResult && (m.filterJobs || []).length > 0)
+    const tableJobs = lastTableMsg?.filterJobs || []
+    if ((params.job_indices || []).length > 0 && tableJobs.length > 0) {
+      jobIds = params.job_indices.map(i => tableJobs[i]?.job_id).filter(Boolean)
+    } else if (params.apply_all && tableJobs.length > 0) {
+      jobIds = tableJobs.map(j => j.job_id).filter(Boolean).slice(0, 10)
+    }
+
+    const failReply = (text) => {
+      setMessages(prev => prev.map(m =>
+        m.id === thinkingId ? { ...m, isThinkingPlaceholder: false, replyText: '', loading: false, jd: capturedJd, error: null } : m
+      ))
+      startTypewriter(thinkingId, text)
+      setLoading(false)
+    }
+
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE}/api/apply/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({
+          job_ids: jobIds && jobIds.length > 0 ? jobIds : undefined,
+          limit:   params.limit || 7,
+        }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        if (res.status === 404) return failReply("I couldn't find any matched jobs you haven't applied to yet. Run Auto Matches in the Tracking tab first, then ask me again.")
+        if (res.status === 409) return failReply("Those applications are already being filled — check Review in the Tracking tab, or watch for the email.")
+        if (res.status === 422) return failReply("I couldn't find application links for those jobs. Try applying from the Tracking tab instead.")
+        return failReply(errData.detail || 'Something went wrong starting your applications. Try again in a moment.')
+      }
+
+      const data = await res.json()
+      const batchMsg = {
+        id: msgId,
+        jd: capturedJd,
+        isBatchApply: true,
+        batchId: data.batch_id,
+        batchStatus: 'processing',
+        batchJobs: [],
+        jobCount: data.job_count,
+        loading: false,
+        error: null,
+      }
+      setMessages(prev => prev.filter(m => m.id !== thinkingId).concat([batchMsg]))
+      setLoading(false)
+      startBatchPoll(data.batch_id, msgId)
+    } catch {
+      failReply('Something went wrong starting your applications. Try again in a moment.')
     }
   }
 
@@ -3881,6 +4036,35 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         </div>
                       </div>
                     )}
+                  </div>
+                </div>
+              </div>
+            )
+          }
+
+          // ── Batch apply — progress card walking Phase 1 in real time ────────
+          if (msg.isBatchApply) {
+            return (
+              <div key={msg.id} className='rack-msg-container' style={{ display: 'flex', flexDirection: 'column', gap: 0, margin: '0 auto' }}>
+                <div className="rack-msg-row user">
+                  <div className="rack-bubble-user">
+                    <div className="rack-bubble-user-label">You</div>
+                    {msg.jd}
+                  </div>
+                </div>
+                <div className="rack-msg-row rack">
+                  <div className="rack-bubble-rack">
+                    <div className="rack-bubble-rack-label">
+                      <span className="rack-bubble-rack-label-dot" />
+                      Rack
+                    </div>
+                    <BatchApplyCard
+                      jobs={msg.batchJobs}
+                      batchStatus={msg.batchStatus}
+                      jobCount={msg.jobCount}
+                      onOpenReview={openReviewTab}
+                      onRetry={(jobId) => handleBatchRetry(jobId, msg.batchId, msg.id)}
+                    />
                   </div>
                 </div>
               </div>

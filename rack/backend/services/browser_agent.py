@@ -16,6 +16,12 @@ from typing import AsyncGenerator
 
 logger = logging.getLogger(__name__)
 
+
+class _HeadlessAttachSkip(Exception):
+    """Control-flow marker: headless mode bypasses the Steel CDP attach path."""
+    pass
+
+
 # -- ATS-specific selector knowledge ------------------------------------------
 # Known field id/name patterns for each ATS. Tried BEFORE the LLM-generated hint.
 # This is the fast path that handles 90% of standard fields.
@@ -1172,13 +1178,31 @@ async def run_apply_agent(
     resume_id:    str | None           = None,
     user_id:      str | None           = None,
     review_event: asyncio.Event | None = None,  # set by /api/apply/confirm endpoint
+    mode:         str                  = "steel",     # "steel" (live viewer) | "headless" (local Chromium)
+    stop_before_submit: bool           = False,       # batch Phase 1: fill → capture → return, NEVER submit
+    precomputed_fields: list | None    = None,        # batch Phase 2 replay: saved draft, skips LLM detection
+    capture_screenshots: bool          = False,       # attach screenshot_png bytes to captured/submitted events
 ) -> AsyncGenerator[dict, None]:
     """
     Async generator yielding SSE-ready step dicts.
 
     review_event: if provided, the agent pauses before clicking Submit and
     waits for this Event to be set (by the /api/apply/confirm endpoint).
-    Times out after 90 seconds — yields review_timeout and aborts.
+
+    mode="headless" launches a local Playwright Chromium instead of a Steel
+    remote session. No live viewer, no Steel hours burned. Screenshots and
+    step events work identically.
+
+    stop_before_submit=True (batch Phase 1 — Fill & Capture): after filling,
+    yields a single {"type": "captured", draft, screenshot_png, ...} event
+    and returns. The review gate and Submit are never reached. screenshot_png
+    is raw bytes — only safe for in-process consumers (apply_worker), never
+    the SSE endpoint.
+
+    precomputed_fields (batch Phase 2 — Replay & Submit): a saved draft from
+    a previous captured event. Skips detect_fields() entirely; free-text
+    answers are reused from the draft instead of regenerated. Combine with
+    review_event=None to auto-submit after filling.
     """
     from services.form_filler import detect_fields, write_free_text
 
@@ -1194,32 +1218,53 @@ async def run_apply_agent(
     ats_selectors = _get_ats_selectors(job_url)
     ats_hint      = _get_ats_hint(job_url)
 
-    # -- Create Steel remote browser session ----------------------------------
-    from services.steel_client import create_session, release_session
+    # -- Create browser session: Steel (live viewer) or local headless --------
+    steel_session    = None
+    steel_session_id = None
 
-    try:
-        steel_session = await create_session()
-    except Exception as e:
-        yield {"type": "error", "text": f"Could not create browser session: {e}"}
-        return
+    if mode == "steel":
+        from services.steel_client import create_session, release_session
 
-    # Emit live viewer URL to frontend BEFORE any navigation — user sees the
-    # browser window appear immediately while the agent is still loading the page
-    yield {
-        "type":         "steel_session",
-        "session_id":   steel_session["session_id"],
-        "live_view_url": steel_session["live_view_url"],
-    }
+        try:
+            steel_session = await create_session()
+        except Exception as e:
+            yield {"type": "error", "text": f"Could not create browser session: {e}"}
+            return
 
-    steel_session_id = steel_session["session_id"]
+        # Emit live viewer URL to frontend BEFORE any navigation — user sees the
+        # browser window appear immediately while the agent is still loading the page
+        yield {
+            "type":         "steel_session",
+            "session_id":   steel_session["session_id"],
+            "live_view_url": steel_session["live_view_url"],
+        }
+
+        steel_session_id = steel_session["session_id"]
+    else:
+        # Headless mode — informational event only (no viewer URL exists)
+        yield {"type": "local_session", "text": "Running in background browser (no live view)"}
 
     async with async_playwright() as pw:
-        # Connect to Steel's remote browser via CDP instead of launching local Chromium
-        browser = await pw.chromium.connect_over_cdp(steel_session["ws_url"])
-
-        # Steel starts with one context and one blank tab — use them directly
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
-        page    = context.pages[0]    if context.pages    else await context.new_page()
+        if mode == "steel":
+            # Connect to Steel's remote browser via CDP
+            browser = await pw.chromium.connect_over_cdp(steel_session["ws_url"])
+            # Steel starts with one context and one blank tab — use them directly
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page    = context.pages[0]    if context.pages    else await context.new_page()
+        else:
+            # Local headless Chromium — realistic UA + viewport to avoid trivial bot flags
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 1600},
+            )
+            page = await context.new_page()
 
         try:
             # -- Navigate -----------------------------------------------------
@@ -1347,12 +1392,20 @@ async def run_apply_agent(
             except Exception as _de:
                 logger.warning(f"[dom_dump] failed: {_de}")
 
-            # -- LLM field detection ------------------------------------------
-            yield _step("ok", "Analysing form fields...")
+            # -- LLM field detection (or saved-draft replay) -------------------
+            if precomputed_fields is not None:
+                # Phase 2 replay: the draft is the contract. Only replay fields the
+                # user actually saw filled (skip=False). The post-detect resolve
+                # pass, DOM-grounding filter, and dynamic scan below still run —
+                # they handle any NEW fields the form grew since capture.
+                fields = [dict(f) for f in precomputed_fields if not f.get("skip")]
+                yield _step("ok", "Replaying saved application draft (" + str(len(fields)) + " fields)")
+            else:
+                yield _step("ok", "Analysing form fields...")
 
-            augmented_profile = dict(profile)
-            augmented_profile["_ats_hint"] = ats_hint
-            fields = await detect_fields(raw_html, augmented_profile, dom_snapshot=dom_snapshot)
+                augmented_profile = dict(profile)
+                augmented_profile["_ats_hint"] = ats_hint
+                fields = await detect_fields(raw_html, augmented_profile, dom_snapshot=dom_snapshot)
 
             if not fields:
                 yield {"type": "error", "text": "Could not detect form fields. This ATS may require manual application."}
@@ -1611,6 +1664,12 @@ async def run_apply_agent(
                     if fixed_answer is not None:
                         answer = fixed_answer
                         yield _step("ok", 'Filled "' + label + '" -> ' + answer[:40])
+                    elif value:
+                        # Replay path: the draft already contains the generated
+                        # answer — reuse it verbatim. What the user approved is
+                        # exactly what gets submitted.
+                        answer = value
+                        yield _step("ok", 'Using saved answer for: ' + label)
                     else:
                         yield _step("writing", "Writing answer for: " + label + "...")
                         answer = await write_free_text(
@@ -1618,6 +1677,9 @@ async def run_apply_agent(
                             resume_text=resume_text, profile=profile,
                         )
                     if answer:
+                        # Write the answer back into the field dict so draft
+                        # capture (stop_before_submit) includes it.
+                        field["value"] = answer
                         ok = await _fill_field(page, label, selector, answer,
                                                "textarea", ats_selectors)
                         if ok:
@@ -1650,6 +1712,11 @@ async def run_apply_agent(
                 is_gh = "greenhouse.io" in job_url
                 label_lower_chk = label.lower()
                 filled_this = False
+
+                # Draft fidelity: all overrides above (legal name, EEO, native
+                # script, last-chance combobox) mutate the local `value` — write
+                # it back so stop_before_submit captures what was actually filled.
+                field["value"] = value
 
                 # ── Greenhouse URL fields (LinkedIn, GitHub, Website) ──────────
                 # Use JS to find input[type="url"] elements in DOM order,
@@ -1890,7 +1957,12 @@ async def run_apply_agent(
                                 # Per Steel docs (https://docs.steel.dev/overview/files-api/overview):
                                 # upload bytes into the Steel VM, then point
                                 # the input at the VM-side path via CDP.
+                                # Headless mode skips this entirely — the buffer
+                                # fallback below is reliable on a LOCAL browser
+                                # (the silent desync only affects remote CDP).
                                 try:
+                                    if mode != "steel":
+                                        raise _HeadlessAttachSkip()
                                     from services.steel_client import upload_session_file
                                     _vm_path = await upload_session_file(
                                         session_id=steel_session_id,
@@ -1956,6 +2028,8 @@ async def run_apply_agent(
                                         logger.warning(
                                             "[browser_agent] Steel session file upload returned no path"
                                         )
+                                except _HeadlessAttachSkip:
+                                    logger.info("[browser_agent] headless mode — attaching resume via Playwright buffer")
                                 except Exception as _pe:
                                     logger.warning(
                                         f"[browser_agent] Steel CDP attach failed: {_pe}",
@@ -2103,6 +2177,44 @@ async def run_apply_agent(
             except Exception:
                 pass
 
+            # -- Batch Phase 1: capture & stop (no review gate, no submit) -----
+            # The draft is the contract between the agent and the user: it is
+            # exactly what was filled, and Phase 2 replays it verbatim.
+            if stop_before_submit:
+                _shot_png = None
+                if capture_screenshots:
+                    try:
+                        await page.evaluate("window.scrollTo(0, 0)")
+                        await asyncio.sleep(0.3)
+                        _shot_png = await page.screenshot(full_page=True, type="png")
+                    except Exception as _sse_err:
+                        logger.warning(f"[browser_agent] capture screenshot failed: {_sse_err}")
+
+                _draft = [
+                    {
+                        "field_label":   f.get("field_label", ""),
+                        "selector_hint": f.get("selector_hint", ""),
+                        "field_type":    f.get("field_type", "text"),
+                        "value":         f.get("value", ""),
+                        "skip":          bool(f.get("skip", False)),
+                    }
+                    for f in fields
+                ]
+                yield {
+                    "type":              "captured",
+                    "draft":             _draft,
+                    "screenshot_png":    _shot_png,   # raw bytes — in-process consumers only
+                    "filled_count":      filled_count,
+                    "validation_errors": validation_errors,
+                    "job_url":           job_url,
+                    "job_id":            job_id,
+                    "text": (
+                        f"{filled_count} field(s) filled and captured for review"
+                        + (f" — {validation_errors} validation warning(s)" if validation_errors else "")
+                    ),
+                }
+                return
+
             # -- Human review gate -------------------------------------------
             # Always pause here and wait for explicit user confirmation before
             # clicking Submit. The frontend renders a "Review & Submit" button.
@@ -2214,9 +2326,17 @@ async def run_apply_agent(
                 except Exception:
                     pass
 
+            # Confirmation screenshot — proof of submission for the batch flow.
+            _confirm_png = None
+            if capture_screenshots:
+                try:
+                    _confirm_png = await page.screenshot(full_page=True, type="png")
+                except Exception as _cse:
+                    logger.warning(f"[browser_agent] confirmation screenshot failed: {_cse}")
+
             if is_confirmed:
                 yield _step("ok", "Application confirmed by " + company)
-                yield {
+                _submitted_evt = {
                     "type":         "submitted",
                     "text":         "Application submitted to " + company,
                     "filled_count": filled_count,
@@ -2224,25 +2344,44 @@ async def run_apply_agent(
                     "confirmation": confirmation_text,
                     "job_id":       job_id,
                 }
+                if capture_screenshots:
+                    _submitted_evt["screenshot_png"] = _confirm_png  # bytes — in-process only
+                yield _submitted_evt
             else:
                 # Submit was clicked but confirmation page not detected —
                 # do NOT mark as applied (form may have had validation errors)
                 yield _step("error", "Submit clicked — could not detect confirmation page")
-                yield {
+                _done_evt = {
                     "type":         "done",
                     "text":         "Form filled but submission unconfirmed — check " + company + " for status",
                     "filled_count": filled_count,
                     "job_url":      job_url,
                 }
+                if capture_screenshots:
+                    _done_evt["screenshot_png"] = _confirm_png
+                yield _done_evt
 
         except Exception as e:
             logger.error("[browser_agent] Error: " + str(e), exc_info=True)
             yield {"type": "error", "text": "Agent error: " + str(e)[:200]}
         finally:
-            # Don't close context/browser — Steel owns the session lifecycle.
-            # Just disconnect Playwright and release the Steel session.
-            try:
-                await browser.close()
-            except Exception:
-                pass
-            await release_session(steel_session_id)
+            if mode == "steel":
+                # Don't close context/browser — Steel owns the session lifecycle.
+                # Just disconnect Playwright and release the Steel session.
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+                if steel_session_id:
+                    await release_session(steel_session_id)
+            else:
+                # Local headless — we own the browser. Close everything so the
+                # ~300MB Chromium process is freed immediately (Render has 512MB).
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                try:
+                    await browser.close()
+                except Exception:
+                    pass

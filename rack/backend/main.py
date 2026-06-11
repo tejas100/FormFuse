@@ -52,6 +52,24 @@ async def lifespan(app: FastAPI):
     # run_fetching.py  — every 2 hours  (com.rack.fetching.plist)
     # run_matching.py  — 8am/1pm/8pm    (com.rack.matching.plist)
     # Render is a pure API server — no background jobs.
+
+    # ── Apply batch crash recovery ────────────────────────────────────────
+    # Resets ApplyJob rows stuck in transient states after a restart
+    # (filling → queued, replaying → approved). Recovery NEVER auto-restarts
+    # work — a "Retry" in the review UI picks orphans back up, so a crash
+    # loop can't silently hammer an ATS. Fire-and-forget so a cold/slow DB
+    # can't block server startup.
+    import asyncio as _asyncio
+
+    async def _safe_recover_orphans():
+        try:
+            from services.apply_worker import recover_orphans
+            await recover_orphans()
+        except Exception as e:
+            logging.getLogger("startup").warning(f"recover_orphans failed: {e}")
+
+    _asyncio.create_task(_safe_recover_orphans())
+
     yield
 
 

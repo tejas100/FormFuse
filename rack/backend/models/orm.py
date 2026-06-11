@@ -102,6 +102,12 @@ class User(Base):
     chat_messages: Mapped[list["ChatMessage"]] = relationship(
         "ChatMessage", back_populates="user", cascade="all, delete-orphan"
     )
+    apply_batches: Mapped[list["ApplyBatch"]] = relationship(
+        "ApplyBatch", back_populates="user", cascade="all, delete-orphan"
+    )
+    apply_jobs: Mapped[list["ApplyJob"]] = relationship(
+        "ApplyJob", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 # ── Resumes ────────────────────────────────────────────────────────────────────
@@ -324,3 +330,95 @@ class ChatMessage(Base):
     )
 
     user: Mapped["User"] = relationship("User", back_populates="chat_messages")
+
+# ── Batch Auto-Apply ───────────────────────────────────────────────────────────
+# Session: batch apply system — Phase 1 (Fill & Capture) / Phase 2 (Replay & Submit).
+#
+# ApplyJob.status state machine:
+#   queued → filling → awaiting_review → approved → replaying → submitted
+#                   ↘ failed / job_removed              ↘ failed / needs_attention
+#   awaiting_review → skipped (user declined)
+#
+#   needs_attention = Submit was clicked but no confirmation page detected.
+#   NEVER auto-retried — the application may have gone through; a human must
+#   check the ATS first.
+#
+# draft: the contract between agent and user — the exact list of
+#   {field_label, selector_hint, field_type, value, skip} entries the headless
+#   agent filled in Phase 1. Phase 2 replays it verbatim (plus user_edits).
+class ApplyBatch(Base):
+    __tablename__ = "apply_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+    # pending → processing → awaiting_review → completed | failed
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    job_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    resume_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notified_at:  Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="apply_batches")
+    jobs: Mapped[list["ApplyJob"]] = relationship(
+        "ApplyJob", back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class ApplyJob(Base):
+    __tablename__ = "apply_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("apply_batches.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+
+    job_id:    Mapped[str | None] = mapped_column(String(64), nullable=True)  # auto_match_results.job_id
+    job_url:   Mapped[str]        = mapped_column(Text, nullable=False)
+    job_title: Mapped[str]        = mapped_column(Text, nullable=False, default="", server_default="")
+    company:   Mapped[str]        = mapped_column(Text, nullable=False, default="", server_default="")
+
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="queued", server_default="queued", index=True
+    )
+
+    # Phase 1 artifacts — what the user reviews
+    draft:             Mapped[list | None]      = mapped_column(JSONB, nullable=True)
+    screenshot_paths:  Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    filled_count:      Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    validation_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    # Phase 2 artifacts
+    user_edits:              Mapped[list | None] = mapped_column(JSONB, nullable=True)  # [{field_label, new_value}]
+    confirmation_screenshot: Mapped[str | None]  = mapped_column(Text, nullable=True)
+    confirmation_text:       Mapped[str | None]  = mapped_column(Text, nullable=True)
+
+    error:    Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    user:  Mapped["User"]       = relationship("User", back_populates="apply_jobs")
+    batch: Mapped["ApplyBatch"] = relationship("ApplyBatch", back_populates="jobs")
