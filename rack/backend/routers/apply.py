@@ -676,7 +676,26 @@ async def list_review_queue(
             # Draft shown as readable Q&A — only what was actually filled
             "answers": [
                 {"label": f.get("field_label", ""), "value": f.get("value", "")}
-                for f in (j.draft or []) if not f.get("skip") and f.get("value")
+                for f in (j.draft or [])
+                if not f.get("skip") and f.get("value") and not f.get("needs_user")
+            ],
+            # Required fields the agent could NOT answer. The user must complete
+            # these before approving. `options` carries the live dropdown choices
+            # when we managed to scrape them, so the UI can render a select rather
+            # than a blind text box. This is the "give the user a chance" net for
+            # any field that slipped detection/resolution (e.g. a numeric-id EEO
+            # combobox whose options couldn't be scraped).
+            "needs_user": [
+                {
+                    "label":         f.get("field_label", ""),
+                    "field_label":   f.get("field_label", ""),
+                    "selector_hint": f.get("selector_hint", ""),
+                    "value":         f.get("value", ""),
+                    "options":       f.get("options") or [],
+                    "required":      bool(f.get("required", False)),
+                }
+                for f in (j.draft or [])
+                if f.get("needs_user") and not (f.get("value") or "").strip()
             ],
             "screenshots":             shots,
             "confirmation_screenshot": confirm_url,
@@ -720,6 +739,29 @@ async def decide_apply_job(
     if body.action == "approve":
         if job.status != "awaiting_review":
             raise HTTPException(status_code=409, detail=f"Job is not awaiting review (status={job.status}).")
+
+        # Required fields the agent couldn't answer must be supplied by the user
+        # before we submit. Apply the incoming edits, then verify nothing REQUIRED
+        # is still blank — never submit a half-filled application silently. Optional
+        # dropped fields (no '*') are offered in the UI but never block submit.
+        _edit_vals = {
+            (e.get("field_label") or "").strip().lower(): (e.get("new_value") or "").strip()
+            for e in (body.edits or [])
+        }
+        _unanswered = [
+            f.get("field_label", "")
+            for f in (job.draft or [])
+            if f.get("needs_user")
+            and f.get("required")
+            and not (f.get("value") or "").strip()
+            and not _edit_vals.get((f.get("field_label") or "").strip().lower())
+        ]
+        if _unanswered:
+            raise HTTPException(
+                status_code=422,
+                detail="Please answer the required field(s) before submitting: " + ", ".join(_unanswered),
+            )
+
         job.status     = "approved"
         job.user_edits = body.edits or None
         job.updated_at = datetime.now(timezone.utc)

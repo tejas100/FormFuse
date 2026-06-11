@@ -1056,19 +1056,50 @@ async def _scrape_combobox_options(page, selector_hint: str) -> list[str]:
         )
         await asyncio.sleep(0.3)
 
-        # Step 2: Click the grandparent container to open the dropdown
-        # Try Playwright locator first (respects visibility), fall back to JS click
+        # Step 2: Open the dropdown by clicking the container.
+        # Locate via ATTRIBUTE selector [id="..."], never the CSS id form "#id".
+        # Greenhouse EEO fields use purely-numeric ids (e.g. 29784) and "#29784"
+        # is an INVALID CSS selector — page.locator("#29784") throws, and we'd
+        # silently fall back to a JS click that does NOT open react-select. This
+        # is exactly why Race/Ethnicity scraped 0 options while Country (#country)
+        # worked. Mirror _fill_react_combobox: attribute selector + verified open.
+        _cb = None
+        for _sel in (f'input[id="{selector_hint}"]', f'[id="{selector_hint}"]'):
+            try:
+                _loc = page.locator(_sel).first
+                if await _loc.count() > 0:
+                    _cb = _loc
+                    break
+            except Exception:
+                continue
+
         _opened = False
-        try:
-            _loc = page.locator(f"#{selector_hint}").locator("xpath=../..").first
-            if await _loc.count() > 0:
-                await _loc.click(timeout=3000)
-                _opened = True
-        except Exception:
-            pass
+        if _cb is not None:
+            # react-select listens on an outer container — try several ancestor
+            # levels and VERIFY options actually rendered before trusting it.
+            for _anc in ("xpath=../../..", "xpath=../..", "xpath=.."):
+                try:
+                    await _cb.locator(_anc).first.click(timeout=2000)
+                    await asyncio.sleep(0.4)
+                    _vis = await page.evaluate(
+                        "() => document.querySelectorAll('[class*=\"option\"],[role=\"option\"]').length"
+                    )
+                    if _vis > 0:
+                        _opened = True
+                        break
+                except Exception:
+                    continue
+            if not _opened:
+                # Last resort: click the input itself
+                try:
+                    await _cb.click(timeout=2000)
+                    await asyncio.sleep(0.4)
+                    _opened = True
+                except Exception:
+                    pass
 
         if not _opened:
-            # JS fallback
+            # JS fallback — getElementById works with numeric ids
             await page.evaluate(
                 "(hint) => { const el = document.getElementById(hint); const gp = el?.parentElement?.parentElement; if (gp) gp.click(); }",
                 selector_hint,
@@ -1891,12 +1922,57 @@ async def run_apply_agent(
                 _resolve_targets.append(("field", _new_field, _dom_id, _dom_label))
                 logger.info(f"[browser_agent] Orphaned combobox added to resolve targets: {_dom_label!r} (id={_dom_id})")
 
+            # Case C: plain text / textarea fields that form_filler dropped.
+            # Cases A/B only rescue comboboxes; a dropped TEXT field (e.g.
+            # Greenhouse's "Education: Last University Attended") has no other net —
+            # it would be silently absent from both the form and the Review tab.
+            # Surface it so the user can complete it. Required (label has '*') →
+            # blocks submit; optional → offered but never blocks.
+            _SURFACE_TYPES   = {"text", "email", "tel", "url", "number", "textarea", ""}
+            _SKIP_CLASS_HINTS = ("visually-hidden", "requiredinput", "recaptcha", "iti__search")
+            for _dom_el in dom_snapshot:
+                _dom_id = str(_dom_el.get("id", ""))
+                if not _dom_id or _dom_id in _react_combobox_ids:
+                    continue                       # comboboxes handled by A/B
+                if _dom_id in _fields_hints:
+                    continue                       # already detected/handled
+                _dom_label = (_dom_el.get("labelText") or "").strip()
+                if not _dom_label:
+                    continue                       # no visible label → phantom/hidden input
+                _dom_type    = (_dom_el.get("type") or "").lower()
+                _dom_classes = (_dom_el.get("classes") or "").lower()
+                _dom_tag     = (_dom_el.get("tag") or "").lower()
+                if _dom_tag != "textarea" and _dom_type not in _SURFACE_TYPES:
+                    continue                       # file/search/checkbox/hidden/etc.
+                if any(h in _dom_classes for h in _SKIP_CLASS_HINTS):
+                    continue
+                if any(fl in _dom_label.lower() for fl in _FILE_LABELS):
+                    continue
+                _dom_required = "*" in _dom_label
+                fields.append({
+                    "field_label":   _dom_label,
+                    "selector_hint": _dom_id,
+                    "field_type":    "textarea" if _dom_tag == "textarea" else "text",
+                    "value":         "",
+                    "skip":          False,
+                    "needs_user":    True,
+                    "required":      _dom_required,
+                })
+                _fields_hints.add(_dom_id)
+                logger.info(f"[browser_agent] Dropped text field surfaced for review: {_dom_label!r} (id={_dom_id}, required={_dom_required})")
+
             for (_, _sf, _sf_hint, _sf_label) in _resolve_targets:
                 try:
                     logger.info(f"[browser_agent] Resolving combobox: {_sf_label!r}")
                     _opts = await _scrape_combobox_options(form, _sf_hint)
                     if not _opts:
-                        logger.warning(f"[browser_agent] No options scraped for {_sf_label!r} — leaving skipped")
+                        # Couldn't read the options — don't bury a required field.
+                        # Surface it so the user can answer it in Review.
+                        logger.warning(f"[browser_agent] No options scraped for {_sf_label!r} — surfacing for user review")
+                        _sf["skip"] = False
+                        _sf["needs_user"] = True
+                        _sf["required"] = "*" in _sf_label
+                        _sf["value"] = ""
                         continue
                     logger.info(f"[browser_agent] Combobox options for {_sf_label!r}: {_opts}")
 
@@ -1919,7 +1995,13 @@ async def run_apply_agent(
                         _sf["value"] = _picked
                         logger.info(f"[browser_agent] Resolved {_sf_label!r} → {_picked!r}")
                     else:
-                        logger.warning(f"[browser_agent] LLM could not pick for {_sf_label!r} — leaving skipped")
+                        # Options read, but nothing matched — let the user decide.
+                        logger.warning(f"[browser_agent] No pick for {_sf_label!r} — surfacing for user review")
+                        _sf["skip"] = False
+                        _sf["needs_user"] = True
+                        _sf["required"] = "*" in _sf_label
+                        _sf["value"] = ""
+                        _sf["options"] = _opts
                 except Exception as _rse:
                     logger.warning(f"[browser_agent] Post-detect resolve failed for {_sf_label!r}: {_rse}")
 
@@ -1938,6 +2020,16 @@ async def run_apply_agent(
                 field_type = field.get("field_type", "text")
                 value      = field.get("value", "")
                 skip       = field.get("skip", False)
+
+                # ── needs_user guard ──────────────────────────────────────────
+                # Fields the agent couldn't answer are kept skip=False so user
+                # edits (merged by _apply_edits) flow into Phase 2 replay. But if
+                # the user approved without supplying a value, don't feed an empty
+                # string into the fill machinery — leave it untouched.
+                if field.get("needs_user") and not (value or "").strip():
+                    yield _step("skip", "Awaiting user answer: " + label)
+                    await asyncio.sleep(0.05)
+                    continue
 
                 # ── Pre-skip rescue: un-skip fields we can handle regardless ──
                 # form_filler sets skip=True when it has no profile value.
@@ -2505,30 +2597,54 @@ async def run_apply_agent(
                     for _nf in _new_fields:
                         _nf_id    = _nf['id']
                         _nf_label = _nf.get('labelText') or _nf.get('parentText', '')[:80]
+                        _nf_val   = ""
+                        _nf_ok    = False
+                        _nf_opts  = []
                         try:
                             _nf_opts = await _scrape_combobox_options(form, _nf_id)
                             if not _nf_opts:
                                 logger.warning(f"[browser_agent] Dynamic field {_nf_label!r}: no options scraped")
-                                continue
-                            logger.info(f"[browser_agent] Dynamic field {_nf_label!r} options: {_nf_opts}")
-                            # EEO fields (e.g. the race picker that appears after the
-                            # Hispanic answer) must be resolved from the profile, not
-                            # the generic safe-picker which would choose "Decline".
-                            _nf_val = _resolve_eeo_combobox(_nf_label, _nf_opts, profile)
-                            if not _nf_val:
-                                _nf_val = await _pick_safe_combobox_answer(_nf_label, _nf_opts, profile)
-                            if _nf_val:
-                                ok = await _fill_react_combobox(form, _nf_id, _nf_label, _nf_val, profile=profile)
-                                if ok:
-                                    filled_count += 1
-                                    yield _step("ok", f'Filled "{_nf_label}" -> {_nf_val}')
-                                    logger.info(f"[browser_agent] Dynamic field {_nf_label!r} filled → {_nf_val!r}")
-                                else:
-                                    yield _step("error", f'Could not fill dynamic field "{_nf_label}"')
                             else:
-                                logger.warning(f"[browser_agent] No answer for dynamic field {_nf_label!r}")
+                                logger.info(f"[browser_agent] Dynamic field {_nf_label!r} options: {_nf_opts}")
+                                # EEO fields (e.g. the race picker that appears after the
+                                # Hispanic answer) must be resolved from the profile, not
+                                # the generic safe-picker which would choose "Decline".
+                                _nf_val = _resolve_eeo_combobox(_nf_label, _nf_opts, profile)
+                                if not _nf_val:
+                                    _nf_val = await _pick_safe_combobox_answer(_nf_label, _nf_opts, profile)
+                                if _nf_val:
+                                    _nf_ok = await _fill_react_combobox(form, _nf_id, _nf_label, _nf_val, profile=profile)
+                                    if _nf_ok:
+                                        filled_count += 1
+                                        yield _step("ok", f'Filled "{_nf_label}" -> {_nf_val}')
+                                        logger.info(f"[browser_agent] Dynamic field {_nf_label!r} filled → {_nf_val!r}")
+                                    else:
+                                        yield _step("error", f'Could not fill dynamic field "{_nf_label}"')
+                                else:
+                                    logger.warning(f"[browser_agent] No answer for dynamic field {_nf_label!r}")
                         except Exception as _nfe:
                             logger.warning(f"[browser_agent] Dynamic field fill failed for {_nf_label!r}: {_nfe}")
+
+                        # ── Write the dynamic field into `fields` so it enters the draft ──
+                        # Without this, a field the form revealed after earlier answers is
+                        # filled on the page but stays INVISIBLE in the Review tab and is
+                        # NOT replayed in Phase 2 (the draft is built only from `fields`).
+                        #   filled  → skip=False with its value (Phase 2 replays it verbatim,
+                        #             no longer dependent on the dynamic scan re-firing)
+                        #   unfilled → needs_user=True so the user can complete it in Review
+                        #             (surfaced once apply.py/ReviewTab honour the flag)
+                        if not any(f.get("selector_hint") == _nf_id for f in fields):
+                            fields.append({
+                                "field_label":   _nf_label,
+                                "selector_hint": _nf_id,
+                                "field_type":    "text",
+                                "value":         _nf_val if _nf_ok else "",
+                                "skip":          False,
+                                "needs_user":    (not _nf_ok),
+                                "required":      ("*" in (_nf_label or "")),
+                                "options":       (_nf_opts or []) if not _nf_ok else [],
+                                "dynamic":       True,
+                            })
             except Exception as _dse:
                 logger.warning(f"[browser_agent] Dynamic field scan failed: {_dse}")
 
@@ -2584,6 +2700,9 @@ async def run_apply_agent(
                         "field_type":    f.get("field_type", "text"),
                         "value":         f.get("value", ""),
                         "skip":          bool(f.get("skip", False)),
+                        "needs_user":    bool(f.get("needs_user", False)),
+                        "required":      bool(f.get("required", False)),
+                        "options":       f.get("options") or [],
                     }
                     for f in fields
                 ]

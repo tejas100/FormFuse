@@ -2699,6 +2699,7 @@ function ReviewTab({ onCountChange }) {
   const [recentlySubmitted, setRecentlySubmitted] = useState([]); // [{ id, job_title, company }]
   const [otpInputs, setOtpInputs]         = useState({});         // { job.id: code being typed }
   const [otpSubmitting, setOtpSubmitting] = useState(new Set());  // job ids with in-flight OTP POSTs
+  const [needsValues, setNeedsValues]     = useState({});         // `${jobId}::${label}` -> user answer for a field Rack couldn't fill
   const pollRef         = useRef(null);
   const inFlightRef     = useRef(new Map()); // id → {job_title, company} for approved/replaying/awaiting_otp jobs
 
@@ -2806,8 +2807,11 @@ function ReviewTab({ onCountChange }) {
     // Sequential on purpose — the backend serializes browser work anyway,
     // and sequential POSTs keep the optimistic UI updates orderly.
     for (const job of awaiting) {
+      // Can't bulk-approve a job that still needs a required manual answer —
+      // leave it for the user to complete individually.
+      if (unansweredRequiredNeeds(job).length > 0) continue;
       // eslint-disable-next-line no-await-in-loop
-      await decide(job, "approve");
+      await decide(job, "approve", collectNeedsEdits(job));
     }
     setApprovingAll(false);
   };
@@ -2819,10 +2823,35 @@ function ReviewTab({ onCountChange }) {
     setEditingId(job.id);
   };
 
+  // ── needs_user: required fields Rack couldn't answer ────────────────────
+  // The user fills these in the card; their answers ride along as draft edits
+  // (merged by field_label server-side, exactly like answer edits).
+  const needsKey = (jobId, label) => `${jobId}::${label}`;
+
+  const collectNeedsEdits = (job) => (job.needs_user || [])
+    .map(f => {
+      const v = (needsValues[needsKey(job.id, f.label)] || "").trim();
+      return v ? { field_label: f.field_label || f.label, new_value: v } : null;
+    })
+    .filter(Boolean);
+
+  const unansweredNeeds = (job) => (job.needs_user || [])
+    .filter(f => !(needsValues[needsKey(job.id, f.label)] || "").trim());
+
+  // Only REQUIRED unanswered fields block submit. Optional dropped fields are
+  // offered for completeness but never gate the application.
+  const unansweredRequiredNeeds = (job) => (job.needs_user || [])
+    .filter(f => f.required && !(needsValues[needsKey(job.id, f.label)] || "").trim());
+
+  const approveJob = async (job) => {
+    await decide(job, "approve", collectNeedsEdits(job));
+  };
+
   const approveWithEdits = async (job) => {
-    const edits = (job.answers || [])
+    const answerEdits = (job.answers || [])
       .filter(a => editValues[a.label] !== undefined && editValues[a.label] !== a.value)
       .map(a => ({ field_label: a.label, new_value: editValues[a.label] }));
+    const edits = [...answerEdits, ...collectNeedsEdits(job)];
     await decide(job, "approve", edits);
   };
 
@@ -2921,12 +2950,79 @@ function ReviewTab({ onCountChange }) {
     );
   };
 
+  // Render function (NOT a nested component — a component identity would change
+  // each render and the <input>/<select> would lose focus per keystroke).
+  const renderNeedsUser = (job) => {
+    const fields = job.needs_user || [];
+    if (fields.length === 0) return null;
+    const reqCount = fields.filter(f => f.required).length;
+    const optCount = fields.length - reqCount;
+    const hasReq   = reqCount > 0;
+    // Orange/alarming only when something required is missing; otherwise neutral.
+    const accent   = hasReq ? "#fb923c" : "var(--text-dim)";
+    const header   = hasReq
+      ? `Rack couldn't answer ${reqCount} required field${reqCount !== 1 ? "s" : ""} on this form. Please complete ${reqCount !== 1 ? "them" : "it"} before submitting.`
+      : `Rack left ${optCount} optional field${optCount !== 1 ? "s" : ""} blank — add ${optCount !== 1 ? "them" : "it"} if you'd like.`;
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column", gap: 10,
+        padding: 12, marginTop: 4,
+        background: hasReq ? "rgba(251,146,60,0.06)" : "var(--surface2)",
+        border: `1px solid ${hasReq ? "rgba(251,146,60,0.35)" : "var(--border)"}`,
+        borderRadius: 10,
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: accent, lineHeight: 1.4 }}>
+          {header}
+        </div>
+        {fields.map((f, i) => {
+          const key     = needsKey(job.id, f.label);
+          const val     = needsValues[key] ?? "";
+          const hasOpts = Array.isArray(f.options) && f.options.length > 0;
+          const inputStyle = {
+            width: "100%", boxSizing: "border-box",
+            background: "var(--surface2)", border: "1px solid var(--border)",
+            borderRadius: 8, padding: "8px 10px", color: "var(--text)",
+            fontSize: 12.5, fontFamily: "inherit",
+          };
+          return (
+            <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-dim)" }}>
+                {f.label}{!f.required && <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400, opacity: 0.7 }}> · optional</span>}
+              </div>
+              {hasOpts ? (
+                <select
+                  value={val}
+                  onChange={e => setNeedsValues(prev => ({ ...prev, [key]: e.target.value }))}
+                  style={inputStyle}
+                >
+                  <option value="">Select…</option>
+                  {f.options.map((o, oi) => <option key={oi} value={o}>{o}</option>)}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={val}
+                  placeholder="Type your answer"
+                  onChange={e => setNeedsValues(prev => ({ ...prev, [key]: e.target.value }))}
+                  style={inputStyle}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderReviewCard = (job) => {
     const isEditing  = editingId === job.id;
     const isDeciding = deciding.has(job.id);
     const isAttention = job.status === "needs_attention";
     const isInFlight  = job.status === "approved" || job.status === "replaying";
     const isOtp       = job.status === "awaiting_otp";
+    // Required fields Rack couldn't fill, still unanswered by the user → block submit.
+    // Optional dropped fields are offered but never block.
+    const needsBlocked = unansweredRequiredNeeds(job).length > 0;
     // While replaying / waiting for the code, the presubmit screenshot is the
     // freshest truth — exactly what is about to be (or was just) submitted.
     const screenshot  = ((isOtp || isInFlight) && job.presubmit_screenshot)
@@ -3101,6 +3197,9 @@ function ReviewTab({ onCountChange }) {
         {/* Q&A draft */}
         {(job.answers || []).length > 0 && !isAttention && renderAnswerList(job)}
 
+        {/* Required fields Rack couldn't answer — user completes these inline */}
+        {!isAttention && !isInFlight && !isOtp && renderNeedsUser(job)}
+
         {/* Actions — OTP cards have their own submit button in the code panel */}
         {!isInFlight && !isOtp && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -3110,7 +3209,7 @@ function ReviewTab({ onCountChange }) {
               </button>
             ) : isEditing ? (
               <>
-                <button style={btn(true)} disabled={isDeciding} onClick={() => approveWithEdits(job)}>
+                <button style={btn(true)} disabled={isDeciding || needsBlocked} onClick={() => approveWithEdits(job)}>
                   {isDeciding ? "Submitting…" : "Approve with edits ✓"}
                 </button>
                 <button style={btn(false)} disabled={isDeciding}
@@ -3120,7 +3219,7 @@ function ReviewTab({ onCountChange }) {
               </>
             ) : (
               <>
-                <button style={btn(true)} disabled={isDeciding} onClick={() => decide(job, "approve")}>
+                <button style={btn(true)} disabled={isDeciding || needsBlocked} onClick={() => approveJob(job)}>
                   {isDeciding ? "Submitting…" : "Approve & submit ✓"}
                 </button>
                 {(job.answers || []).length > 0 && (
@@ -3133,6 +3232,11 @@ function ReviewTab({ onCountChange }) {
                 </button>
               </>
             )}
+          </div>
+        )}
+        {needsBlocked && !isAttention && !isInFlight && !isOtp && (
+          <div style={{ fontSize: 11.5, color: "#fb923c", marginTop: -2 }}>
+            Answer the required field{unansweredRequiredNeeds(job).length !== 1 ? "s" : ""} above to enable submit.
           </div>
         )}
       </div>
