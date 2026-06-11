@@ -396,6 +396,9 @@ class ApplyJob(Base):
     job_title: Mapped[str]        = mapped_column(Text, nullable=False, default="", server_default="")
     company:   Mapped[str]        = mapped_column(Text, nullable=False, default="", server_default="")
 
+    # queued → filling → awaiting_review → approved → replaying
+    #   → (awaiting_otp → replaying)* → submitted | needs_attention
+    # | failed | skipped | job_removed
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="queued", server_default="queued", index=True
     )
@@ -410,6 +413,17 @@ class ApplyJob(Base):
     user_edits:              Mapped[list | None] = mapped_column(JSONB, nullable=True)  # [{field_label, new_value}]
     confirmation_screenshot: Mapped[str | None]  = mapped_column(Text, nullable=True)
     confirmation_text:       Mapped[str | None]  = mapped_column(Text, nullable=True)
+
+    # Email security-code (OTP) gate — Greenhouse emails an 8-char code and
+    # disables Submit until it is entered. Phase 1 detects the section
+    # (otp_expected); Phase 2 pauses at status=awaiting_otp until the user
+    # enters the code via POST /api/apply/jobs/{id}/otp.
+    otp_expected:         Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    otp_email_hint:       Mapped[str | None]      = mapped_column(Text, nullable=True)
+    otp_requested_at:     Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    presubmit_screenshot: Mapped[str | None]      = mapped_column(Text, nullable=True)
 
     error:    Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

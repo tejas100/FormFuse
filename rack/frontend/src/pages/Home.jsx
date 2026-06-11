@@ -1333,6 +1333,7 @@ export default function Home() {
   // Tracks which message (by msgId) is currently waiting at the review gate.
   // Used so handleConfirmSubmit can look up the Steel session_id for that message.
   const [applyReviewMsgId, setApplyReviewMsgId] = useState(null)
+  const [applyOtpMsgId, setApplyOtpMsgId]       = useState(null)   // message paused at the email security-code gate
   const [reviewCountdown, setReviewCountdown]   = useState(null)
   const reviewTimerRef                          = useRef(null)
   const [reviewWarningShown, setReviewWarningShown] = useState(false)
@@ -3000,6 +3001,36 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                 ? { ...m, applyReviewRequired: null, applySessionEnded: true, loading: false }
                 : m
               ))
+            } else if (event.type === 'otp_required' || event.type === 'otp_invalid') {
+              // ATS emailed the user a security code — the agent is holding
+              // the application open. ApplyAgentCard renders the code input.
+              if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null }
+              setReviewCountdown(null)
+              setReviewWarningShown(false)
+              setApplyOtpMsgId(msgId)
+              // Keep the Steel panel interactive — the user can watch the code land
+              setSteelViewer(prev => prev ? { ...prev, interactive: true } : prev)
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? {
+                    ...m,
+                    applyReviewRequired: null,
+                    applyOtpRequired: {
+                      email_hint: event.email_hint || '',
+                      invalid:    event.type === 'otp_invalid',
+                      text:       event.text || '',
+                    },
+                    loading: true,
+                  }
+                : m
+              ))
+            } else if (event.type === 'otp_timeout' || event.type === 'otp_fill_failed') {
+              // Code never arrived (or couldn't be typed) — nothing was submitted.
+              setApplyOtpMsgId(null)
+              setSteelViewer(null)
+              setMessages(prev => prev.map(m => m.id === msgId
+                ? { ...m, applyOtpRequired: null, applyError: event.text || 'The security code step failed — nothing was submitted.', loading: false }
+                : m
+              ))
             } else if (event.type === 'job_removed') {
               setSteelViewer(null)
               setMessages(prev => prev.map(m => m.id === msgId
@@ -3012,10 +3043,11 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               setReviewCountdown(null)
               setReviewWarningShown(false)
               setApplyReviewMsgId(null)
+              setApplyOtpMsgId(null)
               // Keep panel open — user can see the confirmation page
               setSteelViewer(prev => prev ? { ...prev, interactive: false } : prev)
               setMessages(prev => prev.map(m => m.id === msgId
-                ? { ...m, applyReviewRequired: null, applySubmitted: submittedData, loading: false }
+                ? { ...m, applyReviewRequired: null, applyOtpRequired: null, applySubmitted: submittedData, loading: false }
                 : m
               ))
             } else if (event.type === 'done') {
@@ -3024,8 +3056,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               setReviewCountdown(null)
               setReviewWarningShown(false)
               setApplyReviewMsgId(null)
+              setApplyOtpMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
-                ? { ...m, applyReviewRequired: null, applyDone: doneData, loading: false }
+                ? { ...m, applyReviewRequired: null, applyOtpRequired: null, applyDone: doneData, loading: false }
                 : m
               ))
             } else if (event.type === 'error') {
@@ -3033,8 +3066,9 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               setReviewCountdown(null)
               setReviewWarningShown(false)
               setApplyReviewMsgId(null)
+              setApplyOtpMsgId(null)
               setMessages(prev => prev.map(m => m.id === msgId
-                ? { ...m, applyReviewRequired: null, applyError: event.text, loading: false }
+                ? { ...m, applyReviewRequired: null, applyOtpRequired: null, applyError: event.text, loading: false }
                 : m
               ))
             }
@@ -3115,6 +3149,46 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
       }
     } catch (err) {
       console.error('[handleConfirmSubmit] Error:', err)
+    }
+  }
+
+
+  // ── Deliver the emailed security code (live OTP gate) ───────────
+  // Called by ApplyAgentCard's code input. The agent is paused inside the
+  // running stream, holding the application open; posting the code to
+  // /api/apply/otp/{session_id} unblocks it. Wrong/expired codes come back
+  // as a fresh otp_invalid SSE event, so no state is cleared here.
+  const handleSubmitOtp = async (code) => {
+    if (!applyOtpMsgId) return { ok: false, error: 'No application is waiting for a code.' }
+
+    const otpMsg = messages.find(m => m.id === applyOtpMsgId)
+    const sessionId = otpMsg?.applySessionId || steelViewer?.sessionId
+    if (!sessionId) {
+      console.error('[handleSubmitOtp] No sessionId found for OTP gate')
+      return { ok: false, error: 'Session not found — the application may have timed out.' }
+    }
+
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE}/api/apply/otp/${sessionId}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body:    JSON.stringify({ code }),
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        return { ok: false, error: errData.detail || `Server error (${res.status})` }
+      }
+      // Agent resumes — typing the code and clicking Submit. The stream's
+      // 'submitted' / 'otp_invalid' events take it from here.
+      setMessages(prev => prev.map(m => m.id === applyOtpMsgId
+        ? { ...m, applyOtpRequired: { ...(m.applyOtpRequired || {}), submitting: true } }
+        : m
+      ))
+      return { ok: true }
+    } catch (err) {
+      console.error('[handleSubmitOtp] Error:', err)
+      return { ok: false, error: err.message || 'Could not send the code — try again.' }
     }
   }
 
@@ -4630,6 +4704,8 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         company={msg.applyCompany}
                         reviewRequired={msg.applyReviewRequired || null}
                         onConfirmSubmit={handleConfirmSubmit}
+                        otpRequired={msg.applyOtpRequired || null}
+                        onSubmitOtp={handleSubmitOtp}
                         sessionId={msg.applySessionId || null}
                       />
                     </div>

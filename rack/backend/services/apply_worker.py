@@ -12,13 +12,28 @@ Phase 2 (Replay & Submit) — on user approval:
   auto-submit (review_event=None), capture the confirmation screenshot,
   mark auto_match_results.applied=True.
 
+  Email security-code (OTP) gate: Greenhouse emails the candidate an
+  8-character code and disables Submit until it is entered. When the agent
+  detects the code section it yields "otp_required"; the worker flips the job
+  to status=awaiting_otp (with the pre-submit screenshot + email hint) and the
+  agent blocks on an asyncio.Queue. The review UI shows a code input;
+  POST /api/apply/jobs/{id}/otp pushes the code onto the queue via
+  submit_otp_code(), the agent types it, clicks Submit, and verifies.
+  Wrong/expired codes re-prompt (otp_invalid) instead of failing the job.
+
 Concurrency: a single module-level asyncio.Lock serializes ALL browser work.
 Exactly one Chromium at a time — required on Render free tier (512MB) and
 polite to the ATSes.
+NOTE: the OTP wait happens while holding _browser_lock — deliberate v1
+tradeoff. The session must stay open (the filled form + code live in it), and
+with one-at-a-time browser work the lock is busy either way. The 10-minute
+agent-side timeout bounds the worst case.
 
 Crash safety: every state transition is a DB write. recover_orphans() runs
 at startup and resets rows stuck in transient states (filling → queued,
-replaying → approved) so a Render restart resumes cleanly.
+replaying → approved, awaiting_otp → approved) so a Render restart resumes
+cleanly. awaiting_otp cannot be resumed in place — the browser session died
+with the process — so it replays from the draft, which triggers a fresh code.
 
 NOTE: requires the `apply-screenshots` PRIVATE bucket in Supabase Storage.
 """
@@ -40,6 +55,11 @@ logger = logging.getLogger(__name__)
 # One browser at a time — Phase 1 and Phase 2 both acquire this.
 _browser_lock = asyncio.Lock()
 
+# Live OTP gates for jobs paused at awaiting_otp, keyed by str(apply_job.id).
+# The agent blocks on queue.get(); POST /api/apply/jobs/{id}/otp calls
+# submit_otp_code() which puts the user's code onto the queue.
+_pending_otp: dict[str, asyncio.Queue] = {}
+
 _SCREENSHOT_BUCKET = "apply-screenshots"
 _MAX_ATTEMPTS      = 2      # per job, per phase
 _APP_BASE_URL      = os.environ.get("APP_BASE_URL", "https://rackx.app")
@@ -47,6 +67,25 @@ _APP_BASE_URL      = os.environ.get("APP_BASE_URL", "https://rackx.app")
 
 def _utcnow():
     return datetime.now(timezone.utc)
+
+
+# ── OTP gate API (used by routers/apply.py) ───────────────────────────────────
+
+def submit_otp_code(apply_job_id: str, code: str) -> bool:
+    """
+    Push a user-entered security code to the agent waiting on this job.
+    Returns False if no live gate exists (session expired / process restarted) —
+    the caller should tell the user to Retry the application.
+    """
+    q = _pending_otp.get(str(apply_job_id))
+    if q is None:
+        return False
+    q.put_nowait(code)
+    return True
+
+
+def has_pending_otp(apply_job_id: str) -> bool:
+    return str(apply_job_id) in _pending_otp
 
 
 # ── Supabase Storage helpers (sync SDK — run in thread) ───────────────────────
@@ -243,6 +282,10 @@ async def _capture_one(job: ApplyJob, profile: dict, resume_id: str | None, user
         screenshot_paths  = paths or None,
         filled_count      = captured.get("filled_count", 0),
         validation_errors = captured.get("validation_errors", 0),
+        # Security-code section detected on the form — the review card warns
+        # the user that approving will trigger a code email from the ATS.
+        otp_expected      = bool(captured.get("otp_expected", False)),
+        otp_email_hint    = captured.get("otp_email_hint") or None,
         error             = None,
     )
     return "awaiting_review"
@@ -372,9 +415,15 @@ async def process_approval(apply_job_id):
 
     from services.browser_agent import run_apply_agent
 
+    # OTP gate — registered BEFORE the agent starts so the /otp endpoint can
+    # always find it once the job shows status=awaiting_otp.
+    otp_queue = asyncio.Queue()
+    _pending_otp[str(job.id)] = otp_queue
+
     async with _browser_lock:
         await _set_job(job.id, status="replaying", attempts=job.attempts + 1)
         submitted = done_unconfirmed = job_removed = False
+        otp_timed_out = otp_fill_failed = False
         confirmation = None
         confirm_png = None
         err_text = None
@@ -392,9 +441,45 @@ async def process_approval(apply_job_id):
                 mode                = "headless",
                 precomputed_fields  = draft,
                 capture_screenshots = True,
+                otp_queue           = otp_queue,
             ):
                 etype = event.get("type")
-                if etype == "submitted":
+                if etype == "presubmit_capture":
+                    # Final form state right before Submit — the user sees this
+                    # in the review card (and next to the OTP prompt if one comes).
+                    png = event.get("screenshot_png")
+                    if png:
+                        path = await _upload_png(f"{job.user_id}/{job.id}/presubmit.png", png)
+                        if path:
+                            await _set_job(job.id, presubmit_screenshot=path)
+                elif etype == "otp_required":
+                    # Agent is now blocked on otp_queue. Surface the pause to
+                    # the review UI — the user enters the emailed code there.
+                    await _set_job(
+                        job.id,
+                        status           = "awaiting_otp",
+                        otp_email_hint   = event.get("email_hint") or job.otp_email_hint,
+                        otp_requested_at = _utcnow(),
+                        error            = None,
+                    )
+                    logger.info(f"[apply_worker] job {job.id} paused at OTP gate "
+                                f"(code emailed to {event.get('email_hint') or 'unknown'})")
+                elif etype == "otp_invalid":
+                    # Code rejected — agent is waiting for a fresh one.
+                    await _set_job(
+                        job.id,
+                        status           = "awaiting_otp",
+                        otp_requested_at = _utcnow(),
+                        error            = event.get("text") or
+                                           "That code didn't work — check your inbox for the newest email.",
+                    )
+                elif etype == "otp_timeout":
+                    otp_timed_out = True
+                    err_text = event.get("text")
+                elif etype == "otp_fill_failed":
+                    otp_fill_failed = True
+                    err_text = event.get("text")
+                elif etype == "submitted":
                     submitted = True
                     confirmation = event.get("confirmation")
                     confirm_png = event.get("screenshot_png")
@@ -409,6 +494,10 @@ async def process_approval(apply_job_id):
         except Exception as e:
             logger.error(f"[apply_worker] replay crashed for job {job.id}: {e}", exc_info=True)
             err_text = str(e)[:300]
+        finally:
+            # Gate is dead once the agent returns — codes sent after this
+            # get a 409 from the endpoint instead of silently vanishing.
+            _pending_otp.pop(str(job.id), None)
 
     confirm_path = None
     if confirm_png:
@@ -434,6 +523,19 @@ async def process_approval(apply_job_id):
     elif job_removed:
         await _set_job(job.id, status="job_removed", error=err_text)
         await _archive_removed_job(job)
+    elif otp_timed_out:
+        # Nothing was submitted — the form needed a code that never arrived
+        # (or kept being rejected). Back to awaiting_review so one click on
+        # "Approve & submit" retries cleanly (a fresh code gets emailed).
+        await _set_job(job.id, status="awaiting_review",
+                       otp_requested_at=None,
+                       error=err_text or "The security code wasn't entered in time — "
+                                         "nothing was submitted. Approve again when you're ready.")
+    elif otp_fill_failed:
+        await _set_job(job.id, status="awaiting_review",
+                       otp_requested_at=None,
+                       error=err_text or "Rack couldn't enter the security code into the form — "
+                                         "nothing was submitted. Approve again to retry.")
     elif done_unconfirmed:
         # Submit clicked but no confirmation detected. Do NOT retry automatically —
         # the application may have gone through. Human must check the ATS.
@@ -453,11 +555,19 @@ async def recover_orphans():
                               .values(status="queued", updated_at=_utcnow()))
         r2 = await db.execute(sa_update(ApplyJob).where(ApplyJob.status == "replaying")
                               .values(status="approved", updated_at=_utcnow()))
+        # awaiting_otp can't resume in place — the browser session died with
+        # the process. Back to approved: a re-approval replays the draft,
+        # which triggers a fresh code email.
+        r3 = await db.execute(sa_update(ApplyJob).where(ApplyJob.status == "awaiting_otp")
+                              .values(status="approved", updated_at=_utcnow(),
+                                      otp_requested_at=None))
         await db.commit()
     n1 = getattr(r1, "rowcount", 0) or 0
     n2 = getattr(r2, "rowcount", 0) or 0
-    if n1 or n2:
-        logger.info(f"[apply_worker] recovered orphans — filling→queued: {n1}, replaying→approved: {n2}")
+    n3 = getattr(r3, "rowcount", 0) or 0
+    if n1 or n2 or n3:
+        logger.info(f"[apply_worker] recovered orphans — filling→queued: {n1}, "
+                    f"replaying→approved: {n2}, awaiting_otp→approved: {n3}")
     # NOTE: recovered rows are NOT auto-restarted. A "Retry" action in the
     # review UI (or re-creating the batch) picks them up — deliberate, so a
     # crash loop can't silently hammer an ATS.

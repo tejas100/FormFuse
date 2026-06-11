@@ -464,7 +464,7 @@ async def _fill_gh_select2(page, label: str, profile: dict) -> bool:
                         return True
 
                 # Close dropdown if nothing matched
-                await page.keyboard.press("Escape")
+                await _kb(page).press("Escape")
                 await asyncio.sleep(0.2)
             except Exception:
                 continue
@@ -892,7 +892,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
 
         # ── Close and give up ─────────────────────────────────────────────────
         try:
-            await page.keyboard.press("Escape")
+            await _kb(page).press("Escape")
             await asyncio.sleep(0.2)
         except Exception:
             pass
@@ -902,7 +902,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
     except Exception as e:
         logger.warning(f"[react_combobox] Outer error for '{label}': {e}")
         try:
-            await page.keyboard.press("Escape")
+            await _kb(page).press("Escape")
         except Exception:
             pass
         return False
@@ -1087,12 +1087,12 @@ async def _scrape_combobox_options(page, selector_hint: str) -> list[str]:
         }""")
 
         # Step 4: Close dropdown
-        await page.keyboard.press("Escape")
+        await _kb(page).press("Escape")
         await asyncio.sleep(0.3)
         return options or []
     except Exception:
         try:
-            await page.keyboard.press("Escape")
+            await _kb(page).press("Escape")
         except Exception:
             pass
         return []
@@ -1166,6 +1166,322 @@ def _is_free_text_question(label: str) -> bool:
     return any(s in ll for s in _FREE_TEXT_SIGNALS)
 
 
+def _kb(ctx):
+    """
+    Keyboard for a Page OR Frame. Frames don't own a keyboard — typing into a
+    frame's focused element goes through the owning page's keyboard. Every
+    helper that types must use this instead of ctx.keyboard so it works
+    unchanged when the form lives inside an embedded ATS iframe.
+    """
+    return ctx.keyboard if hasattr(ctx, "keyboard") else ctx.page.keyboard
+
+
+# -- Cookie / consent banners ---------------------------------------------------
+# Careers sites (OneTrust, Cookiebot, TrustArc...) overlay a consent dialog
+# that intercepts clicks — including the Submit click. Dismiss it up front.
+
+_COOKIE_BUTTON_SELECTORS = [
+    "#onetrust-accept-btn-handler",                                   # OneTrust
+    "#truste-consent-button",                                         # TrustArc
+    "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",         # Cookiebot
+    'button:has-text("Accept All")',
+    'button:has-text("Accept all cookies")',
+    'button:has-text("Accept Cookies")',
+    'button:has-text("Allow all")',
+    'button:has-text("I Accept")',
+    'button:has-text("Got it")',
+]
+
+
+async def _dismiss_cookie_banners(page) -> bool:
+    """
+    Click consent-accept buttons on the main page and inside any frame
+    (consent dialogs are often rendered in their own iframe). Safe to call
+    repeatedly — some banners appear seconds after load.
+    """
+    dismissed = False
+    contexts = [page]
+    try:
+        contexts.extend(f for f in page.frames if f != page.main_frame)
+    except Exception:
+        pass
+    for ctx in contexts:
+        for sel in _COOKIE_BUTTON_SELECTORS:
+            try:
+                loc = ctx.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    await loc.click(timeout=2000)
+                    dismissed = True
+                    logger.info(f"[browser_agent] dismissed cookie banner via {sel!r}")
+                    await asyncio.sleep(0.4)
+                    break
+            except Exception:
+                continue
+    return dismissed
+
+
+# -- Form context resolution (embedded ATS iframes) ------------------------------
+# Many careers sites (e.g. Pinterest) embed the actual application form in a
+# Greenhouse/Lever/etc iframe. page.locator()/evaluate() never pierce iframes,
+# so scanning the top-level page finds only the site's search widgets — the
+# agent then "fills" the job-search box instead of the application. Resolve
+# the real form context ONCE after navigation and run everything against it.
+
+_ATS_FRAME_HINTS = (
+    "greenhouse.io", "grnhse", "lever.co", "ashbyhq.com",
+    "myworkdayjobs.com", "smartrecruiters.com", "jobvite.com", "icims.com",
+)
+
+
+async def _count_form_fields(ctx) -> int:
+    try:
+        return await ctx.evaluate(
+            "() => document.querySelectorAll("
+            "'input:not([type=hidden]), select, textarea').length"
+        )
+    except Exception:
+        return 0
+
+
+async def _looks_like_application(ctx) -> bool:
+    """Strong application-form signals: file input, name fields, apply copy."""
+    try:
+        return bool(await ctx.evaluate("""() => {
+            const t = document.body ? document.body.innerText.toLowerCase() : '';
+            const applyCopy = t.includes('apply for this job')
+                           || t.includes('submit application')
+                           || t.includes('submit your application');
+            const hasFile = !!document.querySelector('input[type="file"]');
+            const hasName = !!document.querySelector(
+                '#first_name, input[autocomplete="given-name"], input[name*="first" i]');
+            return hasFile || hasName || applyCopy;
+        }"""))
+    except Exception:
+        return False
+
+
+async def _resolve_form_context(page):
+    """
+    Return the Page or child Frame that contains the application form.
+
+    Selection: an ATS-hosted frame (greenhouse/lever/...) with any fields wins
+    outright; a generic frame qualifies only with >= 5 fields AND application
+    signals (keeps reCAPTCHA/widget frames out). The main page keeps priority
+    when it already looks like the application itself (direct ATS URLs).
+    Retries once after 2s — embedded boards can hydrate late.
+    """
+    for attempt in range(2):
+        main_fields = await _count_form_fields(page)
+        main_looks  = await _looks_like_application(page)
+        if main_looks and main_fields >= 4:
+            return page   # direct application page — no frame needed
+
+        best = None   # (score, fields, frame)
+        try:
+            frames = [f for f in page.frames if f != page.main_frame]
+        except Exception:
+            frames = []
+        for fr in frames:
+            url = (fr.url or "").lower()
+            is_ats = any(h in url for h in _ATS_FRAME_HINTS)
+            n = await _count_form_fields(fr)
+            if n == 0:
+                continue
+            if is_ats:
+                score = 100 + n
+            else:
+                if n < 5 or not await _looks_like_application(fr):
+                    continue
+                score = 30 + n
+            if best is None or score > best[0]:
+                best = (score, n, fr)
+
+        if best is not None:
+            logger.info(
+                f"[browser_agent] form context: embedded frame url={best[2].url!r} "
+                f"fields={best[1]} (main page fields={main_fields})"
+            )
+            return best[2]
+
+        # Nothing convincing anywhere yet — give a hydrating iframe one more chance
+        if attempt == 0 and main_fields < 4:
+            await asyncio.sleep(2)
+
+    return page
+
+
+# -- Email verification (security code) gate -----------------------------------
+# Greenhouse's new ATS emails the candidate an 8-character code and disables
+# Submit until it is entered. The agent detects the code section, pauses,
+# surfaces an "otp_required" event, and waits for the code on otp_queue.
+
+_OTP_BOX_SELECTORS = [
+    # Most specific first. Greenhouse renders a group of single-char inputs.
+    'input[autocomplete="one-time-code"]',
+    'fieldset:has-text("Security code") input',
+    '[class*="security-code" i] input',
+    '[id*="security" i] input[maxlength="1"]',
+    'input[maxlength="1"]',
+]
+
+_OTP_TEXT_SIGNALS = (
+    "verification code was sent",
+    "security code",
+    "enter the 8-character code",
+    "code to confirm you're a human",
+)
+
+_OTP_INVALID_PHRASES = (
+    "invalid code", "incorrect code", "code is invalid", "code is incorrect",
+    "code you entered", "verification failed", "code has expired", "expired code",
+    "wrong code", "please request a new code",
+)
+
+
+async def _detect_security_code(page) -> dict:
+    """
+    Detect an email-verification (security code) section on the page.
+    Returns {present, email_hint, selector, box_count}.
+    """
+    info = {"present": False, "email_hint": "", "selector": None, "box_count": 0}
+    try:
+        body_text = await page.inner_text("body")
+    except Exception:
+        return info
+
+    text_lower = body_text.lower()
+    has_text_signal = any(s in text_lower for s in _OTP_TEXT_SIGNALS)
+
+    # Extract the email the code was sent to — shown to the user in the UI
+    import re as _re
+    m = _re.search(
+        r"code was sent to\s+([\w.+-]+@[\w.-]+\.\w{2,})", body_text, _re.IGNORECASE
+    )
+    if m:
+        info["email_hint"] = m.group(1).rstrip(".")
+
+    # Find the actual input boxes
+    for sel in _OTP_BOX_SELECTORS:
+        try:
+            loc = page.locator(sel)
+            count = await loc.count()
+            if count == 0:
+                continue
+            visible = 0
+            for i in range(min(count, 12)):
+                try:
+                    if await loc.nth(i).is_visible():
+                        visible += 1
+                except Exception:
+                    continue
+            # A single one-time-code input, or a group of >= 4 char boxes,
+            # only counts when the page text also talks about a code —
+            # bare maxlength=1 inputs alone are too weak a signal.
+            if visible >= 4 or (visible >= 1 and has_text_signal):
+                info["present"]   = True
+                info["selector"]  = sel
+                info["box_count"] = visible
+                return info
+        except Exception:
+            continue
+
+    return info
+
+
+async def _fill_security_code(page, code: str, detect_info: dict) -> bool:
+    """
+    Fill the security code. Primary strategy: focus the first box and type the
+    whole code with real key events — OTP groups auto-advance focus per
+    keystroke, and React-controlled inputs only register trusted-looking key
+    events (same gotcha as the combobox work). Fallback: per-box fill().
+    Verifies what landed in the boxes before returning True.
+    """
+    sel = detect_info.get("selector")
+    if not sel or not code:
+        return False
+    code = code.strip().replace(" ", "").replace("-", "")
+
+    async def _read_back() -> str:
+        try:
+            loc = page.locator(sel)
+            n = await loc.count()
+            vals = []
+            for i in range(min(n, 12)):
+                try:
+                    if await loc.nth(i).is_visible():
+                        vals.append(await loc.nth(i).input_value())
+                except Exception:
+                    vals.append("")
+            return "".join(vals)
+        except Exception:
+            return ""
+
+    async def _clear_boxes():
+        try:
+            loc = page.locator(sel)
+            n = await loc.count()
+            for i in range(min(n, 12)):
+                try:
+                    if await loc.nth(i).is_visible():
+                        await loc.nth(i).fill("")
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # Strategy A — focus first box, type the whole code (auto-advance)
+    try:
+        await _clear_boxes()
+        first = page.locator(sel).first
+        await first.scroll_into_view_if_needed()
+        await first.click()
+        await asyncio.sleep(0.2)
+        await _kb(page).type(code, delay=90)
+        await asyncio.sleep(0.4)
+        entered = (await _read_back()).strip()
+        if entered.lower() == code.lower():
+            return True
+        logger.info(f"[browser_agent] OTP type-through readback mismatch "
+                    f"(got {len(entered)} chars, want {len(code)}) — trying per-box fill")
+    except Exception as e:
+        logger.warning(f"[browser_agent] OTP type-through failed: {e}")
+
+    # Strategy B — fill each visible box individually
+    try:
+        await _clear_boxes()
+        loc = page.locator(sel)
+        n = await loc.count()
+        boxes = []
+        for i in range(min(n, 12)):
+            try:
+                if await loc.nth(i).is_visible():
+                    boxes.append(loc.nth(i))
+            except Exception:
+                continue
+        if len(boxes) == 1:
+            await boxes[0].fill(code)
+        else:
+            for i, ch in enumerate(code):
+                if i >= len(boxes):
+                    break
+                await boxes[i].click()
+                await _kb(page).type(ch, delay=60)
+        await asyncio.sleep(0.4)
+        entered = (await _read_back()).strip()
+        return entered.lower() == code.lower()
+    except Exception as e:
+        logger.warning(f"[browser_agent] OTP per-box fill failed: {e}")
+        return False
+
+
+async def _page_has_invalid_code_error(page) -> bool:
+    try:
+        text_lower = (await page.inner_text("body")).lower()
+        return any(p in text_lower for p in _OTP_INVALID_PHRASES)
+    except Exception:
+        return False
+
+
 # -- Main agent generator -----------------------------------------------------
 
 async def run_apply_agent(
@@ -1182,6 +1498,7 @@ async def run_apply_agent(
     stop_before_submit: bool           = False,       # batch Phase 1: fill → capture → return, NEVER submit
     precomputed_fields: list | None    = None,        # batch Phase 2 replay: saved draft, skips LLM detection
     capture_screenshots: bool          = False,       # attach screenshot_png bytes to captured/submitted events
+    otp_queue: asyncio.Queue | None    = None,        # email security-code gate: codes arrive here from the OTP endpoint
 ) -> AsyncGenerator[dict, None]:
     """
     Async generator yielding SSE-ready step dicts.
@@ -1281,6 +1598,28 @@ async def run_apply_agent(
             await asyncio.sleep(2)
             yield _step("ok", "Navigated to " + company + " application")
 
+            # -- Cookie / consent banners ---------------------------------------
+            # Dismiss BEFORE anything else: consent overlays intercept clicks
+            # (including Submit) and pollute every screenshot.
+            try:
+                await _dismiss_cookie_banners(page)
+            except Exception as _cke:
+                logger.debug(f"[browser_agent] cookie dismissal failed (continuing): {_cke}")
+
+            # -- Form context resolution ------------------------------------------
+            # Careers sites often embed the real application in an ATS iframe
+            # (e.g. Pinterest → Greenhouse). Everything below — field detection,
+            # filling, file upload, OTP, submit, confirmation — runs against
+            # `form`, which is either the page itself or that embedded frame.
+            form = page
+            try:
+                form = await _resolve_form_context(page)
+                if form is not page:
+                    yield _step("ok", "Application form found in embedded frame")
+            except Exception as _fre:
+                logger.warning(f"[browser_agent] form context resolution failed — using main page: {_fre}")
+                form = page
+
             # -- Job-removed detection ----------------------------------------
             # Check BEFORE any field detection. If the page is a job listing
             # board (no application form) or explicitly says the job is gone,
@@ -1290,7 +1629,15 @@ async def run_apply_agent(
                 # via JS after initial page load. 2s may not be enough.
                 await asyncio.sleep(1.5)
 
+                # Removal banners can render in the main page OR inside the
+                # embedded ATS iframe — collect text from every context.
                 page_text_check = (await page.inner_text("body")).lower()
+                try:
+                    for _fr in page.frames:
+                        if _fr != page.main_frame:
+                            page_text_check += " " + (await _fr.inner_text("body")).lower()
+                except Exception:
+                    pass
                 page_url_check  = page.url.lower()
 
                 # Explicit removal signals in page text.
@@ -1326,7 +1673,8 @@ async def run_apply_agent(
                 # Detect landing on a job BOARD (listing page) instead of an application.
                 # Board pages have no <form> element but DO have filter/search inputs —
                 # so we check only for the absence of a form, not absence of all inputs.
-                has_form = await page.locator("form").count() > 0
+                # A resolved embedded frame counts as having a form.
+                has_form = (form is not page) or (await form.locator("form").count() > 0)
 
                 # Board-root URL patterns — landed on company job listing, not a specific application
                 _BOARD_URL_PATTERNS = [
@@ -1360,7 +1708,7 @@ async def run_apply_agent(
                 logger.debug(f"[browser_agent] Job-removed check failed (continuing): {_jc_err}")
 
             # -- DOM snapshot -------------------------------------------------
-            raw_html = await page.content()
+            raw_html = await form.content()
 
             # -- DOM structural snapshot — extract every form element with full
             # context: id, name, label text, parent question text, select options.
@@ -1368,7 +1716,7 @@ async def run_apply_agent(
             # raw HTML — LLM uses the clean field table to produce accurate selector_hints.
             dom_snapshot = []
             try:
-                dom_snapshot = await page.evaluate("""() => {
+                dom_snapshot = await form.evaluate("""() => {
                     const results = [];
                     document.querySelectorAll('input, select, textarea').forEach((el, i) => {
                         const label = document.querySelector(`label[for="${el.id}"]`);
@@ -1546,7 +1894,7 @@ async def run_apply_agent(
             for (_, _sf, _sf_hint, _sf_label) in _resolve_targets:
                 try:
                     logger.info(f"[browser_agent] Resolving combobox: {_sf_label!r}")
-                    _opts = await _scrape_combobox_options(page, _sf_hint)
+                    _opts = await _scrape_combobox_options(form, _sf_hint)
                     if not _opts:
                         logger.warning(f"[browser_agent] No options scraped for {_sf_label!r} — leaving skipped")
                         continue
@@ -1680,7 +2028,7 @@ async def run_apply_agent(
                         # Write the answer back into the field dict so draft
                         # capture (stop_before_submit) includes it.
                         field["value"] = answer
-                        ok = await _fill_field(page, label, selector, answer,
+                        ok = await _fill_field(form, label, selector, answer,
                                                "textarea", ats_selectors)
                         if ok:
                             filled_count += 1
@@ -1697,7 +2045,7 @@ async def run_apply_agent(
                     # Last-chance: if this is a React combobox, scrape options and resolve
                     if selector in _react_combobox_ids:
                         try:
-                            _lc_opts = await _scrape_combobox_options(page, selector)
+                            _lc_opts = await _scrape_combobox_options(form, selector)
                             if _lc_opts:
                                 _lc_val = await _pick_safe_combobox_answer(label, _lc_opts, profile)
                                 if _lc_val:
@@ -1722,7 +2070,7 @@ async def run_apply_agent(
                 # Use JS to find input[type="url"] elements in DOM order,
                 # match by nearby label text, fill directly.
                 if is_gh and field_type == "url" and value:
-                    filled_this = await _fill_gh_url_field(page, label, value)
+                    filled_this = await _fill_gh_url_field(form, label, value)
                     if filled_this:
                         filled_count += 1
                         yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
@@ -1741,7 +2089,7 @@ async def run_apply_agent(
                     and value == "check"
                 )
                 if is_real_checkbox or (field_type == "checkbox" and value == "check"):
-                    _cb_ok = await _fill_by_css(page, selector, value, "checkbox")
+                    _cb_ok = await _fill_by_css(form, selector, value, "checkbox")
                     if not _cb_ok:
                         # Fallback: try by name attribute and by label-adjacent selector
                         for _cb_sel in [
@@ -1749,7 +2097,7 @@ async def run_apply_agent(
                             f'input[type="checkbox"][name="{selector}"]',
                             f'input[type="checkbox"]',   # last resort: first checkbox on page
                         ]:
-                            _loc = page.locator(_cb_sel).first
+                            _loc = form.locator(_cb_sel).first
                             if await _loc.count() > 0:
                                 if not await _loc.is_checked():
                                     await _loc.check(timeout=3000)
@@ -1775,7 +2123,7 @@ async def run_apply_agent(
                 if is_consent_dropdown:
                     _consent_ok = False
                     for _copt in _CONSENT_OPTION_CANDIDATES:
-                        _consent_ok = await _fill_react_combobox(page, selector, label, _copt)
+                        _consent_ok = await _fill_react_combobox(form, selector, label, _copt)
                         if _consent_ok:
                             break
                     if _consent_ok:
@@ -1792,7 +2140,7 @@ async def run_apply_agent(
                 # React-Select or similar. Must come BEFORE GH select2 routing
                 # so these don't get misrouted to _fill_gh_select2.
                 if selector in _react_combobox_ids:
-                    ok = await _fill_react_combobox(page, selector, label, value, profile=profile)
+                    ok = await _fill_react_combobox(form, selector, label, value, profile=profile)
                     if ok:
                         filled_count += 1
                         yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
@@ -1809,14 +2157,14 @@ async def run_apply_agent(
                     for k in _GH_SELECT2_FIELDS
                 )
                 if is_gh and (is_select2_label or field_type in ("checkbox", "select")):
-                    ok = await _fill_gh_select2(page, label, profile)
+                    ok = await _fill_gh_select2(form, label, profile)
                     if ok:
                         filled_count += 1
                         yield _step("ok", 'Filled "' + label + '" (dropdown)')
                     else:
                         # For non-select2 selects, fall through to standard fill
                         if field_type == "select" and not is_select2_label:
-                            ok = await _fill_field(page, label, selector, value,
+                            ok = await _fill_field(form, label, selector, value,
                                                    field_type, ats_selectors)
                             if ok:
                                 filled_count += 1
@@ -1829,7 +2177,7 @@ async def run_apply_agent(
                     continue
 
                 # ── Standard fill ─────────────────────────────────────────────
-                ok = await _fill_field(page, label, selector, value,
+                ok = await _fill_field(form, label, selector, value,
                                        field_type, ats_selectors)
                 if ok:
                     filled_count += 1
@@ -1872,7 +2220,7 @@ async def run_apply_agent(
             # of 21, omitting both Attach inputs). The DOM is ground truth.
             # If a resume file input exists on the page, attach. End of story.
             try:
-                _has_file_input = await page.evaluate("""() => {
+                _has_file_input = await form.evaluate("""() => {
                     const el = document.querySelector('input[type="file"]#resume')
                             || document.querySelector('input[type="file"]');
                     return !!el;
@@ -1941,11 +2289,11 @@ async def run_apply_agent(
                             _mime  = "application/pdf" if _ext == "pdf" else "application/octet-stream"
                             _resume_bytes = _r.content
 
-                            # Confirm a file input exists on the page (used by
+                            # Confirm a file input exists on the form (used by
                             # both primary and fallback paths).
-                            _resume_inp = page.locator('input[type="file"]#resume')
+                            _resume_inp = form.locator('input[type="file"]#resume')
                             if await _resume_inp.count() == 0:
-                                _resume_inp = page.locator('input[type="file"]').first
+                                _resume_inp = form.locator('input[type="file"]').first
 
                             if await _resume_inp.count() == 0:
                                 yield _step("skip", "No file input found on page")
@@ -1975,21 +2323,49 @@ async def run_apply_agent(
                                         # uploaded VM-side file path to the input node.
                                         _cdp = await context.new_cdp_session(page)
                                         try:
-                                            _doc = await _cdp.send("DOM.getDocument")
-                                            _root_id = _doc["root"]["nodeId"]
-
-                                            # Try #resume first, then any file input.
-                                            _node = await _cdp.send("DOM.querySelector", {
-                                                "nodeId":   _root_id,
-                                                "selector": 'input[type="file"]#resume',
-                                            })
-                                            _node_id = _node.get("nodeId", 0)
-                                            if not _node_id:
+                                            _node_id = 0
+                                            if form is page:
+                                                # Main document — direct querySelector works
+                                                _doc = await _cdp.send("DOM.getDocument")
+                                                _root_id = _doc["root"]["nodeId"]
                                                 _node = await _cdp.send("DOM.querySelector", {
                                                     "nodeId":   _root_id,
-                                                    "selector": 'input[type="file"]',
+                                                    "selector": 'input[type="file"]#resume',
                                                 })
                                                 _node_id = _node.get("nodeId", 0)
+                                                if not _node_id:
+                                                    _node = await _cdp.send("DOM.querySelector", {
+                                                        "nodeId":   _root_id,
+                                                        "selector": 'input[type="file"]',
+                                                    })
+                                                    _node_id = _node.get("nodeId", 0)
+                                            else:
+                                                # Form lives in an iframe — DOM.querySelector
+                                                # does NOT cross document boundaries. Fetch
+                                                # the pierced tree and walk it manually for
+                                                # <input type="file"> in ANY document.
+                                                _doc = await _cdp.send("DOM.getDocument",
+                                                                       {"depth": -1, "pierce": True})
+                                                _file_inputs = []   # [(node_id, is_resume)]
+
+                                                def _walk(node):
+                                                    if node.get("nodeName", "").upper() == "INPUT":
+                                                        attrs = node.get("attributes", []) or []
+                                                        amap = dict(zip(attrs[::2], attrs[1::2]))
+                                                        if amap.get("type", "").lower() == "file":
+                                                            _file_inputs.append(
+                                                                (node.get("nodeId", 0), amap.get("id") == "resume")
+                                                            )
+                                                    for key in ("children", "shadowRoots"):
+                                                        for ch in node.get(key, []) or []:
+                                                            _walk(ch)
+                                                    if node.get("contentDocument"):
+                                                        _walk(node["contentDocument"])
+
+                                                _walk(_doc["root"])
+                                                _resume_hits = [nid for nid, is_r in _file_inputs if is_r and nid]
+                                                _any_hits    = [nid for nid, _ in _file_inputs if nid]
+                                                _node_id = (_resume_hits or _any_hits or [0])[0]
 
                                             if _node_id:
                                                 await _cdp.send("DOM.setFileInputFiles", {
@@ -2000,7 +2376,7 @@ async def run_apply_agent(
                                                 # synthetic change event — CDP sets
                                                 # the file property but doesn't
                                                 # always fire the listener chain.
-                                                await page.evaluate("""
+                                                await form.evaluate("""
                                                     const inp = document.querySelector('input[type="file"]#resume')
                                                               || document.querySelector('input[type="file"]');
                                                     if (inp) {
@@ -2042,7 +2418,7 @@ async def run_apply_agent(
                                 if not _attached:
                                     try:
                                         yield _step("ok", "Retrying resume attach via fallback...")
-                                        await page.evaluate("""
+                                        await form.evaluate("""
                                             const inp = document.querySelector('input[type="file"]#resume')
                                                       || document.querySelector('input[type="file"]');
                                             if (inp) {
@@ -2059,7 +2435,7 @@ async def run_apply_agent(
                                             "buffer":   _resume_bytes,
                                         }])
 
-                                        await page.evaluate("""
+                                        await form.evaluate("""
                                             const inp = document.querySelector('input[type="file"]#resume')
                                                       || document.querySelector('input[type="file"]');
                                             if (inp) {
@@ -2105,7 +2481,7 @@ async def run_apply_agent(
             # Re-snapshot the DOM, find any select__input comboboxes that are
             # now visible but were NOT in the original snapshot, and fill them.
             try:
-                _post_snapshot = await page.evaluate(
+                _post_snapshot = await form.evaluate(
                     """() => {
                         const results = [];
                         document.querySelectorAll('input.select__input').forEach((el) => {
@@ -2130,7 +2506,7 @@ async def run_apply_agent(
                         _nf_id    = _nf['id']
                         _nf_label = _nf.get('labelText') or _nf.get('parentText', '')[:80]
                         try:
-                            _nf_opts = await _scrape_combobox_options(page, _nf_id)
+                            _nf_opts = await _scrape_combobox_options(form, _nf_id)
                             if not _nf_opts:
                                 logger.warning(f"[browser_agent] Dynamic field {_nf_label!r}: no options scraped")
                                 continue
@@ -2142,7 +2518,7 @@ async def run_apply_agent(
                             if not _nf_val:
                                 _nf_val = await _pick_safe_combobox_answer(_nf_label, _nf_opts, profile)
                             if _nf_val:
-                                ok = await _fill_react_combobox(page, _nf_id, _nf_label, _nf_val, profile=profile)
+                                ok = await _fill_react_combobox(form, _nf_id, _nf_label, _nf_val, profile=profile)
                                 if ok:
                                     filled_count += 1
                                     yield _step("ok", f'Filled "{_nf_label}" -> {_nf_val}')
@@ -2159,6 +2535,13 @@ async def run_apply_agent(
             # -- Pre-submit scroll & validation ----------------------------------
             await asyncio.sleep(0.4)
 
+            # Late consent banners — some appear seconds after load and would
+            # intercept the Submit click or pollute the pre-submit screenshot.
+            try:
+                await _dismiss_cookie_banners(page)
+            except Exception:
+                pass
+
             # Scroll to bottom so all fields are visible and validation triggers
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -2169,7 +2552,7 @@ async def run_apply_agent(
             # Check for visible validation errors
             validation_errors = 0
             try:
-                error_locs = page.locator(
+                error_locs = form.locator(
                     '.error-message:visible, .field-error:visible, '
                     '[aria-invalid="true"]:visible, .invalid-feedback:visible'
                 )
@@ -2190,6 +2573,10 @@ async def run_apply_agent(
                     except Exception as _sse_err:
                         logger.warning(f"[browser_agent] capture screenshot failed: {_sse_err}")
 
+                # Detect the email-verification section now so the review card
+                # can warn the user that approving will trigger a code email.
+                _otp_phase1 = await _detect_security_code(form)
+
                 _draft = [
                     {
                         "field_label":   f.get("field_label", ""),
@@ -2206,6 +2593,8 @@ async def run_apply_agent(
                     "screenshot_png":    _shot_png,   # raw bytes — in-process consumers only
                     "filled_count":      filled_count,
                     "validation_errors": validation_errors,
+                    "otp_expected":      _otp_phase1.get("present", False),
+                    "otp_email_hint":    _otp_phase1.get("email_hint", ""),
                     "job_url":           job_url,
                     "job_id":            job_id,
                     "text": (
@@ -2250,7 +2639,86 @@ async def run_apply_agent(
             yield _step("ok", "Confirmed — submitting application...")
             await asyncio.sleep(0.3)
 
-            # -- Find and click Submit ----------------------------------------
+            # -- Pre-submit screenshot ------------------------------------------
+            # Proof of the final form state right before submission. In the
+            # batch flow the worker uploads this so the user sees exactly what
+            # is about to be sent — especially important when an OTP pause
+            # happens between approval and the actual submit click.
+            if capture_screenshots:
+                try:
+                    await page.evaluate("window.scrollTo(0, 0)")
+                    await asyncio.sleep(0.3)
+                    _presubmit_png = await page.screenshot(full_page=True, type="png")
+                    yield {
+                        "type":           "presubmit_capture",
+                        "screenshot_png": _presubmit_png,   # bytes — in-process only
+                        "text":           "Final form state captured before submission",
+                    }
+                except Exception as _pse:
+                    logger.warning(f"[browser_agent] presubmit screenshot failed: {_pse}")
+
+            # -- Security code (email OTP) gate ---------------------------------
+            # Greenhouse disables Submit until the emailed code is entered, so
+            # this must run BEFORE the submit click. The agent pauses, surfaces
+            # otp_required, and waits for the code on otp_queue. Wrong/expired
+            # codes are detected after the submit attempt and re-prompted.
+            _OTP_TIMEOUT       = 600   # seconds — codes expire; 10 min is generous
+            _MAX_OTP_ATTEMPTS  = 3
+            _otp_attempts      = 0
+
+            _otp_info = await _detect_security_code(form)
+            if _otp_info["present"]:
+                logger.info(f"[browser_agent] Security code gate detected "
+                            f"(boxes={_otp_info['box_count']}, email={_otp_info['email_hint'] or 'unknown'})")
+                if otp_queue is None:
+                    # No way to collect a code in this flow — bail honestly.
+                    yield _step("error", "This application requires an emailed security code, "
+                                         "which this flow cannot collect")
+                    yield {
+                        "type":         "done",
+                        "text":         "Form filled but " + company + " requires an emailed "
+                                        "security code to submit — finish it manually via the job page.",
+                        "filled_count": filled_count,
+                        "job_url":      job_url,
+                    }
+                    return
+
+                yield {
+                    "type":       "otp_required",
+                    "email_hint": _otp_info["email_hint"],
+                    "text":       (company + " emailed a security code to "
+                                   + (_otp_info["email_hint"] or "your inbox")
+                                   + " — enter it to submit"),
+                }
+                try:
+                    _otp_code = await asyncio.wait_for(otp_queue.get(), timeout=_OTP_TIMEOUT)
+                except asyncio.TimeoutError:
+                    yield _step("error", "Security code not received in time — application was not submitted")
+                    yield {
+                        "type":    "otp_timeout",
+                        "text":    "No security code was entered within 10 minutes. "
+                                   "The form was filled but not submitted.",
+                        "job_url": job_url,
+                    }
+                    return
+
+                _otp_attempts += 1
+                yield _step("ok", "Entering security code...")
+                if not await _fill_security_code(form, _otp_code, _otp_info):
+                    yield _step("error", "Could not enter the security code into the form")
+                    yield {
+                        "type":    "otp_fill_failed",
+                        "text":    "Rack could not type the code into " + company + "'s form. "
+                                   "The application was not submitted.",
+                        "job_url": job_url,
+                    }
+                    return
+                yield _step("ok", "Security code entered")
+                await asyncio.sleep(0.5)
+
+            # -- Find and click Submit, wait for confirmation -------------------
+            # Loop so an invalid/expired security code can be re-entered with a
+            # fresh code instead of failing the whole application.
             submit_selectors = [
                 'input[type="submit"]',
                 'button[type="submit"]',
@@ -2261,73 +2729,137 @@ async def run_apply_agent(
                 'button:has-text("Apply")',
             ]
 
-            submit_clicked = False
-            for sel in submit_selectors:
-                try:
-                    loc = page.locator(sel).first
-                    if await loc.count() > 0 and await loc.is_visible():
-                        await loc.scroll_into_view_if_needed()
-                        await asyncio.sleep(0.3)
-                        await loc.click(timeout=5000)
-                        submit_clicked = True
-                        break
-                except Exception:
-                    continue
-
-            if not submit_clicked:
-                yield _step("error", "Could not find Submit button — form filled but not submitted")
-                yield {
-                    "type":         "done",
-                    "text":         "Form filled for " + job_title + " at " + company,
-                    "filled_count": filled_count,
-                    "job_url":      job_url,
-                }
-                return
-
-            # -- Wait for confirmation ----------------------------------------
-            yield _step("ok", "Waiting for confirmation...")
             confirmation_text = None
             is_confirmed = False
+            _confirm_png = None
 
-            # Wait up to 12s for navigation or confirmation text
-            for attempt in range(24):
-                await asyncio.sleep(0.5)
-                try:
-                    page_text = await page.inner_text("body")
-                    page_url  = page.url
+            while True:
+                submit_clicked = False
+                for sel in submit_selectors:
+                    try:
+                        loc = form.locator(sel).first
+                        if await loc.count() > 0 and await loc.is_visible():
+                            await loc.scroll_into_view_if_needed()
+                            await asyncio.sleep(0.3)
+                            await loc.click(timeout=5000)
+                            submit_clicked = True
+                            break
+                    except Exception:
+                        continue
 
-                    # Check URL-based confirmation
-                    if any(k in page_url for k in ["/confirmation", "/thank", "/success", "/submitted"]):
-                        is_confirmed = True
-                        break
+                if not submit_clicked:
+                    yield _step("error", "Could not find Submit button — form filled but not submitted")
+                    yield {
+                        "type":         "done",
+                        "text":         "Form filled for " + job_title + " at " + company,
+                        "filled_count": filled_count,
+                        "job_url":      job_url,
+                    }
+                    return
 
-                    # Check text-based confirmation
-                    text_lower = page_text.lower()
-                    if any(phrase in text_lower for phrase in [
-                        "thank you", "application received", "we'll be in touch",
-                        "successfully submitted", "application has been submitted",
-                        "we have received your application", "your application was submitted",
-                        "application is complete",
-                    ]):
-                        is_confirmed = True
-                        # Try to extract a confirmation number
-                        import re as _re
-                        for pattern in [
-                            r"#([A-Z0-9-]{4,20})",
-                            r"Application .{0,15}([A-Z0-9-]{4,20})",
-                            r"Reference.{0,5}([A-Z0-9-]{4,20})",
-                            r"Confirmation.{0,5}([A-Z0-9-]{4,20})",
-                        ]:
-                            m = _re.search(pattern, page_text, _re.IGNORECASE)
-                            if m:
-                                confirmation_text = m.group(1)
-                                break
-                        break
-                except Exception:
-                    pass
+                # -- Wait for confirmation --------------------------------------
+                yield _step("ok", "Waiting for confirmation...")
+                invalid_code = False
+
+                # Wait up to 12s for navigation or confirmation text
+                for attempt in range(24):
+                    await asyncio.sleep(0.5)
+                    try:
+                        # Embedded boards confirm INSIDE the iframe — its URL
+                        # navigates to /confirmation while page.url never moves.
+                        # Read both contexts.
+                        page_text = await form.inner_text("body")
+                        if form is not page:
+                            try:
+                                page_text += " " + (await page.inner_text("body"))
+                            except Exception:
+                                pass
+                        page_url = page.url + " " + (form.url if form is not page else "")
+
+                        # Check URL-based confirmation
+                        if any(k in page_url for k in ["/confirmation", "/thank", "/success", "/submitted"]):
+                            is_confirmed = True
+                            break
+
+                        # Check text-based confirmation
+                        text_lower = page_text.lower()
+
+                        # Rejected security code — Greenhouse keeps the page and
+                        # shows an inline error near the code boxes.
+                        if _otp_info["present"] and any(p in text_lower for p in _OTP_INVALID_PHRASES):
+                            invalid_code = True
+                            break
+
+                        if any(phrase in text_lower for phrase in [
+                            "thank you", "application received", "we'll be in touch",
+                            "successfully submitted", "application has been submitted",
+                            "we have received your application", "your application was submitted",
+                            "application is complete",
+                        ]):
+                            is_confirmed = True
+                            # Try to extract a confirmation number
+                            import re as _re
+                            for pattern in [
+                                r"#([A-Z0-9-]{4,20})",
+                                r"Application .{0,15}([A-Z0-9-]{4,20})",
+                                r"Reference.{0,5}([A-Z0-9-]{4,20})",
+                                r"Confirmation.{0,5}([A-Z0-9-]{4,20})",
+                            ]:
+                                m = _re.search(pattern, page_text, _re.IGNORECASE)
+                                if m:
+                                    confirmation_text = m.group(1)
+                                    break
+                            break
+                    except Exception:
+                        pass
+
+                # Code rejected — ask for a fresh one and try again
+                if invalid_code and not is_confirmed:
+                    if _otp_attempts >= _MAX_OTP_ATTEMPTS:
+                        yield _step("error", "Security code rejected " + str(_otp_attempts) + " times — giving up")
+                        yield {
+                            "type":    "otp_timeout",
+                            "text":    "The security code was rejected " + str(_otp_attempts)
+                                       + " times. The form was filled but not submitted.",
+                            "job_url": job_url,
+                        }
+                        return
+                    yield _step("error", "Security code rejected — it may have expired")
+                    yield {
+                        "type":       "otp_invalid",
+                        "email_hint": _otp_info["email_hint"],
+                        "text":       "That code didn't work — it may have expired. "
+                                      "Check your inbox for the newest email and try again.",
+                    }
+                    try:
+                        _otp_code = await asyncio.wait_for(otp_queue.get(), timeout=_OTP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        yield _step("error", "Security code not received in time — application was not submitted")
+                        yield {
+                            "type":    "otp_timeout",
+                            "text":    "No security code was entered within 10 minutes. "
+                                       "The form was filled but not submitted.",
+                            "job_url": job_url,
+                        }
+                        return
+                    _otp_attempts += 1
+                    yield _step("ok", "Entering new security code...")
+                    if not await _fill_security_code(form, _otp_code, _otp_info):
+                        yield _step("error", "Could not enter the security code into the form")
+                        yield {
+                            "type":    "otp_fill_failed",
+                            "text":    "Rack could not type the code into " + company + "'s form. "
+                                       "The application was not submitted.",
+                            "job_url": job_url,
+                        }
+                        return
+                    yield _step("ok", "Security code entered")
+                    await asyncio.sleep(0.5)
+                    continue   # back to submit click
+
+                break   # confirmed, or unconfirmed-but-no-code-error → fall through
 
             # Confirmation screenshot — proof of submission for the batch flow.
-            _confirm_png = None
             if capture_screenshots:
                 try:
                     _confirm_png = await page.screenshot(full_page=True, type="png")

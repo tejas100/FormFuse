@@ -2697,11 +2697,14 @@ function ReviewTab({ onCountChange }) {
   const [expandedAnswers, setExpandedAnswers] = useState(new Set());
   const [approvingAll, setApprovingAll]   = useState(false);
   const [recentlySubmitted, setRecentlySubmitted] = useState([]); // [{ id, job_title, company }]
+  const [otpInputs, setOtpInputs]         = useState({});         // { job.id: code being typed }
+  const [otpSubmitting, setOtpSubmitting] = useState(new Set());  // job ids with in-flight OTP POSTs
   const pollRef         = useRef(null);
-  const inFlightRef     = useRef(new Map()); // id → {job_title, company} for approved/replaying jobs
+  const inFlightRef     = useRef(new Map()); // id → {job_title, company} for approved/replaying/awaiting_otp jobs
 
-  const awaiting = jobs.filter(j => j.status === "awaiting_review");
-  const inFlight = jobs.filter(j => j.status === "approved" || j.status === "replaying");
+  const awaiting  = jobs.filter(j => j.status === "awaiting_review");
+  const inFlight  = jobs.filter(j => j.status === "approved" || j.status === "replaying");
+  const otpJobs   = jobs.filter(j => j.status === "awaiting_otp");
   const attention = jobs.filter(j => j.status === "needs_attention");
 
   const load = useCallback(async () => {
@@ -2723,7 +2726,7 @@ function ReviewTab({ onCountChange }) {
         setRecentlySubmitted(prev => [...prev, ...finished]);
       }
       inFlightRef.current = new Map(
-        list.filter(j => j.status === "approved" || j.status === "replaying")
+        list.filter(j => j.status === "approved" || j.status === "replaying" || j.status === "awaiting_otp")
             .map(j => [j.id, { job_title: j.job_title, company: j.company }])
       );
 
@@ -2742,15 +2745,21 @@ function ReviewTab({ onCountChange }) {
   // (covers fresh loads, optimistic approve/skip, and poll updates).
   useEffect(() => {
     if (onCountChange) {
-      onCountChange(jobs.filter(j => j.status === "awaiting_review" || j.status === "needs_attention").length);
+      onCountChange(jobs.filter(j =>
+        j.status === "awaiting_review" || j.status === "needs_attention" || j.status === "awaiting_otp"
+      ).length);
     }
   }, [jobs, onCountChange]);
 
   // Poll while anything is mid-Phase-2 so "Submitting…" resolves live.
+  // 5s (not 8) — the security-code prompt needs to appear promptly, since
+  // the emailed code expires and the user is actively waiting.
   useEffect(() => {
-    const anyInFlight = jobs.some(j => j.status === "approved" || j.status === "replaying");
+    const anyInFlight = jobs.some(j =>
+      j.status === "approved" || j.status === "replaying" || j.status === "awaiting_otp"
+    );
     if (anyInFlight && !pollRef.current) {
-      pollRef.current = setInterval(load, 8000);
+      pollRef.current = setInterval(load, 5000);
     } else if (!anyInFlight && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
@@ -2815,6 +2824,37 @@ function ReviewTab({ onCountChange }) {
       .filter(a => editValues[a.label] !== undefined && editValues[a.label] !== a.value)
       .map(a => ({ field_label: a.label, new_value: editValues[a.label] }));
     await decide(job, "approve", edits);
+  };
+
+  const submitOtp = async (job) => {
+    const code = (otpInputs[job.id] || "").replace(/[\s-]/g, "").trim();
+    if (code.length < 4) return;
+    setOtpSubmitting(prev => new Set(prev).add(job.id));
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${API_BASE}/api/apply/jobs/${job.id}/otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error (${res.status})`);
+      }
+      // Agent is typing the code and clicking Submit — flip to "Submitting…"
+      // immediately; the poll loop resolves the final state.
+      inFlightRef.current.set(job.id, { job_title: job.job_title, company: job.company });
+      setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: "replaying", error: null } : j));
+      setOtpInputs(prev => { const n = { ...prev }; delete n[job.id]; return n; });
+      setError(null);
+    } catch (e) {
+      setError(e.message || "Could not send the code — try again.");
+      // A 409 means the session expired and the backend moved the job back to
+      // awaiting_review — refresh so the card reflects reality.
+      load();
+    } finally {
+      setOtpSubmitting(prev => { const n = new Set(prev); n.delete(job.id); return n; });
+    }
   };
 
   /* ── Shared bits ─────────────────────────────────────────────── */
@@ -2886,12 +2926,17 @@ function ReviewTab({ onCountChange }) {
     const isDeciding = deciding.has(job.id);
     const isAttention = job.status === "needs_attention";
     const isInFlight  = job.status === "approved" || job.status === "replaying";
-    const screenshot  = (job.screenshots || [])[0] || job.confirmation_screenshot;
+    const isOtp       = job.status === "awaiting_otp";
+    // While replaying / waiting for the code, the presubmit screenshot is the
+    // freshest truth — exactly what is about to be (or was just) submitted.
+    const screenshot  = ((isOtp || isInFlight) && job.presubmit_screenshot)
+      ? job.presubmit_screenshot
+      : ((job.screenshots || [])[0] || job.presubmit_screenshot || job.confirmation_screenshot);
 
     return (
       <div style={{
         background: "var(--surface)",
-        border: `1px solid ${isAttention ? "rgba(251,146,60,0.3)" : "var(--border)"}`,
+        border: `1px solid ${isOtp ? "rgba(232,255,107,0.45)" : isAttention ? "rgba(251,146,60,0.3)" : "var(--border)"}`,
         borderRadius: 12, padding: "16px 18px",
         display: "flex", flexDirection: "column", gap: 12,
       }}>
@@ -2920,6 +2965,16 @@ function ReviewTab({ onCountChange }) {
               }} />
               Submitting…
             </span>
+          ) : isOtp ? (
+            <span style={{
+              fontSize: 9, fontWeight: 700, padding: "3px 10px", borderRadius: 20, flexShrink: 0,
+              textTransform: "uppercase", letterSpacing: "0.1em",
+              background: "rgba(232,255,107,0.16)", color: "var(--accent)",
+              border: "1px solid rgba(232,255,107,0.4)",
+              animation: "pulse 1.6s ease-in-out infinite",
+            }}>
+              ✉ Code needed
+            </span>
           ) : (
             <span style={{
               fontSize: 9, fontWeight: 700, padding: "3px 10px", borderRadius: 20, flexShrink: 0,
@@ -2941,6 +2996,80 @@ function ReviewTab({ onCountChange }) {
             <strong style={{ fontWeight: 500 }}> Check the company's job portal before doing anything else</strong> —
             your application may already be in. Rack will never auto-retry this one.
             {job.error && <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 6 }}>{job.error}</div>}
+          </div>
+        )}
+
+        {/* Security code (OTP) entry — application is held open, waiting */}
+        {isOtp && (
+          <div style={{
+            background: "rgba(232,255,107,0.05)", border: "1px solid rgba(232,255,107,0.25)",
+            borderRadius: 12, padding: "14px 16px",
+            display: "flex", flexDirection: "column", gap: 10,
+          }}>
+            <div style={{ fontSize: 13.5, fontWeight: 500, color: "var(--text)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 16 }}>✉</span> Check your email
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--text-dim)", fontWeight: 300, lineHeight: 1.6 }}>
+              {job.company} sent a security code to{" "}
+              <strong style={{ color: "var(--text)", fontWeight: 500 }}>
+                {job.otp_email_hint || "your inbox"}
+              </strong>
+              . Enter it below — Rack is holding the application open and will submit
+              the moment you do.
+            </div>
+            {job.error && (
+              <div style={{ fontSize: 12, color: "#fb923c", lineHeight: 1.5 }}>
+                ⚠ {job.error}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                value={otpInputs[job.id] || ""}
+                onChange={e => setOtpInputs(prev => ({ ...prev, [job.id]: e.target.value.toUpperCase() }))}
+                onKeyDown={e => { if (e.key === "Enter") submitOtp(job); }}
+                placeholder="• • • • • • • •"
+                maxLength={12}
+                autoFocus
+                autoComplete="one-time-code"
+                spellCheck={false}
+                style={{
+                  flex: "0 1 220px", minWidth: 160, boxSizing: "border-box",
+                  background: "var(--surface2)", border: "1px solid rgba(232,255,107,0.35)",
+                  borderRadius: 10, padding: "10px 14px", color: "var(--text)",
+                  fontSize: 16, fontFamily: "var(--font-mono, monospace)",
+                  letterSpacing: "0.3em", textAlign: "center", outline: "none",
+                }}
+              />
+              <button
+                style={{ ...btn(true), padding: "10px 20px", opacity: ((otpInputs[job.id] || "").replace(/[\s-]/g, "").length < 4 || otpSubmitting.has(job.id)) ? 0.5 : 1 }}
+                disabled={(otpInputs[job.id] || "").replace(/[\s-]/g, "").length < 4 || otpSubmitting.has(job.id)}
+                onClick={() => submitOtp(job)}
+              >
+                {otpSubmitting.has(job.id) ? "Sending…" : "Submit code →"}
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)", fontWeight: 300 }}>
+              Codes expire quickly — if you got more than one email, use the newest.
+            </div>
+          </div>
+        )}
+
+        {/* Pre-approval notes on awaiting_review cards */}
+        {!isAttention && !isOtp && !isInFlight && job.error && (
+          <div style={{ fontSize: 12, color: "#fb923c", lineHeight: 1.6,
+                        background: "rgba(251,146,60,0.06)", border: "1px solid rgba(251,146,60,0.18)",
+                        borderRadius: 10, padding: "10px 12px" }}>
+            ⚠ {job.error}
+          </div>
+        )}
+        {!isAttention && !isOtp && !isInFlight && job.otp_expected && (
+          <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.6,
+                        background: "rgba(232,255,107,0.04)", border: "1px solid rgba(232,255,107,0.15)",
+                        borderRadius: 10, padding: "10px 12px" }}>
+            ✉ <strong style={{ color: "var(--text)", fontWeight: 500 }}>{job.company} verifies by email at submit time.</strong>{" "}
+            After you approve, they'll send a security code to{" "}
+            {job.otp_email_hint || "your inbox"} — Rack will pause here and ask you for it,
+            so stay nearby for a minute.
           </div>
         )}
 
@@ -2972,8 +3101,8 @@ function ReviewTab({ onCountChange }) {
         {/* Q&A draft */}
         {(job.answers || []).length > 0 && !isAttention && renderAnswerList(job)}
 
-        {/* Actions */}
-        {!isInFlight && (
+        {/* Actions — OTP cards have their own submit button in the code panel */}
+        {!isInFlight && !isOtp && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {isAttention ? (
               <button style={btn(false)} disabled={isDeciding} onClick={() => decide(job, "skip")}>
@@ -3020,7 +3149,7 @@ function ReviewTab({ onCountChange }) {
     );
   }
 
-  const totalActionable = awaiting.length + attention.length;
+  const totalActionable = otpJobs.length + awaiting.length + attention.length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -3068,6 +3197,8 @@ function ReviewTab({ onCountChange }) {
             </div>
           )}
 
+          {/* Code-needed cards first — the emailed code is expiring right now */}
+          {otpJobs.map(job => <div key={job.id}>{renderReviewCard(job)}</div>)}
           {attention.map(job => <div key={job.id}>{renderReviewCard(job)}</div>)}
           {awaiting.map(job => <div key={job.id}>{renderReviewCard(job)}</div>)}
           {inFlight.map(job => <div key={job.id}>{renderReviewCard(job)}</div>)}
@@ -3202,6 +3333,10 @@ export default function Tracking() {
         @keyframes fadeUp {
           from { opacity: 0; transform: translateY(8px); }
           to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50%      { opacity: 0.55; }
         }
       `}</style>
     </div>

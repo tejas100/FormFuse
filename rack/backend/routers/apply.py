@@ -14,6 +14,12 @@ Each SSE event is:
 The agent fills everything but does NOT click Submit.
 The frontend shows a live feed — user can verify the browser did what they expected.
 
+Email security-code (OTP) gate: some ATSes (Greenhouse) email the candidate a
+code and disable Submit until it is entered. The agent emits "otp_required";
+the code travels back via:
+  POST /api/apply/otp/{session_id}      — live SSE flow (keyed by Steel session)
+  POST /api/apply/jobs/{id}/otp         — batch Phase 2 flow (keyed by ApplyJob)
+
 Profile is assembled from:
   1. users.preferences JSONB (name, phone, location, linkedin, github, work_auth)
   2. users.email (from JWT)
@@ -24,6 +30,7 @@ import asyncio
 import json
 import logging
 import os
+import re as _otp_re
 import uuid as _uuid
 from typing import Optional, AsyncGenerator
 
@@ -44,9 +51,19 @@ logger = logging.getLogger(__name__)
 # POST /api/apply/confirm/{session_id} sets it, unblocking the agent.
 _pending_reviews: dict[str, asyncio.Event] = {}
 
+# Live-flow OTP gates keyed by Steel session_id (re-keyed from a temp stream
+# key once the steel_session event arrives — same pattern as _pending_reviews).
+# POST /api/apply/otp/{session_id} pushes the user's code onto the queue.
+_pending_otp_live: dict[str, asyncio.Queue] = {}
+
 router = APIRouter(prefix="/api/apply", tags=["apply"])
 
 _optional_bearer = HTTPBearer(auto_error=False)
+
+
+def _normalize_otp(code: str) -> str:
+    """Strip whitespace/dashes; codes are short alphanumerics."""
+    return _otp_re.sub(r"[\s-]", "", (code or "")).strip()
 
 
 # ── Request schema ─────────────────────────────────────────────────────────────
@@ -222,8 +239,10 @@ async def apply_stream(
         # Keyed by a placeholder until the agent emits steel_session with real session_id.
         # Once "steel_session" arrives we re-key it so the confirm endpoint can find it.
         _review_event = asyncio.Event()
+        _otp_queue    = asyncio.Queue()
         _stream_key   = str(_uuid.uuid4())   # temp key until steel session_id arrives
-        _pending_reviews[_stream_key] = _review_event
+        _pending_reviews[_stream_key]  = _review_event
+        _pending_otp_live[_stream_key] = _otp_queue
 
         try:
             # Use resolved resume_id from profile builder — always set even when
@@ -240,14 +259,23 @@ async def apply_stream(
                 resume_id    = _resolved_resume_id,
                 user_id      = str(current_user.id),
                 review_event = _review_event,
+                otp_queue    = _otp_queue,
             ):
                 # When the Steel session ID arrives, re-key the pending review
                 # so POST /api/apply/confirm/{session_id} can look it up.
+                # Same re-key for the OTP gate (POST /api/apply/otp/{session_id}).
                 if event.get("type") == "steel_session" and event.get("session_id"):
                     sid = event["session_id"]
                     _pending_reviews[sid] = _review_event
                     _pending_reviews.pop(_stream_key, None)
+                    _pending_otp_live[sid] = _otp_queue
+                    _pending_otp_live.pop(_stream_key, None)
                     logger.info(f"[apply] Review gate registered for session_id={sid}")
+
+                # screenshot_png is raw bytes for in-process consumers — never
+                # serialize it into the SSE stream.
+                if "screenshot_png" in event:
+                    event = {k: v for k, v in event.items() if k != "screenshot_png"}
 
                 yield _sse(event)
 
@@ -311,13 +339,18 @@ async def apply_stream(
             logger.error(f"[apply] Stream error: {e}", exc_info=True)
             yield _sse({"type": "error", "text": "Agent failed unexpectedly. Please try again."})
         finally:
-            # Always clean up pending review entries when the stream ends
+            # Always clean up pending review + OTP entries when the stream ends
             _pending_reviews.pop(_stream_key, None)
+            _pending_otp_live.pop(_stream_key, None)
             if "_review_event" in dir():
                 # Find and remove any key pointing to this event
                 stale = [k for k, v in list(_pending_reviews.items()) if v is _review_event]
                 for k in stale:
                     _pending_reviews.pop(k, None)
+            if "_otp_queue" in dir():
+                stale_q = [k for k, v in list(_pending_otp_live.items()) if v is _otp_queue]
+                for k in stale_q:
+                    _pending_otp_live.pop(k, None)
 
     return StreamingResponse(
         event_stream(),
@@ -381,6 +414,49 @@ async def confirm_review(
         logger.info(f"[apply/confirm] Review cancelled — session_id={session_id}")
         return {"ok": True, "message": "Application cancelled."}
 
+
+# ── OTP (security code) endpoints ──────────────────────────────────────────────
+
+class OtpRequest(BaseModel):
+    code: str
+
+
+@router.post("/otp/{session_id}")
+async def submit_otp_live(
+    session_id:  str,
+    body:        OtpRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:          AsyncSession = Depends(get_db),
+):
+    """
+    Live SSE flow: deliver the emailed security code to the agent paused at
+    the OTP gate. session_id is the Steel session_id (same key as /confirm).
+    """
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        await get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+
+    code = _normalize_otp(body.code)
+    if not (4 <= len(code) <= 12) or not code.isalnum():
+        raise HTTPException(status_code=400, detail="That doesn't look like a valid code — check the email and try again.")
+
+    queue = _pending_otp_live.get(session_id)
+    if queue is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No application is waiting for a code in this session — it may have timed out.",
+        )
+
+    queue.put_nowait(code)
+    logger.info(f"[apply/otp] Security code delivered — session_id={session_id}")
+    return {"ok": True, "message": "Code received — submitting your application now."}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # BATCH AUTO-APPLY — Phase 1 (Fill & Capture) + Phase 2 (Replay & Submit)
 #
@@ -388,6 +464,7 @@ async def confirm_review(
 # GET  /api/apply/review             — jobs awaiting review (drafts + signed screenshots)
 # GET  /api/apply/batch/{batch_id}   — batch progress summary
 # POST /api/apply/jobs/{id}/decision — approve (with optional edits) / skip / retry
+# POST /api/apply/jobs/{id}/otp      — deliver the emailed security code (awaiting_otp)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from typing import List
@@ -453,7 +530,7 @@ async def create_apply_batch(
     active = list((await db.execute(
         select(ApplyJob.job_id).where(
             ApplyJob.user_id == current_user.id,
-            ApplyJob.status.in_(["queued", "filling", "awaiting_review", "approved", "replaying"]),
+            ApplyJob.status.in_(["queued", "filling", "awaiting_review", "approved", "replaying", "awaiting_otp"]),
         )
     )).scalars())
     active_set = {a for a in active if a}
@@ -559,7 +636,8 @@ async def list_review_queue(
 ):
     """
     Everything the user needs to review: awaiting_review jobs with their draft
-    (readable Q&A) and signed screenshot URLs, plus needs_attention items.
+    (readable Q&A) and signed screenshot URLs, plus needs_attention items and
+    jobs paused at the security-code gate (awaiting_otp).
     """
     current_user = await _require_user(credentials, db)
     from models.orm import ApplyJob
@@ -568,7 +646,7 @@ async def list_review_queue(
     jrows = list((await db.execute(
         select(ApplyJob).where(
             ApplyJob.user_id == current_user.id,
-            ApplyJob.status.in_(["awaiting_review", "needs_attention", "approved", "replaying"]),
+            ApplyJob.status.in_(["awaiting_review", "needs_attention", "approved", "replaying", "awaiting_otp"]),
         ).order_by(ApplyJob.created_at.asc())
     )).scalars())
 
@@ -582,6 +660,9 @@ async def list_review_queue(
         confirm_url = None
         if j.confirmation_screenshot:
             confirm_url = await signed_screenshot_url(j.confirmation_screenshot)
+        presubmit_url = None
+        if j.presubmit_screenshot:
+            presubmit_url = await signed_screenshot_url(j.presubmit_screenshot)
         out.append({
             "id":                 str(j.id),
             "batch_id":           str(j.batch_id),
@@ -597,9 +678,14 @@ async def list_review_queue(
                 {"label": f.get("field_label", ""), "value": f.get("value", "")}
                 for f in (j.draft or []) if not f.get("skip") and f.get("value")
             ],
-            "screenshots":            shots,
+            "screenshots":             shots,
             "confirmation_screenshot": confirm_url,
-            "error":                  j.error,
+            # Security-code gate
+            "otp_expected":            bool(getattr(j, "otp_expected", False)),
+            "otp_email_hint":          j.otp_email_hint,
+            "otp_requested_at":        j.otp_requested_at.isoformat() if j.otp_requested_at else None,
+            "presubmit_screenshot":    presubmit_url,
+            "error":                   j.error,
         })
     return {"jobs": out}
 
@@ -662,3 +748,56 @@ async def decide_apply_job(
         return {"ok": True, "message": "Retrying this application."}
 
     raise HTTPException(status_code=400, detail="action must be approve, skip, or retry.")
+
+
+@router.post("/jobs/{apply_job_id}/otp")
+async def submit_otp_batch(
+    apply_job_id: str,
+    body:         OtpRequest,
+    credentials:  Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:           AsyncSession = Depends(get_db),
+):
+    """
+    Batch Phase 2: deliver the emailed security code to the agent holding this
+    application open at the OTP gate (status=awaiting_otp).
+    """
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyJob
+    from datetime import datetime, timezone
+
+    jres = await db.execute(select(ApplyJob).where(
+        ApplyJob.id == _uuid.UUID(apply_job_id), ApplyJob.user_id == current_user.id))
+    job = jres.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Apply job not found.")
+
+    if job.status != "awaiting_otp":
+        raise HTTPException(status_code=409, detail=f"This application is not waiting for a code (status={job.status}).")
+
+    code = _normalize_otp(body.code)
+    if not (4 <= len(code) <= 12) or not code.isalnum():
+        raise HTTPException(status_code=400, detail="That doesn't look like a valid code — check the email and try again.")
+
+    from services.apply_worker import submit_otp_code
+    if not submit_otp_code(str(job.id), code):
+        # The browser session is gone (server restarted / agent timed out).
+        # recover_orphans or the timeout path already reset the status — but if
+        # we're here the row still says awaiting_otp, so fix it now.
+        job.status     = "awaiting_review"
+        job.error      = "The browser session expired before the code arrived — approve again to retry."
+        job.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(
+            status_code=409,
+            detail="That session expired — the application is back in your review queue. Approve it again to retry.",
+        )
+
+    # Agent resumes immediately — reflect that in the row so the UI flips to
+    # "Submitting…" on the next poll.
+    job.status     = "replaying"
+    job.error      = None
+    job.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    logger.info(f"[apply/otp] Security code delivered for apply_job={job.id} ({job.company})")
+    return {"ok": True, "message": f"Code received — submitting your application to {job.company} now."}

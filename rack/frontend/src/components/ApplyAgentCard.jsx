@@ -12,9 +12,34 @@
  *   done    — object | null — the final "done" event payload
  *   jobTitle — string — shown in header
  *   company  — string — shown in header
+ *   otpRequired — { email_hint, invalid, text, submitting } | null —
+ *                 agent is paused at the email security-code gate
+ *   onSubmitOtp — async (code) => { ok, error } — delivers the code
  */
 
-export default function ApplyAgentCard({ steps, loading, error, done, submitted, jobRemoved, sessionEnded, jobTitle, company, reviewRequired, onConfirmSubmit, sessionId }) {
+import { useState } from 'react'
+
+export default function ApplyAgentCard({ steps, loading, error, done, submitted, jobRemoved, sessionEnded, jobTitle, company, reviewRequired, onConfirmSubmit, otpRequired, onSubmitOtp, sessionId }) {
+
+  const [otpCode, setOtpCode]             = useState('')
+  const [otpSending, setOtpSending]       = useState(false)
+  const [otpLocalError, setOtpLocalError] = useState(null)
+
+  const otpCleaned = otpCode.replace(/[\s-]/g, '').trim()
+  const otpReady   = otpCleaned.length >= 4 && !otpSending && !otpRequired?.submitting
+
+  const handleOtpSend = async () => {
+    if (!otpReady || !onSubmitOtp) return
+    setOtpSending(true)
+    setOtpLocalError(null)
+    const result = await onSubmitOtp(otpCleaned)
+    if (result && !result.ok) {
+      setOtpLocalError(result.error || 'Could not send the code — try again.')
+    } else {
+      setOtpCode('')
+    }
+    setOtpSending(false)
+  }
 
   const statusIcon = (status) => {
     if (status === 'ok')      return <span style={{ fontSize: '12px', color: 'var(--accent3)' }}>✓</span>
@@ -78,7 +103,7 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
 
       {/* ── Header ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-        {loading && (
+        {loading && !otpRequired && (
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
             {[0,1,2].map(i => (
               <div key={i} style={{
@@ -88,6 +113,9 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
               }} />
             ))}
           </div>
+        )}
+        {otpRequired && !submitted && (
+          <span style={{ fontSize: '14px', color: 'var(--accent)', animation: 'pulse 1.6s ease-in-out infinite' }}>✉</span>
         )}
         {(submitted || done) && !loading && (
           <span style={{ fontSize: '14px', color: 'var(--accent3)' }}>✓</span>
@@ -103,7 +131,7 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
         )}
         <div>
           <span style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500 }}>
-            {submitted ? 'Submitted' : done ? 'Application filled' : jobRemoved ? 'Job no longer available' : sessionEnded ? 'Session ended' : reviewRequired ? 'Review before submitting' : loading ? 'Auto-applying…' : 'Apply agent'}
+            {submitted ? 'Submitted' : done ? 'Application filled' : jobRemoved ? 'Job no longer available' : sessionEnded ? 'Session ended' : otpRequired ? 'Security code needed' : reviewRequired ? 'Review before submitting' : loading ? 'Auto-applying…' : 'Apply agent'}
           </span>
           {(jobTitle || company) && (
             <span style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, marginLeft: '6px' }}>
@@ -121,7 +149,7 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
           gap: '1px',
           maxHeight: '320px',
           overflowY: 'auto',
-          marginBottom: done || error ? '14px' : '0',
+          marginBottom: (done || error || reviewRequired || otpRequired) ? '14px' : '0',
         }}>
           {allSteps.map((step, i) => (
             <div key={i} style={{
@@ -207,6 +235,94 @@ export default function ApplyAgentCard({ steps, loading, error, done, submitted,
               Cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ── Security code (OTP) state ── */}
+      {otpRequired && !submitted && !error && (
+        <div style={{
+          padding: '14px 16px',
+          borderRadius: '10px',
+          background: 'rgba(232,255,107,0.05)',
+          border: '1px solid rgba(232,255,107,0.25)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+        }}>
+          <div style={{ fontSize: '13px', color: 'var(--text)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '15px' }}>✉</span> Check your email
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text-dim)', fontWeight: 300, lineHeight: 1.6 }}>
+            {company || 'The company'} sent a security code to{' '}
+            <strong style={{ color: 'var(--text)', fontWeight: 500 }}>
+              {otpRequired.email_hint || 'your inbox'}
+            </strong>
+            . Enter it below — Rack is holding the application open and will submit
+            the moment you do.
+          </div>
+          {otpRequired.invalid && (
+            <div style={{ fontSize: '12px', color: '#fb923c', lineHeight: 1.5 }}>
+              ⚠ {otpRequired.text || "That code didn't work — it may have expired. Use the newest email."}
+            </div>
+          )}
+          {otpLocalError && (
+            <div style={{ fontSize: '12px', color: 'var(--danger)', lineHeight: 1.5 }}>
+              ⚠ {otpLocalError}
+            </div>
+          )}
+          {otpRequired.submitting ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--accent3)', fontWeight: 500 }}>
+              <div style={{
+                width: '9px', height: '9px', borderRadius: '50%',
+                border: '2px solid var(--accent3)', borderTopColor: 'transparent',
+                animation: 'spin 0.7s linear infinite',
+              }} />
+              Code received — submitting your application…
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  value={otpCode}
+                  onChange={e => setOtpCode(e.target.value.toUpperCase())}
+                  onKeyDown={e => { if (e.key === 'Enter') handleOtpSend() }}
+                  placeholder="• • • • • • • •"
+                  maxLength={12}
+                  autoFocus
+                  autoComplete="one-time-code"
+                  spellCheck={false}
+                  style={{
+                    flex: '0 1 200px', minWidth: 150, boxSizing: 'border-box',
+                    background: 'var(--surface2)', border: '1px solid rgba(232,255,107,0.35)',
+                    borderRadius: '10px', padding: '9px 12px', color: 'var(--text)',
+                    fontSize: '15px', fontFamily: 'var(--font-mono, monospace)',
+                    letterSpacing: '0.3em', textAlign: 'center', outline: 'none',
+                  }}
+                />
+                <button
+                  onClick={handleOtpSend}
+                  disabled={!otpReady}
+                  style={{
+                    padding: '9px 18px',
+                    borderRadius: '20px',
+                    border: '1px solid rgba(232,255,107,0.4)',
+                    background: 'rgba(232,255,107,0.12)',
+                    color: 'var(--accent)',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: otpReady ? 'pointer' : 'default',
+                    opacity: otpReady ? 1 : 0.5,
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {otpSending ? 'Sending…' : 'Submit code →'}
+                </button>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 300 }}>
+                Codes expire quickly — if you got more than one email, use the newest.
+              </div>
+            </>
+          )}
         </div>
       )}
 
