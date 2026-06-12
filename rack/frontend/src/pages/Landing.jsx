@@ -492,7 +492,15 @@ export default function Landing({ onEnter, onSkip }) {
           background: `rgba(255,255,255,${0.55 + navAlpha * 0.35})`,
           borderBottomColor: `rgba(6,30,20,${0.03 + navAlpha * 0.05})`,
         }}>
-          <div className="ld-nav-l"><span className="ld-wordmark">rack</span></div>
+          <div className="ld-nav-l">
+            <span className="ld-wordmark">rack.</span>
+            <a href="https://tejasbk.dev"
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{ textDecoration: 'none', display: 'inline-block' }}
+  >
+            <span className="ld-byline">/ by tejasbk</span></a>
+          </div>
           <ul className="ld-nav-links">
             {['How it works', 'Capabilities', 'Auto-apply', 'FAQ'].map((label, i) => (
               <li key={label}><button onClick={() => scrollTo(['ld-how', 'ld-cap', 'ld-apply', 'ld-faq'][i])}>{label}</button></li>
@@ -667,7 +675,7 @@ export default function Landing({ onEnter, onSkip }) {
 
         {/* ── FOOTER ── */}
         <footer className="ld-footer">
-          <div className="ld-footer-l"><span className="ld-wordmark">rack</span><span className="ld-footer-dom">rackx.app</span></div>
+          <div className="ld-footer-l"><span className="ld-wordmark">rack.</span><span className="ld-footer-dom">rackx.app</span></div>
           <p className="ld-footer-copy">Scanning jobs so you don’t have to.</p>
         </footer>
       </div>
@@ -803,9 +811,29 @@ const CSS = `
     border-bottom: 1px solid var(--line);
     transition: background .25s, border-color .25s;
   }
-  .ld-nav-l { justify-self: start; }
+  .ld-nav-l { justify-self: start; display: flex; flex-direction: column; gap: 2px; }
   .ld-nav-actions { justify-self: end; display: flex; align-items: center; gap: 8px; }
-  .ld-wordmark { font-weight: 800; font-size: 21px; letter-spacing: -0.05em; color: var(--ink); line-height: 1; }
+  .ld-wordmark { font-weight: 800; font-size: 30px; letter-spacing: -0.05em; color: var(--ink); line-height: 1; }
+  .ld-byline {
+    font-family: var(--mono); font-size: 10px; letter-spacing: -0.05em;
+    font-weight: 500; line-height: 1;
+    background: linear-gradient(90deg,
+      var(--ink4) 0%,
+      var(--ink4) 30%,
+      var(--em-deep) 48%,
+      #0d9488 54%,
+      var(--ink4) 72%,
+      var(--ink4) 100%
+    );
+    background-size: 220% 100%;
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    animation: ldBylineShimmer 3.6s ease-in-out infinite;
+  }
+  @keyframes ldBylineShimmer {
+    0%   { background-position: 100% 0; }
+    50%  { background-position: 0% 0; }
+    100% { background-position: 100% 0; }
+  }
   .ld-nav-links { display: flex; align-items: center; gap: 30px; list-style: none; margin: 0; padding: 0; }
   .ld-nav-links button { background: none; border: none; padding: 0; font-family: var(--sans); font-size: 14px; font-weight: 450; color: var(--ink3); cursor: pointer; transition: color .15s; }
   .ld-nav-links button:hover { color: var(--ink); }
