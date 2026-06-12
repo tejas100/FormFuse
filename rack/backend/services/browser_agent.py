@@ -1480,6 +1480,12 @@ _OTP_INVALID_PHRASES = (
     "invalid code", "incorrect code", "code is invalid", "code is incorrect",
     "code you entered", "verification failed", "code has expired", "expired code",
     "wrong code", "please request a new code",
+    # Greenhouse variants — codes are single-use and only the NEWEST one works,
+    # so a resubmit with a stale/wrong code triggers these:
+    "security code is incorrect", "security code is invalid",
+    "does not match", "doesn't match", "code didn't match",
+    "new code was sent", "a new security code", "code was resent",
+    "request a new security code", "try a new code",
 )
 
 
@@ -3057,8 +3063,11 @@ async def run_apply_agent(
                 yield _step("ok", "Waiting for confirmation...")
                 invalid_code = False
 
-                # Wait up to 12s for navigation or confirmation text
-                for attempt in range(24):
+                # Wait for navigation or confirmation text. After a security
+                # code was entered, Greenhouse validates the code server-side
+                # AND re-runs reCAPTCHA evaluation — give that path 20s.
+                _confirm_polls = 40 if _otp_attempts >= 1 else 24
+                for attempt in range(_confirm_polls):
                     await asyncio.sleep(0.5)
                     try:
                         # Embedded boards confirm INSIDE the iframe — its URL
@@ -3194,6 +3203,29 @@ async def run_apply_agent(
                     await asyncio.sleep(0.5)
                     continue   # back to the Submit click — the code must be resubmitted
 
+                # Unconfirmed after a code was entered — decide between
+                # "code rejected" and a genuinely unknown state. Greenhouse's
+                # rejection wording varies (and a resubmit often invalidates
+                # the old code and emails a NEW one — only the most recent
+                # code works), so phrase matching alone is not enough: if the
+                # security-code boxes are still on screen, the code was NOT
+                # accepted. Re-prompt for a fresh code instead of giving up.
+                if not is_confirmed and not invalid_code and _otp_attempts >= 1:
+                    try:
+                        _snippet = (await _otp_ctx.inner_text("body"))[:500].replace("\n", " | ")
+                        logger.info(f"[browser_agent] post-OTP submit unconfirmed — page text head: {_snippet}")
+                    except Exception:
+                        pass
+                    try:
+                        _recheck = await _detect_security_code(_otp_ctx)
+                    except Exception:
+                        _recheck = {"present": False}
+                    if _recheck.get("present"):
+                        logger.info("[browser_agent] security-code boxes still on screen after "
+                                    "resubmit — treating as rejected code, re-prompting")
+                        _otp_info    = _recheck
+                        invalid_code = True
+
                 # Code rejected — ask for a fresh one and try again
                 if invalid_code and not is_confirmed:
                     if _otp_attempts >= _MAX_OTP_ATTEMPTS:
@@ -3263,6 +3295,14 @@ async def run_apply_agent(
             else:
                 # Submit was clicked but confirmation page not detected —
                 # do NOT mark as applied (form may have had validation errors)
+                try:
+                    _uc_text = await form.inner_text("body")
+                    if form is not page:
+                        _uc_text += " | " + (await page.inner_text("body"))
+                    logger.info(f"[browser_agent] submit unconfirmed — url={page.url} "
+                                f"page text head: {_uc_text[:500].replace(chr(10), ' | ')}")
+                except Exception:
+                    pass
                 yield _step("error", "Submit clicked — could not detect confirmation page")
                 _done_evt = {
                     "type":         "done",

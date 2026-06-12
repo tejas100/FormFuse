@@ -3121,7 +3121,10 @@ function ReviewTab({ onCountChange }) {
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <input
                 value={otpInputs[job.id] || ""}
-                onChange={e => setOtpInputs(prev => ({ ...prev, [job.id]: e.target.value.toUpperCase() }))}
+                // Codes are CASE-SENSITIVE (Greenhouse issues mixed-case like
+                // "JWtjgub7") — never transform the value, send exactly what
+                // the email shows.
+                onChange={e => setOtpInputs(prev => ({ ...prev, [job.id]: e.target.value }))}
                 onKeyDown={e => { if (e.key === "Enter") submitOtp(job); }}
                 placeholder="• • • • • • • •"
                 maxLength={12}
@@ -3145,7 +3148,8 @@ function ReviewTab({ onCountChange }) {
               </button>
             </div>
             <div style={{ fontSize: 11, color: "var(--text-dim)", fontWeight: 300 }}>
-              Codes expire quickly — if you got more than one email, use the newest.
+              Enter the code exactly as it appears in the email — it's case-sensitive.
+              Codes expire quickly; if you got more than one email, use the newest.
             </div>
           </div>
         )}
