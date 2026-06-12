@@ -1633,6 +1633,45 @@ async def _page_has_invalid_code_error(page) -> bool:
         return False
 
 
+async def _relocate_form_frame(page, form):
+    """
+    Embedded Greenhouse boards (job_app iframes) can re-render or navigate
+    their iframe on submit, DETACHING the Frame handle mid-wait. Every read
+    on a dead handle throws — which previously made the confirmation loop,
+    OTP re-detection, and even the unconfirmed diagnostics run blind.
+    Re-locate the live embed frame so detection keeps reading the real DOM.
+    Returns a live context: the same form if healthy, a re-located frame,
+    or the top page as last resort.
+    """
+    if form is page:
+        return form
+    try:
+        if not form.is_detached():
+            return form
+    except Exception:
+        pass  # treat any probe failure as detached
+    try:
+        best = None
+        for fr in page.frames:
+            u = (fr.url or "").lower()
+            if "greenhouse" not in u:
+                continue
+            # Prefer the application/confirmation frame over board chrome
+            if any(k in u for k in ("job_app", "embed", "confirmation", "application")):
+                best = fr
+                break
+            if best is None:
+                best = fr
+        if best is not None and not best.is_detached():
+            logger.info(f"[browser_agent] form frame detached — re-located embed frame "
+                        f"url='{(best.url or '')[:140]}'")
+            return best
+    except Exception as e:
+        logger.warning(f"[browser_agent] frame re-locate failed: {type(e).__name__}: {str(e)[:120]}")
+    logger.info("[browser_agent] form frame detached and no greenhouse frame found — falling back to top page")
+    return page
+
+
 # -- Main agent generator -----------------------------------------------------
 
 async def run_apply_agent(
@@ -3067,8 +3106,17 @@ async def run_apply_agent(
                 # code was entered, Greenhouse validates the code server-side
                 # AND re-runs reCAPTCHA evaluation — give that path 20s.
                 _confirm_polls = 40 if _otp_attempts >= 1 else 24
+                _poll_err_logged = False
                 for attempt in range(_confirm_polls):
                     await asyncio.sleep(0.5)
+                    # Embedded boards can re-render their iframe on submit —
+                    # a detached handle makes every read below throw. Swap in
+                    # the live frame before reading.
+                    _live = await _relocate_form_frame(page, form)
+                    if _live is not form:
+                        if _otp_ctx is form:
+                            _otp_ctx = _live
+                        form = _live
                     try:
                         # Embedded boards confirm INSIDE the iframe — its URL
                         # navigates to /confirmation while page.url never moves.
@@ -3139,8 +3187,11 @@ async def run_apply_agent(
                                     f"email={_post_otp['email_hint'] or 'unknown'})"
                                 )
                                 break
-                    except Exception:
-                        pass
+                    except Exception as _poll_e:
+                        if not _poll_err_logged:
+                            _poll_err_logged = True
+                            logger.info(f"[browser_agent] confirmation poll read failed "
+                                        f"(attempt {attempt}): {type(_poll_e).__name__}: {str(_poll_e)[:150]}")
 
                 # Code gate appeared after the submit click — pause for the
                 # emailed code, enter it, then loop back and click Submit again
@@ -3211,11 +3262,12 @@ async def run_apply_agent(
                 # security-code boxes are still on screen, the code was NOT
                 # accepted. Re-prompt for a fresh code instead of giving up.
                 if not is_confirmed and not invalid_code and _otp_attempts >= 1:
+                    _otp_ctx = await _relocate_form_frame(page, _otp_ctx)
                     try:
                         _snippet = (await _otp_ctx.inner_text("body"))[:500].replace("\n", " | ")
-                        logger.info(f"[browser_agent] post-OTP submit unconfirmed — page text head: {_snippet}")
-                    except Exception:
-                        pass
+                    except Exception as _oe:
+                        _snippet = f"<read failed: {type(_oe).__name__}: {str(_oe)[:120]}>"
+                    logger.info(f"[browser_agent] post-OTP submit unconfirmed — page text head: {_snippet}")
                     try:
                         _recheck = await _detect_security_code(_otp_ctx)
                     except Exception:
@@ -3294,15 +3346,22 @@ async def run_apply_agent(
                 yield _submitted_evt
             else:
                 # Submit was clicked but confirmation page not detected —
-                # do NOT mark as applied (form may have had validation errors)
+                # do NOT mark as applied (form may have had validation errors).
+                # This diagnostic must NEVER be silent: log read failures
+                # (e.g. detached embed frames) instead of swallowing them.
+                _uc_form = await _relocate_form_frame(page, form)
                 try:
-                    _uc_text = await form.inner_text("body")
-                    if form is not page:
-                        _uc_text += " | " + (await page.inner_text("body"))
-                    logger.info(f"[browser_agent] submit unconfirmed — url={page.url} "
-                                f"page text head: {_uc_text[:500].replace(chr(10), ' | ')}")
-                except Exception:
-                    pass
+                    _uc_text = await _uc_form.inner_text("body")
+                except Exception as _ue:
+                    _uc_text = f"<form read failed: {type(_ue).__name__}: {str(_ue)[:120]}>"
+                if _uc_form is not page:
+                    try:
+                        _uc_text += " | PAGE: " + (await page.inner_text("body"))[:300]
+                    except Exception as _ue2:
+                        _uc_text += f" | <page read failed: {type(_ue2).__name__}>"
+                logger.info(f"[browser_agent] submit unconfirmed — url={page.url} "
+                            f"form_url={getattr(_uc_form, 'url', '?') if _uc_form is not page else 'same-as-page'} "
+                            f"page text head: {_uc_text[:600].replace(chr(10), ' | ')}")
                 yield _step("error", "Submit clicked — could not detect confirmation page")
                 _done_evt = {
                     "type":         "done",

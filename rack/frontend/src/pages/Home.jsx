@@ -10,17 +10,23 @@ import BatchApplyCard from '../components/BatchApplyCard'
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const mobileCardStyles = `
+  /* ═══════════════════════════════════════════════════════════════
+     RACK chat shell — v2 "terminal luxury"
+     Same class & keyframe names as v1 (render code untouched);
+     every value redesigned.
+     ═══════════════════════════════════════════════════════════════ */
+
   /* ── Keyframes ── */
   @keyframes smoothExpand {
     from { opacity: 0; transform: translateY(-6px); }
     to   { opacity: 1; transform: translateY(0); }
   }
   @keyframes bubbleIn {
-    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    from { opacity: 0; transform: translateY(10px) scale(0.985); }
     to   { opacity: 1; transform: translateY(0) scale(1); }
   }
   @keyframes greetingFade {
-    from { opacity: 0; transform: translateY(16px); }
+    from { opacity: 0; transform: translateY(18px); }
     to   { opacity: 1; transform: translateY(0); }
   }
   @keyframes shimmer {
@@ -46,27 +52,31 @@ const mobileCardStyles = `
   @keyframes spin {
     to { transform: rotate(360deg); }
   }
+
+  /* ── Toast — frosted capsule ── */
   .rack-toast {
     position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
     z-index: 9999;
-    background: var(--surface);
-    border: 1px solid rgba(232,255,107,0.35);
-    border-radius: 24px; padding: 9px 20px;
+    background: rgba(22,22,27,0.85);
+    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    border: 1px solid var(--accent-line, rgba(232,255,107,0.26));
+    border-radius: 24px; padding: 10px 22px;
     font-size: 13px; font-weight: 500; color: var(--text);
     font-family: var(--font-body);
-    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 40px rgba(0,0,0,0.55);
     pointer-events: none; white-space: nowrap;
     animation: toastIn 0.35s cubic-bezier(0.22,1,0.36,1) both;
   }
   .rack-toast.out { animation: toastOut 0.3s ease forwards; }
   .rack-toast-dot {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--accent); margin-right: 7px;
+    background: var(--accent); margin-right: 8px;
+    box-shadow: 0 0 8px rgba(232,255,107,0.7);
     vertical-align: middle; position: relative; top: -1px;
   }
   .rack-tracking-cta {
     display: inline-flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 600; font-family: var(--font-body);
+    font-size: 12px; font-weight: 700; font-family: var(--font-display);
     color: var(--accent); text-decoration: none; cursor: pointer;
     background: linear-gradient(90deg,
       rgba(232,255,107,0.0) 0%,
@@ -87,7 +97,7 @@ const mobileCardStyles = `
     position: fixed;
     inset: 0;
     display: flex;
-    flex-direction: row;   /* changed: row so steel panel sits alongside chat */
+    flex-direction: row;   /* row so steel panel sits alongside chat */
     height: 100dvh;
     overflow: hidden;
   }
@@ -103,14 +113,11 @@ const mobileCardStyles = `
     transition: width 0.35s cubic-bezier(0.22,1,0.36,1),
                 flex  0.35s cubic-bezier(0.22,1,0.36,1);
   }
-  /* Collapse chat to a narrow sidebar when agent is running */
   .rack-chat-col.panel-open {
     flex: 0 0 480px;
     min-width: 480px;
     max-width: 480px;
   }
-  /* When steel panel open: transform desktop logo to match mobile header style —
-     centered, larger, with a gradient fade below so chat scrolls under it cleanly */
   body.steel-panel-open .logo {
     left: 0 !important;
     right: 0 !important;
@@ -123,7 +130,6 @@ const mobileCardStyles = `
     pointer-events: none;
     z-index: 101;
   }
-  /* Single clean gradient behind the logo — separate pseudo on body so stacking is predictable */
   body.steel-panel-open::before {
     content: '';
     position: fixed;
@@ -132,10 +138,10 @@ const mobileCardStyles = `
     height: 90px;
     background: linear-gradient(
       to bottom,
-      rgba(8,8,8,1)    0%,
-      rgba(8,8,8,1)    45%,
-      rgba(8,8,8,0.75) 70%,
-      rgba(8,8,8,0.0)  100%
+      rgba(8,8,10,1)    0%,
+      rgba(8,8,10,1)    45%,
+      rgba(8,8,10,0.75) 70%,
+      rgba(8,8,10,0.0)  100%
     );
     z-index: 100;
     pointer-events: none;
@@ -143,49 +149,36 @@ const mobileCardStyles = `
   body.steel-panel-open .logo-dot {
     width: 7px !important; height: 7px !important;
   }
-  /* Hide byline when panel open — too cluttered */
   body.steel-panel-open .byline-link {
     display: none !important;
   }
 
-  /* ── Steel panel keyframes ─────────────────────────────── */
-
-  /* Left border breathes — always on while panel is open */
+  /* ── Steel panel keyframes ── */
   @keyframes steel-glow-breathe {
     0%, 100% { border-left-color: rgba(232,255,107,0.18);
                box-shadow: inset 2px 0 12px rgba(232,255,107,0.05), -2px 0 16px rgba(232,255,107,0.06); }
     50%       { border-left-color: rgba(232,255,107,0.42);
                box-shadow: inset 2px 0 18px rgba(232,255,107,0.11), -2px 0 24px rgba(232,255,107,0.13); }
   }
-
-  /* Slow shimmer that drifts across the header bar continuously */
   @keyframes steel-bar-drift {
     0%   { background-position: -800px 0; }
     100% { background-position: 800px 0; }
   }
-
-  /* Live dot steady pulse */
   @keyframes steel-dot-pulse {
     0%, 100% { box-shadow: 0 0 5px rgba(232,255,107,0.5),  0 0 0 0   rgba(232,255,107,0); }
     50%       { box-shadow: 0 0 10px rgba(232,255,107,0.85), 0 0 14px rgba(232,255,107,0.25); }
   }
-
-  /* One-shot scan line on open */
   @keyframes steel-scan {
     0%   { transform: translateY(-4px); opacity: 0; }
     4%   { opacity: 1; }
     90%  { opacity: 0.7; }
     100% { transform: translateY(100vh); opacity: 0; }
   }
-
-  /* Iframe materialise on open */
   @keyframes steel-iframe-reveal {
     0%   { opacity: 0; transform: scale(0.975); }
     60%  { opacity: 1; }
     100% { opacity: 1; transform: scale(1); }
   }
-
-  /* One-shot burst on open */
   @keyframes steel-border-burst {
     0%   { border-left-color: rgba(255,255,255,0.06); }
     10%  { border-left-color: rgba(232,255,107,0.95);
@@ -201,25 +194,20 @@ const mobileCardStyles = `
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: #0a0a0a;
-    border-left: 4px solid rgba(255,255,255,0.06);
+    background: #0a0a0c;
+    border-left: 3px solid rgba(255,255,255,0.06);
     transition: flex 0.38s cubic-bezier(0.34,1.4,0.64,1);
   }
-
-  /* OPEN state — persistent ambient glow on the border */
   .rack-steel-panel.open {
     flex: 1 1 0px;
     min-width: 0;
     border-left-color: rgba(232,255,107,0.28);
     animation: steel-glow-breathe 3s ease-in-out infinite;
   }
-
   @media (max-width: 900px) {
     .rack-steel-panel.open { flex: 0 0 100vw; }
     .rack-chat-col.panel-open { display: none; }
   }
-
-  /* OPEN — header bar gets a slow drifting shimmer, always visible */
   .rack-steel-panel.open .rack-steel-header-label {
     background: linear-gradient(
       90deg,
@@ -235,19 +223,13 @@ const mobileCardStyles = `
     -webkit-text-fill-color: transparent;
     animation: steel-bar-drift 4s linear infinite;
   }
-
-  /* OPEN — live dot pulses continuously */
   .rack-steel-panel.open .rack-live-dot {
     animation: steel-dot-pulse 2s ease-in-out infinite !important;
   }
-
-  /* OPENING (950ms burst) — override border with a sharper burst then hand off to breathe */
   .rack-steel-panel.steel-opening {
     animation: steel-border-burst 800ms cubic-bezier(0.22,1,0.36,1) forwards,
                steel-glow-breathe 3s ease-in-out 800ms infinite;
   }
-
-  /* OPENING — scan line sweeps once top→bottom */
   .rack-steel-panel.steel-opening .rack-steel-body::after {
     content: '';
     position: absolute;
@@ -265,13 +247,11 @@ const mobileCardStyles = `
     z-index: 10;
     animation: steel-scan 750ms cubic-bezier(0.4,0,0.6,1) 80ms forwards;
   }
-
-  /* Iframe materialise on open */
   .rack-steel-iframe-entering {
     animation: steel-iframe-reveal 500ms cubic-bezier(0.22,1,0.36,1) 150ms both;
   }
 
-  /* Scrollable message area — goes full bleed, flows under the floating nav */
+  /* ── Scrollable message area ── */
   .rack-chat-scroll {
     flex: 1;
     overflow-y: auto;
@@ -288,7 +268,7 @@ const mobileCardStyles = `
   .rack-chat-scroll::-webkit-scrollbar-track { background: transparent; }
   .rack-chat-scroll::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
 
-  /* Greeting state */
+  /* ── Greeting state — the product's opening statement ── */
   .rack-greeting {
     display: flex;
     flex-direction: column;
@@ -296,75 +276,84 @@ const mobileCardStyles = `
     justify-content: center;
     flex: 1;
     padding: 20px 0 32px;
-    gap: 24px;
-    animation: greetingFade 0.5s cubic-bezier(0.22,1,0.36,1) both;
+    gap: 28px;
+    animation: greetingFade 0.55s cubic-bezier(0.22,1,0.36,1) both;
+    background: radial-gradient(ellipse 640px 320px at 50% 38%, rgba(232,255,107,0.045), transparent 70%);
   }
   .rack-greeting-hero {
     text-align: center;
   }
   .rack-greeting-eyebrow {
     font-family: var(--font-display);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.18em;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
     text-transform: uppercase;
     color: var(--text-dim);
-    margin-bottom: 16px;
-    display: flex;
+    margin-bottom: 22px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: 9px;
+    padding: 7px 16px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255,255,255,0.025);
   }
   .rack-greeting-title {
     font-family: var(--font-body);
-    font-size: clamp(28px, 4vw, 44px);
-    font-weight: 500;
-    letter-spacing: -0.03em;
-    line-height: 1.08;
+    font-size: clamp(32px, 4.6vw, 54px);
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    line-height: 1.05;
     color: var(--text);
-    margin: 0 0 14px;
+    margin: 0 0 16px;
+    text-wrap: balance;
   }
   .rack-suggestion-sub {
-    font-size: 14px;
+    font-size: 15px;
     color: var(--text-mid);
     font-weight: 400;
-    line-height: 1.55;
+    line-height: 1.6;
     margin: 0 0 28px;
   }
   .rack-greeting-sub {
-    font-size: 14px;
+    font-size: 15px;
     color: var(--text-mid);
     font-weight: 400;
-    margin: 0;
-    line-height: 1.55;
+    margin: 0 auto;
+    line-height: 1.6;
+    max-width: 460px;
+    text-wrap: pretty;
   }
   .rack-suggestion-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
     justify-content: center;
-    max-width: 560px;
+    max-width: 580px;
   }
   .rack-suggestion-chip {
-    padding: 7px 14px;
-    background: transparent;
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.025);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 11px;
+    border-radius: 999px;
+    font-size: 11.5px;
     font-weight: 500;
     color: var(--text-mid);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.18s ease;
     font-family: var(--font-display);
     letter-spacing: 0.02em;
   }
   .rack-suggestion-chip:hover {
-    border-color: var(--border-bright);
-    color: var(--text);
-    background: var(--surface2);
+    border-color: var(--accent-line, rgba(232,255,107,0.26));
+    color: var(--accent);
+    background: var(--accent-soft, rgba(232,255,107,0.07));
+    transform: translateY(-1px);
   }
 
-  /* Message bubbles */
+  /* ── Message thread ── */
   .rack-msg-container {
     width: min(55%, 900px);
     max-width: 900px;
@@ -372,19 +361,20 @@ const mobileCardStyles = `
   }
   .rack-msg-row {
     display: flex;
-    margin-bottom: 18px;
+    margin-bottom: 20px;
     animation: bubbleIn 0.35s cubic-bezier(0.22,1,0.36,1) both;
   }
   .rack-msg-row.user { justify-content: flex-end; }
   .rack-msg-row.rack { justify-content: flex-start; }
 
-  /* User bubble — right side */
+  /* User bubble — right side, quiet lime tint */
   .rack-bubble-user {
     max-width: min(72%, 520px);
-    padding: 12px 16px;
-    background: rgba(232,255,107,0.08);
-    border: 1px solid rgba(232,255,107,0.18);
-    border-radius: 18px 18px 4px 18px;
+    padding: 12px 17px;
+    background: linear-gradient(180deg, rgba(232,255,107,0.085), rgba(232,255,107,0.05));
+    border: 1px solid rgba(232,255,107,0.16);
+    border-radius: 18px 18px 6px 18px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
     font-size: 14px;
     font-weight: 400;
     color: var(--text);
@@ -392,15 +382,16 @@ const mobileCardStyles = `
     word-break: break-word;
   }
   .rack-bubble-user-label {
-    font-size: 10px;
+    font-family: var(--font-display);
+    font-size: 9.5px;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: rgba(232,255,107,0.5);
-    margin-bottom: 5px;
+    color: rgba(232,255,107,0.55);
+    margin-bottom: 6px;
   }
 
-  /* RACK reply bubble — left side */
+  /* RACK reply — left side */
   .rack-bubble-rack {
     max-width: min(96%, 860px);
     width: 100%;
@@ -408,10 +399,11 @@ const mobileCardStyles = `
   .rack-bubble-rack-label {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 10px;
+    gap: 7px;
+    font-family: var(--font-display);
+    font-size: 9.5px;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--text-dim);
     margin-bottom: 10px;
@@ -421,9 +413,10 @@ const mobileCardStyles = `
     width: 5px; height: 5px;
     border-radius: 50%;
     background: var(--accent);
+    box-shadow: 0 0 7px rgba(232,255,107,0.6);
   }
 
-  /* Result cards inside RACK bubble */
+  /* Result cards inside RACK bubble — desktop defaults, overridden below */
   .rack-card-collapsed-skills { }
   .rack-card-rank { }
   .rack-card-name { }
@@ -444,7 +437,7 @@ const mobileCardStyles = `
     animation: smoothExpand 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
-  /* ── Profile completeness banner — centered above input, matches textarea width ── */
+  /* ── Profile completeness pill ── */
   .rack-fix-pill-wrap {
     padding: 0 24px 8px;
     flex-shrink: 0;
@@ -456,18 +449,18 @@ const mobileCardStyles = `
     max-width: 820px;
     margin: 0 auto;
     padding: 9px 12px 9px 16px;
-    background: rgba(18, 18, 18, 0.95);
-    border: 1px solid rgba(232,255,107,0.35);
-    border-radius: 12px;
-    box-shadow: 0 2px 16px rgba(0,0,0,0.4);
+    background: rgba(20,20,25,0.88);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--accent-line, rgba(232,255,107,0.26));
+    border-radius: 13px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 6px 24px rgba(0,0,0,0.45);
   }
-  /* Warning icon */
   .rack-fix-pill-icon {
     flex-shrink: 0;
     width: 18px;
     height: 18px;
     border-radius: 50%;
-    background: rgba(232,255,107,0.15);
+    background: rgba(232,255,107,0.13);
     border: 1px solid rgba(232,255,107,0.4);
     display: flex;
     align-items: center;
@@ -476,7 +469,6 @@ const mobileCardStyles = `
     color: rgba(232,255,107,0.9);
     font-weight: 700;
   }
-  /* Text block — fills remaining space, truncates with ellipsis */
   .rack-fix-pill-text {
     flex: 1;
     font-size: 12px;
@@ -488,26 +480,25 @@ const mobileCardStyles = `
     white-space: nowrap;
   }
   .rack-fix-pill-text strong {
-    color: rgba(232,255,107,0.9);
+    color: rgba(232,255,107,0.92);
     font-weight: 600;
   }
-  /* "Fix now" CTA */
   .rack-fix-pill-btn {
     flex-shrink: 0;
-    padding: 5px 13px;
+    padding: 6px 14px;
     background: var(--accent);
-    color: #111;
+    color: var(--accent-contrast);
     border: none;
-    border-radius: 7px;
+    border-radius: 8px;
     font-size: 12px;
     font-weight: 700;
     cursor: pointer;
     white-space: nowrap;
-    transition: opacity 0.15s;
+    transition: background 0.15s, transform 0.15s;
     letter-spacing: 0.2px;
+    font-family: var(--font-display);
   }
-  .rack-fix-pill-btn:hover { opacity: 0.82; }
-  /* X dismiss button */
+  .rack-fix-pill-btn:hover { background: var(--accent-strong, #d9f254); transform: translateY(-1px); }
   .rack-fix-pill-close {
     flex-shrink: 0;
     display: flex;
@@ -531,11 +522,11 @@ const mobileCardStyles = `
     .rack-fix-pill-text { font-size: 11px; }
   }
 
-  /* ── Bottom chat input bar — floats on the background, no dark box ── */
+  /* ── Bottom composer — frosted dock with creature perch wire ── */
   .rack-chat-input-bar {
     flex-shrink: 0;
-    padding: 12px 24px 20px;
-    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    padding: 12px 24px 22px;
+    padding-bottom: calc(22px + env(safe-area-inset-bottom, 0px));
     background: transparent;
     position: relative;
   }
@@ -545,17 +536,30 @@ const mobileCardStyles = `
     gap: 10px;
     max-width: 820px;
     margin: 0 auto;
-    background: var(--surface);
+    background: rgba(22,22,28,0.78);
+    backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
     border: 1px solid var(--border-bright);
-    border-radius: 20px;
-    padding: 14px 14px 14px 20px;
-    transition: border-color 0.2s ease;
-    box-shadow: var(--card-shadow);
+    border-radius: 22px;
+    padding: 14px 14px 14px 21px;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 16px 48px rgba(0,0,0,0.5);
+  }
+  /* Perch wire — the lit line the creature walks on */
+  .rack-chat-input-inner::before {
+    content: '';
+    position: absolute;
+    top: -1px; left: 28px; right: 28px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(232,255,107,0.32) 30%, rgba(232,255,107,0.32) 70%, transparent);
+    opacity: 0.55;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
   }
   .rack-chat-input-inner:focus-within {
-    border-color: rgba(232,255,107,0.35);
-    box-shadow: var(--card-shadow);
+    border-color: var(--accent-line, rgba(232,255,107,0.3));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 16px 48px rgba(0,0,0,0.5), 0 0 0 4px rgba(232,255,107,0.05);
   }
+  .rack-chat-input-inner:focus-within::before { opacity: 1; }
   .rack-chat-textarea {
     flex: 1;
     background: transparent;
@@ -565,8 +569,7 @@ const mobileCardStyles = `
     color: var(--text);
     font-family: var(--font-body);
     font-size: 15px;
-    font-weight: 300;
-    // line-height: 1.6;
+    font-weight: 400;
     max-height: 180px;
     min-height: 28px;
     caret-color: var(--accent);
@@ -576,19 +579,18 @@ const mobileCardStyles = `
   .rack-chat-textarea::-webkit-scrollbar { display: none; }
   .rack-chat-textarea::placeholder { color: var(--text-dim); }
 
-  /* Attach + send button row inside input */
   .rack-chat-input-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
     flex-shrink: 0;
   }
   .rack-chat-attach-btn {
-    width: 32px; height: 32px;
+    width: 34px; height: 34px;
     display: flex; align-items: center; justify-content: center;
     background: transparent;
     border: 1px dashed var(--border-bright);
-    border-radius: 8px;
+    border-radius: 10px;
     cursor: pointer;
     font-size: 14px;
     color: var(--text-dim);
@@ -596,38 +598,42 @@ const mobileCardStyles = `
     flex-shrink: 0;
   }
   .rack-chat-attach-btn:hover {
-    border-color: rgba(232,255,107,0.4);
-    color: rgba(232,255,107,0.7);
-    background: rgba(232,255,107,0.04);
+    border-color: var(--accent-line, rgba(232,255,107,0.35));
+    color: rgba(232,255,107,0.75);
+    background: var(--accent-soft, rgba(232,255,107,0.05));
   }
   .rack-chat-attach-btn:disabled {
     opacity: 0.35;
     cursor: not-allowed;
   }
   .rack-chat-send-btn {
-    width: 40px; height: 40px;
+    width: 42px; height: 42px;
     display: flex; align-items: center; justify-content: center;
     background: var(--accent);
     border: none;
-    border-radius: 12px;
+    border-radius: 14px;
     cursor: pointer;
     font-size: 18px;
-    color: #080808;
+    color: var(--accent-contrast);
     font-weight: 800;
     transition: all 0.18s ease;
     flex-shrink: 0;
+    box-shadow: var(--accent-glow, 0 4px 20px rgba(232,255,107,0.22));
   }
   .rack-chat-send-btn:disabled {
     background: var(--pill-bg);
     color: var(--text-dim);
     cursor: not-allowed;
+    box-shadow: none;
   }
   .rack-chat-send-btn:not(:disabled):hover {
-    background: #d4f032;
-    transform: scale(1.06);
+    background: var(--accent-strong, #d9f254);
+    transform: translateY(-1px) scale(1.04);
+  }
+  .rack-chat-send-btn:not(:disabled):active {
+    transform: translateY(0) scale(0.98);
   }
 
-  /* Staged file chips above input */
   .rack-staged-files {
     display: flex;
     gap: 6px;
@@ -636,30 +642,31 @@ const mobileCardStyles = `
     margin: 0 auto 8px;
   }
 
-  /* Input meta row (char count, warning) */
   .rack-input-meta {
     display: flex;
     align-items: center;
     gap: 8px;
     max-width: 820px;
-    margin: 8px auto 0;
+    margin: 9px auto 0;
     font-size: 11px;
-    color: var(--text-dim);
-    padding: 0 4px;
+    font-family: var(--font-display);
+    letter-spacing: 0.01em;
+    color: var(--meta-color, rgba(255,255,255,0.36));
+    padding: 0 6px;
   }
 
   @media (max-width: 600px) {
     .rack-chat-scroll { padding: 16px 12px 12px; padding-top: calc(var(--page-padding-top, 68px) + 12px); }
-    .rack-greeting-title { font-size: clamp(24px, 7vw, 36px); letter-spacing: -1px; }
+    .rack-greeting-title { font-size: clamp(26px, 7.5vw, 38px); letter-spacing: -0.03em; }
     .rack-greeting-sub { font-size: 14px; }
     .rack-bubble-user { max-width: 85%; font-size: 13px; }
     .rack-bubble-rack { max-width: 100%; }
     .rack-msg-container { width: 100% !important; max-width: 100% !important; }
-    .rack-chat-input-bar { padding: 10px 16px 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
-    .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 16px; }
+    .rack-chat-input-bar { padding: 10px 14px 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+    .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 18px; }
     .rack-chat-textarea { font-size: 16px; /* prevent iOS zoom */ }
     .rack-suggestion-chips { gap: 6px; }
-    .rack-suggestion-chip { font-size: 12px; padding: 7px 13px; }
+    .rack-suggestion-chip { font-size: 12px; padding: 7px 14px; }
 
     /* Result cards — mobile sizing */
     .rack-card-collapsed-skills { display: none !important; }
@@ -670,21 +677,20 @@ const mobileCardStyles = `
     .rack-card-badges { gap: 5px !important; margin-bottom: 5px !important; }
     .rack-card-row { gap: 10px !important; }
     .rack-card-padding { padding: 13px 14px !important; border-radius: 12px !important; }
-
   }
-  /* When steel panel is open, apply the exact same styles as mobile —
-     the chat column is the same ~420px width so the mobile rules fit perfectly */
+
+  /* When steel panel is open: chat column is phone-width — mirror mobile rules */
   .rack-chat-col.panel-open .rack-chat-scroll { padding: 16px 16px 12px 68px; padding-top: calc(80px + 12px); }
-  .rack-chat-col.panel-open .rack-greeting-title { font-size: clamp(24px, 7vw, 36px); letter-spacing: -1px; }
+  .rack-chat-col.panel-open .rack-greeting-title { font-size: clamp(26px, 7.5vw, 38px); letter-spacing: -0.03em; }
   .rack-chat-col.panel-open .rack-greeting-sub { font-size: 14px; }
   .rack-chat-col.panel-open .rack-bubble-user { max-width: 85%; font-size: 13px; }
   .rack-chat-col.panel-open .rack-bubble-rack { max-width: 100%; }
   .rack-chat-col.panel-open .rack-msg-container { width: 100% !important; max-width: 100% !important; }
   .rack-chat-col.panel-open .rack-chat-input-bar { padding: 10px 16px 12px 68px; }
-  .rack-chat-col.panel-open .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 16px; }
+  .rack-chat-col.panel-open .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 18px; }
   .rack-chat-col.panel-open .rack-suggestion-chips { gap: 6px; flex-wrap: nowrap !important; overflow-x: auto !important; scrollbar-width: none !important; }
   .rack-chat-col.panel-open .rack-suggestion-chips::-webkit-scrollbar { display: none !important; }
-  .rack-chat-col.panel-open .rack-suggestion-chip { font-size: 12px; padding: 7px 13px; }
+  .rack-chat-col.panel-open .rack-suggestion-chip { font-size: 12px; padding: 7px 14px; }
   .rack-chat-col.panel-open .rack-card-collapsed-skills { display: none !important; }
   .rack-chat-col.panel-open .rack-card-rank { font-size: 16px !important; min-width: 28px !important; }
   .rack-chat-col.panel-open .rack-card-name { font-size: 14px !important; }
@@ -757,12 +763,12 @@ const mobileCardStyles = `
     }
   }
   .preview-card-cta:hover {
-    background: rgba(232,255,107,0.2) !important;
-    border-color: rgba(232,255,107,0.6) !important;
+    background: var(--accent-strong, #d9f254) !important;
+    transform: translateY(-1px);
   }
   .preview-resume-row:hover {
-    background: rgba(232,255,107,0.05) !important;
-    border-color: rgba(232,255,107,0.18) !important;
+    background: var(--accent-soft, rgba(232,255,107,0.05)) !important;
+    border-color: var(--accent-line, rgba(232,255,107,0.2)) !important;
     cursor: pointer;
   }
   .preview-dismiss-btn:hover {
@@ -1170,12 +1176,12 @@ function ValuePreviewCard({ results, onSignIn }) {
             onClick={onSignIn}
             style={{
               width: '100%', padding: '14px 18px',
-              background: 'rgba(232,255,107,0.1)',
-              border: '1px solid rgba(232,255,107,0.38)',
-              borderRadius: '13px', cursor: 'pointer',
+              background: 'var(--accent)',
+              border: 'none',
+              borderRadius: '12px', cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
               fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700,
-              color: 'var(--accent)', transition: 'all 0.2s ease',
+              color: 'var(--accent-contrast)', boxShadow: 'var(--accent-glow, 0 4px 20px rgba(232,255,107,0.22))', transition: 'all 0.2s ease',
             }}
           >
             <span>Sign in to unlock all {totalJobs.toLocaleString()} matches</span>
@@ -3752,7 +3758,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               </div>
               <h1 className="rack-greeting-title">
                 Drop the JD.<br />
-                <span style={{ color: 'var(--accent)', fontStyle: 'italic', fontWeight: 400 }}>
+                <span style={{ color: 'var(--accent)', fontStyle: 'italic', fontWeight: 300, textShadow: '0 0 36px rgba(232,255,107,0.3)' }}>
                   We'll find your fit.
                 </span>
               </h1>
@@ -4157,7 +4163,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                     </div>
                     <div style={{
                       padding: '18px 20px', borderRadius: '14px',
-                      background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                      background: 'var(--surface)', border: '1px solid var(--card-border)', boxShadow: 'var(--card-shadow)',
                       animation: 'bubbleIn 0.35s ease both',
                       display: 'flex', flexDirection: 'column', gap: '14px',
                     }}>
@@ -4172,19 +4178,20 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         }}
                         style={{
                           alignSelf: 'flex-start',
-                          padding: '10px 20px',
-                          background: 'rgba(232,255,107,0.1)',
-                          border: '1px solid rgba(232,255,107,0.35)',
+                          padding: '10px 22px',
+                          background: 'var(--accent)',
+                          border: 'none',
                           borderRadius: '10px',
                           cursor: 'pointer',
                           fontSize: '13px', fontWeight: 700,
-                          color: 'var(--accent)',
+                          color: 'var(--accent-contrast)',
                           fontFamily: 'var(--font-display)',
+                          boxShadow: 'var(--accent-glow, 0 4px 20px rgba(232,255,107,0.22))',
                           transition: 'all 0.15s ease',
                           display: 'flex', alignItems: 'center', gap: '8px',
                         }}
-                        onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.18)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.55)' }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.1)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.35)' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-strong, #d9f254)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.transform = 'translateY(0)' }}
                       >
                         <span>Open Tracking</span>
                         <span style={{ fontSize: '15px' }}>✦</span>
@@ -4221,7 +4228,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                   {msg.loading && !msg.isAssistantReply && !msg.isTailorResult && (
                     <div style={{
                       padding: '20px 22px', borderRadius: '14px',
-                      background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                      background: 'var(--surface)', border: '1px solid var(--card-border)', boxShadow: 'var(--card-shadow)',
                       display: 'flex', flexDirection: 'column', gap: '14px',
                       marginBottom: '8px',
                     }}>
@@ -4416,12 +4423,15 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                             return (
                               ji >= visibleCount ? null :
                               <div key={globalIdx} style={{
-                                borderRadius: '10px', overflow: 'hidden',
-                                background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                                borderRadius: '14px', overflow: 'hidden',
+                                background: 'var(--surface)', border: '1px solid var(--card-border)',
+                                boxShadow: 'var(--card-shadow)',
                                 animation: 'bubbleIn 0.32s cubic-bezier(0.22,1,0.36,1) both',
                               }}>
-                                {/* Score accent bar */}
-                                <div style={{ height: '2px', background: gradient, width: `${jScore}%`, transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)' }} />
+                                {/* Score accent bar — on a visible track */}
+                                <div style={{ height: '3px', background: 'var(--pill-bg)' }}>
+                                  <div style={{ height: '100%', background: gradient, width: `${jScore}%`, transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)' }} />
+                                </div>
 
                                 <div style={{ padding: '14px 16px 12px' }}>
                                   {/* Main row: rank · content · score */}
@@ -4513,21 +4523,22 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                         onClick={(e) => { e.stopPropagation(); handleApply([{ ...job, url: jobUrl, resume_id: jobResumeId, resume_name: jobResumeName, job_title: title, company: job.company || jd.company }]) }}
                                         disabled={applyLoading}
                                         style={{
-                                          display: 'flex', alignItems: 'center', gap: '4px',
-                                          padding: '4px 12px', borderRadius: '20px',
-                                          fontSize: '11px', fontWeight: 700,
-                                          fontFamily: 'var(--font-body)',
+                                          display: 'flex', alignItems: 'center', gap: '5px',
+                                          padding: '6px 15px', borderRadius: '9px',
+                                          fontSize: '11.5px', fontWeight: 700,
+                                          fontFamily: 'var(--font-display)',
                                           background: applyLoading
-                                            ? 'rgba(232,255,107,0.04)'
-                                            : 'rgba(232,255,107,0.1)',
-                                          border: '1px solid rgba(232,255,107,0.25)',
-                                          color: applyLoading ? 'var(--text-dim)' : 'var(--accent)',
+                                            ? 'var(--pill-bg)'
+                                            : 'var(--accent)',
+                                          border: 'none',
+                                          color: applyLoading ? 'var(--text-dim)' : 'var(--accent-contrast)',
                                           cursor: applyLoading ? 'not-allowed' : 'pointer',
+                                          boxShadow: applyLoading ? 'none' : 'var(--accent-glow, 0 4px 20px rgba(232,255,107,0.22))',
                                           transition: 'all 0.15s ease',
                                           flexShrink: 0,
                                         }}
-                                        onMouseEnter={e => { if (!applyLoading) e.currentTarget.style.background = 'rgba(232,255,107,0.18)' }}
-                                        onMouseLeave={e => { if (!applyLoading) e.currentTarget.style.background = 'rgba(232,255,107,0.1)' }}
+                                        onMouseEnter={e => { if (!applyLoading) e.currentTarget.style.background = 'var(--accent-strong, #d9f254)' }}
+                                        onMouseLeave={e => { if (!applyLoading) e.currentTarget.style.background = 'var(--accent)' }}
                                       >
                                         ⚡ Apply
                                       </button>
@@ -4626,7 +4637,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                         <div style={{
                           display: 'flex', alignItems: 'center', gap: '10px',
                           padding: '16px 20px', borderRadius: '14px',
-                          background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                          background: 'var(--surface)', border: '1px solid var(--card-border)', boxShadow: 'var(--card-shadow)',
                         }}>
                           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                             {[0, 1, 2].map(i => (
@@ -4642,7 +4653,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                       ) : (
                         <div style={{
                           padding: '16px 20px', borderRadius: '14px',
-                          background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                          background: 'var(--surface)', border: '1px solid var(--card-border)', boxShadow: 'var(--card-shadow)',
                           fontSize: '14px', lineHeight: '1.65', color: 'var(--text)',
                           fontWeight: 300,
                         }}>
@@ -4809,14 +4820,15 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                               style={{
                                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
                                 width: '100%', padding: '14px 18px',
-                                background: 'rgba(232,255,107,0.1)', border: '1px solid rgba(232,255,107,0.38)',
-                                borderRadius: '13px', cursor: 'pointer',
+                                background: 'var(--accent)', border: 'none',
+                                borderRadius: '12px', cursor: 'pointer',
                                 fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 700,
-                                color: 'var(--accent)', textDecoration: 'none',
+                                color: 'var(--accent-contrast)', textDecoration: 'none',
+                                boxShadow: 'var(--accent-glow, 0 4px 20px rgba(232,255,107,0.22))',
                                 transition: 'all 0.2s ease',
                               }}
-                              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.18)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.55)' }}
-                              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.1)'; e.currentTarget.style.borderColor = 'rgba(232,255,107,0.38)' }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-strong, #d9f254)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.transform = 'translateY(0)' }}
                             >
                               <span>↓</span>
                               <span>Download Tailored Resume</span>
@@ -4834,7 +4846,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                   {!msg.isFilterResult && !msg.isAssistantReply && !msg.isTailorResult && msg.results && msg.results.length === 0 && (
                     <div style={{
                       padding: '28px 24px', borderRadius: '14px',
-                      background: 'var(--surface)', border: '1px solid var(--border-bright)',
+                      background: 'var(--surface)', border: '1px solid var(--card-border)', boxShadow: 'var(--card-shadow)',
                       textAlign: 'center', animation: 'bubbleIn 0.35s ease both',
                     }}>
                       <div style={{ fontSize: '28px', marginBottom: '10px' }}>📄</div>
@@ -5145,7 +5157,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
             <div style={{
               position: 'absolute', bottom: '100%', left: 0, marginBottom: '6px',
               width: 'max-content', minWidth: '220px', maxWidth: '320px',
-              background: 'var(--surface)', border: '1px solid var(--border-bright)',
+              background: 'var(--surface)', border: '1px solid var(--card-border)', boxShadow: 'var(--card-shadow)',
               borderRadius: '12px', overflow: 'hidden', zIndex: 50,
               boxShadow: 'var(--modal-shadow)',
               animation: 'bubbleIn 0.15s ease both',
