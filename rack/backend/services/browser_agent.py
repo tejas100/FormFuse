@@ -510,7 +510,41 @@ def _get_ats_hint(url: str) -> str:
 # -- Fill helpers -------------------------------------------------------------
 
 
-async def _fill_react_combobox(page, selector_hint: str, label: str, value: str, profile: dict | None = None) -> bool:
+async def _read_combobox_selected(page, combobox) -> str:
+    """
+    Read the currently-selected value of the react-select widget that owns
+    `combobox` (the inner select__input). Walks up the ancestor chain looking
+    for the '[class*="single-value"]' element react-select renders for the
+    chosen option. Returns '' when nothing is selected or the markup isn't
+    react-select-shaped — callers must treat '' as "unverifiable", not "empty".
+    """
+    try:
+        handle = await combobox.element_handle()
+        if not handle:
+            return ""
+        return await page.evaluate(
+            """el => {
+                let node = el;
+                for (let i = 0; i < 6; i++) {
+                    if (!node.parentElement) return '';
+                    node = node.parentElement;
+                    const sv = node.querySelector('[class*="single-value"]');
+                    if (sv) return (sv.textContent || '').trim();
+                }
+                return '';
+            }""",
+            handle,
+        )
+    except Exception:
+        return ""
+
+
+def _norm_opt(s: str) -> str:
+    """Normalize option/value text for comparison: lowercase, collapse whitespace, drop asterisks."""
+    return " ".join((s or "").lower().replace("*", " ").split())
+
+
+async def _fill_react_combobox(page, selector_hint: str, label: str, value: str, profile: dict | None = None, field: dict | None = None) -> bool:
     """
     Fill a React combobox (class='select__input') — used by Reddit, newer Greenhouse, etc.
 
@@ -543,6 +577,15 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
             clicked = await page.evaluate(
                 """([target]) => {
                     const normalize = s => s.toLowerCase().replace(/[*\s]+/g, ' ').trim();
+                    // getBoundingClientRect, NOT offsetParent — React portals
+                    // (position:fixed / CSS transform) have offsetParent===null
+                    // even when fully visible. Same fix as the option scraper:
+                    // options were being scraped fine but were "invisible" to
+                    // this click filter, so every click failed silently.
+                    const isVisible = el => {
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    };
                     const t = normalize(target);
                     const candidates = [
                         ...document.querySelectorAll('[class*="option"]'),
@@ -552,17 +595,17 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
                     // 1. Exact match
                     for (const el of candidates) {
                         const txt = normalize(el.textContent || '');
-                        if (txt === t && el.offsetParent !== null) { el.click(); return 'exact:' + txt; }
+                        if (txt === t && isVisible(el)) { el.click(); return 'exact:' + txt; }
                     }
                     // 2. Starts-with match
                     for (const el of candidates) {
                         const txt = normalize(el.textContent || '');
-                        if (txt.startsWith(t.slice(0,12)) && el.offsetParent !== null) { el.click(); return 'starts:' + txt; }
+                        if (txt.startsWith(t.slice(0,12)) && isVisible(el)) { el.click(); return 'starts:' + txt; }
                     }
                     // 3. Contains match — last resort
                     for (const el of candidates) {
                         const txt = normalize(el.textContent || '');
-                        if (txt.includes(t) && el.offsetParent !== null) { el.click(); return 'contains:' + txt; }
+                        if (txt.includes(t) && isVisible(el)) { el.click(); return 'contains:' + txt; }
                     }
                     return null;
                 }""",
@@ -619,6 +662,29 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
 
         if not combobox:
             logger.warning(f"[react_combobox] Could not locate combobox for '{label}'")
+            return False
+
+        # ── Verified click: click + read back what actually landed ───────────
+        # _try_click_option returning True only proves an element was clicked,
+        # not that react-select registered the selection. Read the widget's
+        # single-value text afterwards and confirm it matches the intent —
+        # a silent click-miss here is how a user-edited Export Controls answer
+        # once sailed through to Submit without ever changing on the form.
+        async def _click_and_verify(target: str) -> bool:
+            if not await _try_click_option(page, target):
+                return False
+            await asyncio.sleep(0.3)
+            selected = await _read_combobox_selected(page, combobox)
+            if not selected:
+                # No single-value element readable (non react-select markup,
+                # or multi-select) — trust the click rather than regress.
+                return True
+            _ns, _nt = _norm_opt(selected), _norm_opt(target)
+            if _ns == _nt or _nt in _ns or _ns in _nt:
+                logger.info(f"[react_combobox] Verified '{selected}' selected for '{label}'")
+                return True
+            logger.warning(f"[react_combobox] Click verification FAILED for '{label}': "
+                           f"wanted '{target}', field shows '{selected}'")
             return False
 
         # ── Step 2: Click the container to open the dropdown ─────────────────
@@ -693,6 +759,11 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
             )
             if _scraped_options:
                 logger.info(f"[react_combobox] Dropdown options for '{label}': {_scraped_options}")
+                # Write the live options back into the field dict so the Phase 1
+                # draft carries them — Review can then render a <select> for this
+                # field and _apply_edits can snap user edits to an exact option.
+                if field is not None:
+                    field["options"] = _scraped_options
         except Exception as _se:
             logger.debug(f"[react_combobox] Option scrape failed: {_se}")
 
@@ -707,7 +778,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
                 _eeo_pick = _resolve_eeo_combobox(label, _scraped_options, profile)
                 if _eeo_pick:
                     logger.info(f"[react_combobox] EEO resolver picked '{_eeo_pick}' for '{label}'")
-                    if await _try_click_option(page, _eeo_pick):
+                    if await _click_and_verify(_eeo_pick):
                         return True
             except Exception as _eeoe:
                 logger.debug(f"[react_combobox] EEO resolve failed: {_eeoe}")
@@ -798,7 +869,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
                             continue
             except Exception:
                 pass
-        if await _try_click_option(page, display_value):
+        if await _click_and_verify(display_value):
             return True
 
         # ── Step 3b: LLM picks the best option from the real scraped list ─────
@@ -834,7 +905,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
                 except Exception as _le:
                     logger.debug(f"[react_combobox] LLM option pick failed: {_le}")
 
-        if _best_option and await _try_click_option(page, _best_option):
+        if _best_option and await _click_and_verify(_best_option):
             return True
 
         # ── Step 3c: Type 3-char prefix of the LLM-chosen option and retry ────
@@ -848,7 +919,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
             await asyncio.sleep(0.5)
         except Exception:
             pass
-        if await _try_click_option(page, _search_target):
+        if await _click_and_verify(_search_target):
             return True
 
         # ── Step 3d: Type more chars and try once more ────────────────────────
@@ -859,8 +930,51 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
             await asyncio.sleep(0.5)
         except Exception:
             pass
-        if await _try_click_option(page, _search_target):
+        if await _click_and_verify(_search_target):
             return True
+
+        # ── Step 3d2: Keyboard select — filter, confirm uniqueness, press Enter ─
+        # Portal-rendered options can defeat mouse clicks even when visible.
+        # react-select always honours Enter on the highlighted option, so:
+        # type enough of the target to filter the menu, verify EXACTLY ONE
+        # matching option remains (never Enter blindly — a wrong highlight
+        # would select a wrong answer), press Enter, then read back.
+        try:
+            await combobox.fill("", timeout=2000)
+            await asyncio.sleep(0.2)
+            await combobox.type(_search_target[:20], timeout=3000)
+            await asyncio.sleep(0.5)
+            _kb_visible = await page.evaluate(
+                """() => {
+                    const isVisible = el => {
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    };
+                    const out = [];
+                    for (const el of document.querySelectorAll('[class*="option"],[role="option"]')) {
+                        const t = (el.textContent || '').trim();
+                        if (t && isVisible(el) && !out.includes(t)) out.push(t);
+                    }
+                    return out.slice(0, 10);
+                }"""
+            )
+            if len(_kb_visible) == 1 and (
+                _norm_opt(_kb_visible[0]) == _norm_opt(_search_target)
+                or _norm_opt(_search_target) in _norm_opt(_kb_visible[0])
+            ):
+                await _kb(page).press("Enter")
+                await asyncio.sleep(0.4)
+                _kb_selected = await _read_combobox_selected(page, combobox)
+                if _kb_selected and (
+                    _norm_opt(_kb_selected) == _norm_opt(_kb_visible[0])
+                    or _norm_opt(_search_target) in _norm_opt(_kb_selected)
+                ):
+                    logger.info(f"[react_combobox] Keyboard-selected '{_kb_selected}' for '{label}'")
+                    return True
+                logger.warning(f"[react_combobox] Keyboard select verification failed for '{label}': "
+                               f"field shows '{_kb_selected}'")
+        except Exception as _kbe:
+            logger.debug(f"[react_combobox] Keyboard select failed: {_kbe}")
 
         # ── Step 3e: Heuristic fallback on scraped options ────────────────────
         # No LLM, or LLM returned something that still didn't click — scan the
@@ -886,7 +1000,7 @@ async def _fill_react_combobox(page, selector_hint: str, label: str, value: str,
                                 await asyncio.sleep(0.3)
                             except Exception:
                                 pass
-                            if await _try_click_option(page, _opt):
+                            if await _click_and_verify(_opt):
                                 logger.info(f"[react_combobox] Heuristic matched '{_opt}' for '{display_value}'")
                                 return True
 
@@ -1961,6 +2075,36 @@ async def run_apply_agent(
                 _fields_hints.add(_dom_id)
                 logger.info(f"[browser_agent] Dropped text field surfaced for review: {_dom_label!r} (id={_dom_id}, required={_dom_required})")
 
+            # Case D: detected-but-unfilled text fields (BUG D fix).
+            # form_filler detected these but marked skip=True with no value
+            # (e.g. "Education: Last University Attended", salary). Case A only
+            # rescues comboboxes; Case C only catches fields ABSENT from
+            # `fields` — so a detected, empty, skip=True text field was
+            # invisible everywhere: filtered from the draft, never in Review,
+            # never fillable. Flip it to needs_user so the user can answer it
+            # (required when label has '*'). Free-text textareas are excluded —
+            # the pre-skip rescue in the fill loop sends those to
+            # write_free_text(), and surfacing them here would intercept that.
+            for _sf in fields:
+                if not _sf.get("skip") or (_sf.get("value") or "").strip():
+                    continue
+                _sf_hint  = _sf.get("selector_hint", "")
+                _sf_label = (_sf.get("field_label") or "").strip()
+                _sf_type  = (_sf.get("field_type") or "text").lower()
+                if _sf_hint in _react_combobox_ids:
+                    continue                       # Case A territory
+                if _sf_type not in ("text", "textarea", "email", "tel", "url", "number"):
+                    continue                       # file/select/checkbox — intentional skips
+                if not _sf_label or any(fl in _sf_label.lower() for fl in _FILE_LABELS):
+                    continue
+                if _sf_type == "textarea" and _is_free_text_question(_sf_label):
+                    continue                       # write_free_text() rescue handles these
+                _sf["skip"] = False
+                _sf["needs_user"] = True
+                _sf["required"] = "*" in _sf_label
+                logger.info(f"[browser_agent] Detected-but-empty text field surfaced "
+                            f"for review: {_sf_label!r} (id={_sf_hint}, required={_sf['required']})")
+
             for (_, _sf, _sf_hint, _sf_label) in _resolve_targets:
                 try:
                     logger.info(f"[browser_agent] Resolving combobox: {_sf_label!r}")
@@ -2013,6 +2157,11 @@ async def run_apply_agent(
 
             # -- Fill loop ----------------------------------------------------
             filled_count = 0
+            # Labels of user-edited fields the agent failed to apply. If any —
+            # the run must NOT submit (fidelity gate below the fill loop):
+            # submitting a value the user explicitly corrected is worse than
+            # failing loudly and letting them retry.
+            _failed_user_edits = []
 
             for field in fields:
                 label      = field.get("field_label", "Unknown")
@@ -2168,6 +2317,8 @@ async def run_apply_agent(
                         yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
                     else:
                         yield _step("error", 'Could not locate "' + label + '" - skipping')
+                        if field.get("user_edited"):
+                            _failed_user_edits.append(label)
                     await asyncio.sleep(0.3)
                     continue
 
@@ -2232,12 +2383,14 @@ async def run_apply_agent(
                 # React-Select or similar. Must come BEFORE GH select2 routing
                 # so these don't get misrouted to _fill_gh_select2.
                 if selector in _react_combobox_ids:
-                    ok = await _fill_react_combobox(form, selector, label, value, profile=profile)
+                    ok = await _fill_react_combobox(form, selector, label, value, profile=profile, field=field)
                     if ok:
                         filled_count += 1
                         yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
                     else:
                         yield _step("error", 'Could not fill dropdown "' + label + '"')
+                        if field.get("user_edited"):
+                            _failed_user_edits.append(label)
                     await asyncio.sleep(0.4)
                     continue
 
@@ -2263,8 +2416,12 @@ async def run_apply_agent(
                                 yield _step("ok", 'Filled "' + label + '" -> ' + str(value)[:50])
                             else:
                                 yield _step("error", 'Could not locate "' + label + '" - skipping')
+                                if field.get("user_edited"):
+                                    _failed_user_edits.append(label)
                         else:
                             yield _step("error", 'Could not locate "' + label + '" - skipping')
+                            if field.get("user_edited"):
+                                _failed_user_edits.append(label)
                     await asyncio.sleep(0.35)
                     continue
 
@@ -2277,6 +2434,8 @@ async def run_apply_agent(
                     yield _step("ok", 'Filled "' + label + '" -> ' + display_val)
                 else:
                     yield _step("error", 'Could not locate "' + label + '" - skipping')
+                    if field.get("user_edited"):
+                        _failed_user_edits.append(label)
 
                 await asyncio.sleep(0.35)
 
@@ -2723,6 +2882,22 @@ async def run_apply_agent(
                 }
                 return
 
+            # -- User-edit fidelity gate ---------------------------------------
+            # The user explicitly corrected these fields in Review and the agent
+            # could not apply the correction. Never submit over a known-wrong
+            # answer — fail loudly so the user can retry or apply manually.
+            if _failed_user_edits:
+                _fe = ", ".join('"' + l[:60] + '"' for l in _failed_user_edits[:3])
+                yield _step("error", "Could not apply your edit(s) to: " + _fe)
+                yield {
+                    "type":    "error",
+                    "text":    ("Rack couldn't apply your edited answer for " + _fe
+                                + " — nothing was submitted. Retry, or finish this one "
+                                "manually via the job page."),
+                    "job_url": job_url,
+                }
+                return
+
             # -- Human review gate -------------------------------------------
             # Always pause here and wait for explicit user confirmation before
             # clicking Submit. The frontend renders a "Review & Submit" button.
@@ -2786,6 +2961,7 @@ async def run_apply_agent(
             _otp_attempts      = 0
 
             _otp_info = await _detect_security_code(form)
+            _otp_ctx  = form   # context (frame/page) where the code boxes live
             if _otp_info["present"]:
                 logger.info(f"[browser_agent] Security code gate detected "
                             f"(boxes={_otp_info['box_count']}, email={_otp_info['email_hint'] or 'unknown'})")
@@ -2823,7 +2999,7 @@ async def run_apply_agent(
 
                 _otp_attempts += 1
                 yield _step("ok", "Entering security code...")
-                if not await _fill_security_code(form, _otp_code, _otp_info):
+                if not await _fill_security_code(_otp_ctx, _otp_code, _otp_info):
                     yield _step("error", "Could not enter the security code into the form")
                     yield {
                         "type":    "otp_fill_failed",
@@ -2851,6 +3027,7 @@ async def run_apply_agent(
             confirmation_text = None
             is_confirmed = False
             _confirm_png = None
+            otp_after_submit = False
 
             while True:
                 submit_clicked = False
@@ -2929,8 +3106,93 @@ async def run_apply_agent(
                                     confirmation_text = m.group(1)
                                     break
                             break
+
+                        # Security-code section revealed AFTER the submit click —
+                        # Greenhouse's new flow emails the code on Submit and the
+                        # email says "After you enter the code, resubmit your
+                        # application". The pre-submit detection above never sees
+                        # this, so check again here (every ~1.5s; gives the
+                        # section a moment to render). Check both the form frame
+                        # and the top page — embeds render it in either.
+                        if not _otp_info["present"] and attempt % 3 == 2:
+                            _post_otp = await _detect_security_code(form)
+                            _post_ctx = form
+                            if not _post_otp["present"] and form is not page:
+                                _post_otp = await _detect_security_code(page)
+                                _post_ctx = page
+                            if _post_otp["present"]:
+                                _otp_info = _post_otp
+                                _otp_ctx  = _post_ctx
+                                otp_after_submit = True
+                                logger.info(
+                                    f"[browser_agent] Security code gate appeared AFTER submit "
+                                    f"(boxes={_post_otp['box_count']}, "
+                                    f"email={_post_otp['email_hint'] or 'unknown'})"
+                                )
+                                break
                     except Exception:
                         pass
+
+                # Code gate appeared after the submit click — pause for the
+                # emailed code, enter it, then loop back and click Submit again
+                # (Greenhouse: "After you enter the code, resubmit your
+                # application"). Wrong/expired codes are then caught by the
+                # invalid-code branch below since _otp_info is now present.
+                if otp_after_submit and not is_confirmed:
+                    otp_after_submit = False
+                    if otp_queue is None:
+                        yield _step("error", "This application requires an emailed security code, "
+                                             "which this flow cannot collect")
+                        yield {
+                            "type":         "done",
+                            "text":         company + " emailed you a security code after Submit — "
+                                            "this flow can't collect it. Enter the code and resubmit "
+                                            "manually via the job page.",
+                            "filled_count": filled_count,
+                            "job_url":      job_url,
+                        }
+                        return
+                    if _otp_attempts >= _MAX_OTP_ATTEMPTS:
+                        yield _step("error", "Security code requested too many times — giving up")
+                        yield {
+                            "type":    "otp_timeout",
+                            "text":    "The security code step kept repeating. "
+                                       "The form was filled but not submitted.",
+                            "job_url": job_url,
+                        }
+                        return
+                    yield {
+                        "type":       "otp_required",
+                        "email_hint": _otp_info["email_hint"],
+                        "text":       (company + " emailed a security code to "
+                                       + (_otp_info["email_hint"] or "your inbox")
+                                       + " — enter it to finish submitting"),
+                    }
+                    try:
+                        _otp_code = await asyncio.wait_for(otp_queue.get(), timeout=_OTP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        yield _step("error", "Security code not received in time — application was not submitted")
+                        yield {
+                            "type":    "otp_timeout",
+                            "text":    "No security code was entered within 10 minutes. "
+                                       "The form was filled but not submitted.",
+                            "job_url": job_url,
+                        }
+                        return
+                    _otp_attempts += 1
+                    yield _step("ok", "Entering security code...")
+                    if not await _fill_security_code(_otp_ctx, _otp_code, _otp_info):
+                        yield _step("error", "Could not enter the security code into the form")
+                        yield {
+                            "type":    "otp_fill_failed",
+                            "text":    "Rack could not type the code into " + company + "'s form. "
+                                       "The application was not submitted.",
+                            "job_url": job_url,
+                        }
+                        return
+                    yield _step("ok", "Security code entered")
+                    await asyncio.sleep(0.5)
+                    continue   # back to the Submit click — the code must be resubmitted
 
                 # Code rejected — ask for a fresh one and try again
                 if invalid_code and not is_confirmed:
@@ -2963,7 +3225,7 @@ async def run_apply_agent(
                         return
                     _otp_attempts += 1
                     yield _step("ok", "Entering new security code...")
-                    if not await _fill_security_code(form, _otp_code, _otp_info):
+                    if not await _fill_security_code(_otp_ctx, _otp_code, _otp_info):
                         yield _step("error", "Could not enter the security code into the form")
                         yield {
                             "type":    "otp_fill_failed",

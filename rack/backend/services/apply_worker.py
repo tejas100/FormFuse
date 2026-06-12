@@ -377,16 +377,41 @@ async def process_batch(batch_id):
 # ── Phase 2: Replay & Submit ───────────────────────────────────────────────────
 
 def _apply_edits(draft: list, edits: list | None) -> list:
-    """Merge user edits ({field_label, new_value}) into the draft by label."""
+    """Merge user edits ({field_label, new_value}) into the draft by label.
+
+    User edits are authoritative. Values are whitespace-stripped, and when the
+    draft field carries scraped dropdown `options`, the edit is snapped to the
+    exact option text (normalized exact match, else unique containment) so the
+    replay clicks that option deterministically instead of letting the generic
+    LLM mapper re-interpret what the user chose. Edited fields are flagged
+    user_edited=True — the agent refuses to submit if it fails to apply one.
+    """
     if not edits:
         return draft
-    by_label = { (e.get("field_label") or "").strip().lower(): e.get("new_value", "")
+
+    def _norm(s: str) -> str:
+        return " ".join((s or "").lower().replace("*", " ").split())
+
+    by_label = { _norm(e.get("field_label")): (e.get("new_value") or "").strip()
                  for e in edits if e.get("field_label") }
     out = []
     for f in draft:
-        lbl = (f.get("field_label") or "").strip().lower()
+        lbl = _norm(f.get("field_label"))
         if lbl in by_label:
-            f = {**f, "value": by_label[lbl], "skip": False}
+            new_value = by_label[lbl]
+            options = f.get("options") or []
+            if new_value and options:
+                exact = [o for o in options if _norm(o) == _norm(new_value)]
+                if exact:
+                    new_value = exact[0]
+                else:
+                    contains = [o for o in options
+                                if _norm(new_value) in _norm(o) or _norm(o) in _norm(new_value)]
+                    if len(contains) == 1:
+                        logger.info(f"[apply_worker] edit for {f.get('field_label')!r} snapped "
+                                    f"to option {contains[0]!r}")
+                        new_value = contains[0]
+            f = {**f, "value": new_value, "skip": False, "user_edited": True}
         out.append(f)
     return out
 
