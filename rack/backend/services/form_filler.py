@@ -127,6 +127,48 @@ RULES:
     value from the DOM FIELD TABLE above. NEVER invent selector_hints or reuse the same selector_hint
     for multiple fields. If you cannot find a DOM element for a field, set skip=true."""
 
+
+# Ref-anchored prompt (primary path). The model never sees or reproduces element
+# ids — it anchors each field to a small integer "ref" from the DOM FIELD TABLE,
+# and code resolves ref → the real DOM id. This makes a hallucinated/swapped id
+# structurally impossible (the id never passes through the model). See BUG E.
+_FIELD_DETECT_SYSTEM_REF = """You are an expert at reading job application form fields and deciding what a candidate should fill in.
+
+You are given a DOM FIELD TABLE: a numbered list of the form's real fields. Each entry has an integer "ref", plus its label, type, placeholder, and (for dropdowns) some option text. You are also given the candidate's profile.
+
+OUTPUT: Return ONLY a JSON object of the form {"fields": [ ... ]}. No markdown, no preamble, no explanation.
+
+Schema per item in "fields":
+{
+  "ref": 7,                       // the integer "ref" of the DOM field you are filling — copy it exactly from the table
+  "field_label": "First Name",    // human-readable label for review
+  "field_type": "text | email | phone | textarea | select | checkbox | file | url | number",
+  "value": "Exact value to fill in (use \"\" when skipping)",
+  "skip": false
+}
+
+ANCHORING RULES (most important):
+- Anchor EVERY field by its "ref" from the DOM FIELD TABLE. The ref is a small integer — copy it exactly.
+- Emit at most ONE item per ref. Never reuse a ref for two different fields.
+- Only emit fields that exist in the table. If a field you expected (e.g. an EEO question) is not in the table, do NOT emit it — many forms have no such section.
+- If you cannot decide a value for a real field, still emit it with skip=true and value="" so it can be surfaced for the user.
+
+VALUE RULES:
+1. File upload fields (resume/CV): skip=true — handled separately.
+2. Dropdown/select/combobox fields: value must be a display-friendly string the option list would contain.
+   - Authorized to work in US: yes -> "Yes", no -> "No". Sponsorship required: yes -> "Yes", no -> "No".
+   - Gender: "Male", "Female", "Non-Binary", "I don't wish to answer". Veteran: "I am not a protected veteran" / "I am a protected veteran" / "I don't wish to answer". Disability: "No, I do not have a disability" / "Yes, I have a disability" / "I don't wish to answer".
+   - NEVER return raw values like "yes"/"no"/"decline" for dropdowns — return the display text.
+3. Consent dropdowns ("By selecting I agree...", "I understand...") are REQUIRED: value="I agree", skip=false.
+4. Consent / agreement checkboxes: value="check", skip=false.
+5. EEO questions (gender identity, transgender experience, sexual orientation, ethnicity, veteran, disability): use the profile value if set, otherwise the decline/prefer-not-to-answer option. NEVER skip an EEO field that IS in the table.
+6. "How did you hear about us?": value="LinkedIn" unless profile says otherwise.
+7. Salary fields: skip=true (leave for human).
+8. "Current/most recent company": use the profile's Current/Most Recent Company; else the most recent employer in the resume. Do not skip.
+9. LinkedIn / GitHub / Website / Portfolio / Education / University: fill from the profile when present. Do not skip when the profile has a value.
+10. Never fabricate information not present in the profile or resume. Keep values concise and factual."""
+
+
 _FREE_TEXT_SYSTEM = """You are writing a job application answer on behalf of a real person.
 
 Your job is to sound exactly like a sharp, self-aware engineer typing a quick honest answer — not like an AI, not like a cover letter, not like a LinkedIn post.
@@ -283,6 +325,105 @@ def _normalize_fields(fields) -> list[dict]:
     return out
 
 
+def _parse_llm_json(data: dict | None):
+    """
+    Extract and parse the JSON body of a chat-completions response. Returns a
+    dict/list on success or None. Tolerates stray markdown fences (json_object /
+    json_schema modes don't emit them, but the legacy free-form path can).
+    """
+    if not data:
+        return None
+    try:
+        raw = data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        logger.warning(f"[form_filler] detect_fields bad response shape: {e}")
+        return None
+    raw = re.sub(r'^```(?:json)?\s*', '', raw)
+    raw = re.sub(r'\s*```$',          '', raw)
+    try:
+        return json.loads(raw.strip())
+    except json.JSONDecodeError as e:
+        logger.warning(f"[form_filler] could not parse detect_fields JSON: {e}")
+        return None
+
+
+def _build_dom_table(dom_snapshot: list[dict] | None):
+    """
+    Build the numbered DOM FIELD TABLE the LLM anchors to, plus a ref→element
+    map for code-side resolution.
+
+    Returns (relevant, table_str, ref_map):
+      - relevant : ordered list of fillable, named elements (ref == list index)
+      - table_str: compact JSON text prepended to the prompt — carries ONLY
+                   ref/label/type/placeholder/options, never the raw id. The id
+                   is deliberately withheld so the model cannot echo (and corrupt)
+                   it; it anchors purely by the integer ref.
+      - ref_map  : {ref_int: element} for deterministic ref → real-id resolution
+    """
+    if not dom_snapshot:
+        return [], "", {}
+    relevant = [
+        el for el in dom_snapshot
+        if (el.get("id") or el.get("name"))
+        and el.get("type") not in ("hidden", "submit", "button", "reset", "image")
+    ]
+    if not relevant:
+        return [], "", {}
+
+    ref_map, rows = {}, []
+    for idx, el in enumerate(relevant):
+        ref_map[idx] = el
+        label = el.get("labelText") or (el.get("parentText") or "")[:60]
+        opts  = ", ".join(el.get("firstOptions", []))
+        rows.append(
+            f'  {{"ref":{idx}, "tag":"{el.get("tag","")}", "type":"{el.get("type","")}", '
+            f'"label":"{label}", "placeholder":"{el.get("placeholder","")}"'
+            + (f', "options":["{opts}"]' if opts else "")
+            + "}"
+        )
+    table = ("DOM FIELD TABLE — anchor every output field by its integer \"ref\":\n"
+             "[\n" + ",\n".join(rows) + "\n]\n\n")
+    return relevant, table, ref_map
+
+
+def _resolve_refs(parsed_fields, ref_map: dict) -> list[dict]:
+    """
+    Convert ref-anchored LLM output into canonical fields whose selector_hint is
+    the REAL id/name from the snapshot. This is the structural fix for BUG E:
+    the id never passed through the model, so it cannot be hallucinated or
+    swapped. An out-of-range / non-integer ref is dropped here; a valid ref
+    always resolves to a real DOM element. Duplicate refs collapse (first wins).
+    """
+    out, seen = [], set()
+    for f in parsed_fields if isinstance(parsed_fields, list) else []:
+        if not isinstance(f, dict):
+            continue
+        ref = f.get("ref")
+        # Tolerate stringified ints ("7") from non-strict JSON modes.
+        if isinstance(ref, str) and ref.strip().lstrip("-").isdigit():
+            ref = int(ref.strip())
+        if not isinstance(ref, int) or isinstance(ref, bool) or ref not in ref_map:
+            logger.info(f"[form_filler] dropped field with invalid ref={f.get('ref')!r} "
+                        f"({f.get('field_label')!r})")
+            continue
+        if ref in seen:
+            logger.info(f"[form_filler] deduped duplicate ref={ref} ({f.get('field_label')!r})")
+            continue
+        seen.add(ref)
+        el   = ref_map[ref]
+        hint = str(el.get("id") or el.get("name") or "").strip()
+        if not hint:
+            continue
+        out.append({
+            "field_label":   str(f.get("field_label") or el.get("labelText") or "").strip(),
+            "selector_hint": hint,
+            "field_type":    str(f.get("field_type") or "text").strip().lower(),
+            "value":         "" if f.get("value") is None else str(f.get("value")),
+            "skip":          bool(f.get("skip", False)),
+        })
+    return out
+
+
 def _ground_fields(fields: list[dict], dom_snapshot: list[dict]) -> list[dict]:
     """
     Enforce DOM grounding in code (prompt rule 15 is advisory only):
@@ -425,74 +566,113 @@ async def detect_fields(raw_html: str, profile: dict, dom_snapshot: list[dict] |
 
     dom_snapshot: list of dicts extracted by page.evaluate() in browser_agent.
     Each dict has: i, tag, type, id, name, placeholder, labelText, parentText,
-    optionCount, firstOptions. When provided, a compact JSON table is prepended
-    to the LLM prompt so it can produce accurate selector_hints even for deeply
-    nested Greenhouse custom question fields.
+    optionCount, firstOptions. When provided, a numbered DOM FIELD TABLE is
+    prepended to the prompt and the LLM anchors each field to an integer "ref";
+    code resolves ref → the real DOM id afterwards. The id never passes through
+    the model, so a hallucinated/swapped selector_hint is impossible (BUG E).
+    With no snapshot, falls back to the legacy free-form selector_hint path.
     """
     form_html    = _extract_form_html(raw_html)
     profile_text = _build_profile_block(profile)
 
-    # Build compact DOM table — filter to only fillable, named elements
-    dom_table = ""
-    if dom_snapshot:
-        relevant = [
-            el for el in dom_snapshot
-            if (el.get("id") or el.get("name"))
-            and el.get("type") not in ("hidden", "submit", "button", "reset", "image")
-        ]
-        if relevant:
-            rows = []
-            for el in relevant:
-                label = el.get("labelText") or el.get("parentText", "")[:60]
-                opts  = ", ".join(el.get("firstOptions", []))
-                rows.append(
-                    f'  {{"tag":"{el["tag"]}", "type":"{el.get("type","")}", '
-                    f'"id":"{el.get("id","")}", "name":"{el.get("name","")}", '
-                    f'"label":"{label}", "placeholder":"{el.get("placeholder","")}"'
-                    + (f', "options":["{opts}"]' if opts else "")
-                    + "}"
-                )
-            dom_table = "DOM FIELD TABLE (use the id or name value here verbatim as selector_hint):\n[\n" + ",\n".join(rows) + "\n]\n\n"
+    relevant, dom_table, ref_map = _build_dom_table(dom_snapshot)
+    fields: list[dict] = []
 
-    user_msg = f"""CANDIDATE PROFILE:
+    if relevant:
+        # ── Primary path: ref-anchored detection with structured output ──
+        # The model anchors each field to an integer ref; code resolves ref →
+        # real id. No id ever passes through the model ⇒ no hallucinated ids.
+        user_msg = f"""CANDIDATE PROFILE:
+{profile_text}
+
+ATS CONTEXT: {profile.get('_ats_hint', 'Anchor every field by its integer ref from the table below.')}
+
+{dom_table}Return the JSON object of fill instructions now."""
+
+        valid_refs = list(ref_map.keys())
+        item_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "ref":         {"type": "integer", "enum": valid_refs},
+                "field_label": {"type": "string"},
+                "field_type":  {"type": "string", "enum": [
+                    "text", "email", "phone", "textarea", "select",
+                    "checkbox", "file", "url", "number"]},
+                "value":       {"type": "string"},
+                "skip":        {"type": "boolean"},
+            },
+            "required": ["ref", "field_label", "field_type", "value", "skip"],
+        }
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"fields": {"type": "array", "items": item_schema}},
+            "required": ["fields"],
+        }
+        base_payload = {
+            "model":    LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": _FIELD_DETECT_SYSTEM_REF},
+                {"role": "user",   "content": user_msg},
+            ],
+            "temperature": 0.0,
+            "max_tokens":  1500,
+        }
+        # Attempt 1: strict json_schema — ref is constrained to the valid-index
+        # enum AT DECODE TIME, so an out-of-table id can't even be generated.
+        data = await _llm_post(
+            {**base_payload, "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "form_fields", "strict": True, "schema": schema},
+            }},
+            what="detect_fields(json_schema)",
+        )
+        # Attempt 2: plain json_object, if the schema request was rejected
+        # (older model snapshot etc.). _resolve_refs still post-validates refs.
+        if not data:
+            data = await _llm_post(
+                {**base_payload, "response_format": {"type": "json_object"}},
+                what="detect_fields(json_object)",
+            )
+
+        parsed = _parse_llm_json(data)
+        items  = parsed.get("fields") if isinstance(parsed, dict) else None
+        if items is None and isinstance(parsed, list):
+            items = parsed                      # tolerate a bare array
+        fields = _resolve_refs(items or [], ref_map)
+
+    else:
+        # ── Legacy path: no usable DOM snapshot — free-form selector_hint ──
+        user_msg = f"""CANDIDATE PROFILE:
 {profile_text}
 
 ATS CONTEXT: {profile.get('_ats_hint', 'Return the actual HTML id or name attribute as selector_hint.')}
 
-{dom_table}FORM HTML:
+FORM HTML:
 {form_html}
 
 Return the JSON array of fill instructions now."""
 
-    data = await _llm_post(
-        {
-            "model":    LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": _FIELD_DETECT_SYSTEM},
-                {"role": "user",   "content": user_msg},
-            ],
-            "temperature": 0.0,
-            "max_tokens":  1200,
-        },
-        what="detect_fields",
-    )
-
-    fields: list[dict] = []
-    if data:
-        try:
-            raw = data["choices"][0]["message"]["content"].strip()
-            # Strip markdown fences if present
-            raw = re.sub(r'^```(?:json)?\s*', '', raw)
-            raw = re.sub(r'\s*```$',          '', raw)
-            parsed = json.loads(raw.strip())
-            if isinstance(parsed, list):
-                fields = parsed
-            else:
-                logger.warning("[form_filler] detect_fields returned non-list — discarding")
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
-            logger.warning(f"[form_filler] could not parse detect_fields response: {e}")
-
-    fields = _normalize_fields(fields)
+        data = await _llm_post(
+            {
+                "model":    LLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": _FIELD_DETECT_SYSTEM},
+                    {"role": "user",   "content": user_msg},
+                ],
+                "temperature": 0.0,
+                "max_tokens":  1200,
+            },
+            what="detect_fields(legacy)",
+        )
+        parsed = _parse_llm_json(data)
+        if isinstance(parsed, list):
+            fields = _normalize_fields(parsed)
+        elif isinstance(parsed, dict) and isinstance(parsed.get("fields"), list):
+            fields = _normalize_fields(parsed["fields"])
+        elif data is not None:
+            logger.warning("[form_filler] legacy detect_fields returned non-list — discarding")
 
     # Deterministic passes — DOM is ground truth, the LLM is best-effort.
     # These also let an apply proceed when OpenAI is down entirely: standard
