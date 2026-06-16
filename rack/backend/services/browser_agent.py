@@ -1539,6 +1539,28 @@ async def _detect_security_code(page) -> dict:
     return info
 
 
+async def _detect_recaptcha_challenge(ctx) -> bool:
+    """
+    Detect a VISIBLE reCAPTCHA challenge popup (the image-grid 'bframe'), which
+    means the bot check did NOT pass silently and is blocking submission —
+    headless Chromium's low trust score is the usual trigger. The always-present
+    invisible badge (the 'anchor' iframe) is deliberately excluded: it's on every
+    Greenhouse form and is not a challenge. Checked on the TOP page, since the
+    challenge iframe attaches to the top document, not the embedded board frame.
+    """
+    for sel in (
+        'iframe[src*="recaptcha/api2/bframe"]',
+        'iframe[title*="recaptcha challenge" i]',
+    ):
+        try:
+            loc = ctx.locator(sel).first
+            if await loc.count() > 0 and await loc.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _fill_security_code(page, code: str, detect_info: dict) -> bool:
     """
     Fill the security code. Primary strategy: focus the first box and type the
@@ -3073,6 +3095,7 @@ async def run_apply_agent(
             is_confirmed = False
             _confirm_png = None
             otp_after_submit = False
+            recaptcha_blocked = False
 
             while True:
                 submit_clicked = False
@@ -3104,8 +3127,12 @@ async def run_apply_agent(
 
                 # Wait for navigation or confirmation text. After a security
                 # code was entered, Greenhouse validates the code server-side
-                # AND re-runs reCAPTCHA evaluation — give that path 20s.
-                _confirm_polls = 40 if _otp_attempts >= 1 else 24
+                # AND re-runs reCAPTCHA evaluation — give that path 20s. The
+                # plain-submit path gets the same 20s: an embedded board can
+                # re-render its iframe and re-run the invisible reCAPTCHA, which
+                # routinely takes longer than the old 12s window (a too-short
+                # window was indistinguishable from a real failure).
+                _confirm_polls = 40
                 _poll_err_logged = False
                 for attempt in range(_confirm_polls):
                     await asyncio.sleep(0.5)
@@ -3148,6 +3175,10 @@ async def run_apply_agent(
                             "successfully submitted", "application has been submitted",
                             "we have received your application", "your application was submitted",
                             "application is complete",
+                            # Greenhouse embedded-board confirmation variants:
+                            "thanks for applying", "application submitted to",
+                            "we've received your application", "we received your application",
+                            "your application was received",
                         ]):
                             is_confirmed = True
                             # Try to extract a confirmation number
@@ -3185,6 +3216,19 @@ async def run_apply_agent(
                                     f"[browser_agent] Security code gate appeared AFTER submit "
                                     f"(boxes={_post_otp['box_count']}, "
                                     f"email={_post_otp['email_hint'] or 'unknown'})"
+                                )
+                                break
+
+                        # reCAPTCHA challenge popped after submit — the bot check
+                        # did not pass and is blocking. No code email, no nav,
+                        # no confirmation will ever arrive; stop polling and let
+                        # the unconfirmed branch report it as a bot-block.
+                        if not otp_after_submit and attempt % 3 == 2:
+                            if await _detect_recaptcha_challenge(page):
+                                recaptcha_blocked = True
+                                logger.warning(
+                                    "[browser_agent] reCAPTCHA challenge visible after submit — "
+                                    "bot check is blocking submission (headless trust score)"
                                 )
                                 break
                     except Exception as _poll_e:
@@ -3346,9 +3390,11 @@ async def run_apply_agent(
                 yield _submitted_evt
             else:
                 # Submit was clicked but confirmation page not detected —
-                # do NOT mark as applied (form may have had validation errors).
-                # This diagnostic must NEVER be silent: log read failures
-                # (e.g. detached embed frames) instead of swallowing them.
+                # do NOT mark as applied. Instead of a single vague outcome,
+                # CLASSIFY why so the failure is self-diagnosing: bot-block vs
+                # validation vs likely-submitted-but-unmatched vs genuinely
+                # stuck. Each path logs a loud, greppable WARNING and a distinct
+                # card message. None of them ever marks the job submitted.
                 _uc_form = await _relocate_form_frame(page, form)
                 try:
                     _uc_text = await _uc_form.inner_text("body")
@@ -3362,10 +3408,71 @@ async def run_apply_agent(
                 logger.info(f"[browser_agent] submit unconfirmed — url={page.url} "
                             f"form_url={getattr(_uc_form, 'url', '?') if _uc_form is not page else 'same-as-page'} "
                             f"page text head: {_uc_text[:600].replace(chr(10), ' | ')}")
-                yield _step("error", "Submit clicked — could not detect confirmation page")
+
+                # 1 — reCAPTCHA bot-block (flagged during polling, or visible now)
+                if not recaptcha_blocked:
+                    try:
+                        recaptcha_blocked = await _detect_recaptcha_challenge(page)
+                    except Exception:
+                        pass
+
+                # 2 — visible validation errors still on the form (same selectors
+                #     as the pre-submit check)
+                _uc_val_errs = 0
+                try:
+                    _uc_val_errs = await _uc_form.locator(
+                        '.error-message:visible, .field-error:visible, '
+                        '[aria-invalid="true"]:visible, .invalid-feedback:visible'
+                    ).count()
+                except Exception:
+                    pass
+
+                # 3 — form replaced/gone (no name input AND no submit button left)
+                #     → it very likely went through; we just couldn't match the
+                #     confirmation wording. Reported as "verify", never "applied".
+                _form_gone = False
+                try:
+                    _still = await _uc_form.locator(
+                        'input#first_name, input[name="first_name"], '
+                        'input[type="submit"], button[type="submit"]'
+                    ).count()
+                    _form_gone = (_still == 0)
+                except Exception:
+                    pass
+
+                if recaptcha_blocked:
+                    _reason = "recaptcha_blocked"
+                    _msg = ("Blocked by " + company + "'s reCAPTCHA bot check — the form is "
+                            "filled but the submit can't complete from automated mode. Apply "
+                            "from the job page, or retry in watch mode.")
+                    logger.warning(f"[browser_agent] UNCONFIRMED CLASSIFIED reason=recaptcha_blocked "
+                                   f"company={company!r} job_url={job_url}")
+                elif _uc_val_errs > 0:
+                    _reason = "validation_failed"
+                    _msg = (company + "'s form rejected the submit with "
+                            + str(_uc_val_errs) + " validation error(s) — a required field is "
+                            "missing or invalid. Review the form on the job page.")
+                    logger.warning(f"[browser_agent] UNCONFIRMED CLASSIFIED reason=validation_failed "
+                                   f"errors={_uc_val_errs} company={company!r} job_url={job_url}")
+                elif _form_gone:
+                    _reason = "likely_submitted_unmatched"
+                    _msg = ("Submit went through to " + company + " but Rack couldn't read a "
+                            "confirmation page — your application is most likely IN. Verify on "
+                            "the job portal before re-applying.")
+                    logger.warning(f"[browser_agent] UNCONFIRMED CLASSIFIED reason=likely_submitted_unmatched "
+                                   f"(form gone) company={company!r} job_url={job_url}")
+                else:
+                    _reason = "unknown"
+                    _msg = ("Rack clicked Submit but couldn't confirm it went through — the page "
+                            "didn't change. Check " + company + "'s job portal before re-applying.")
+                    logger.warning(f"[browser_agent] UNCONFIRMED CLASSIFIED reason=unknown "
+                                   f"company={company!r} job_url={job_url}")
+
+                yield _step("error", "Submit clicked — " + _reason.replace("_", " "))
                 _done_evt = {
                     "type":         "done",
-                    "text":         "Form filled but submission unconfirmed — check " + company + " for status",
+                    "text":         _msg,
+                    "reason":       _reason,
                     "filled_count": filled_count,
                     "job_url":      job_url,
                 }

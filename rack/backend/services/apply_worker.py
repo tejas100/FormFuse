@@ -452,6 +452,8 @@ async def process_approval(apply_job_id):
         confirmation = None
         confirm_png = None
         err_text = None
+        unconfirmed_reason = None      # agent's classification of a silent failure
+        unconfirmed_msg = None         # agent's human-readable failure message
         try:
             async for event in run_apply_agent(
                 job_url             = job.job_url,
@@ -469,6 +471,9 @@ async def process_approval(apply_job_id):
                 otp_queue           = otp_queue,
             ):
                 etype = event.get("type")
+                logger.info(f"[replay_trace] job={job.id} event={etype!r} "
+                            f"reason={event.get('reason')!r} "
+                            f"text={(event.get('text') or '')[:160]!r}")
                 if etype == "presubmit_capture":
                     # Final form state right before Submit — the user sees this
                     # in the review card (and next to the OTP prompt if one comes).
@@ -511,6 +516,8 @@ async def process_approval(apply_job_id):
                 elif etype == "done":
                     done_unconfirmed = True
                     confirm_png = event.get("screenshot_png")
+                    unconfirmed_reason = event.get("reason") or "unknown"
+                    unconfirmed_msg = event.get("text") or None
                 elif etype == "job_removed":
                     job_removed = True
                     err_text = event.get("text")
@@ -562,11 +569,18 @@ async def process_approval(apply_job_id):
                        error=err_text or "Rack couldn't enter the security code into the form — "
                                          "nothing was submitted. Approve again to retry.")
     elif done_unconfirmed:
-        # Submit clicked but no confirmation detected. Do NOT retry automatically —
-        # the application may have gone through. Human must check the ATS.
+        # Submit attempted but no confirmation detected. Surface the agent's OWN
+        # classification (recaptcha_blocked / validation_failed /
+        # likely_submitted_unmatched / no_submit_button / unknown) instead of a
+        # generic string, so the card AND the log say WHY. Do NOT auto-retry —
+        # the application may already have gone through.
+        logger.warning(f"[apply_worker] job {job.id} -> needs_attention "
+                        f"reason={unconfirmed_reason!r} company={job.company!r} "
+                        f"job_url={job.job_url}")
         await _set_job(job.id, status="needs_attention",
                        confirmation_screenshot=confirm_path,
-                       error="Submit clicked but confirmation page not detected — check the ATS before retrying")
+                       error=unconfirmed_msg
+                             or "Submit clicked but confirmation page not detected — check the ATS before retrying")
     else:
         await _set_job(job.id, status="failed", error=err_text or "Replay did not complete")
 
