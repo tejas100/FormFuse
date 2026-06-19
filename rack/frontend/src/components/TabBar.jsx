@@ -61,7 +61,7 @@ export function MobileMenu({ active, onSwitch }) {
           width: 38px; height: 38px;
           border-radius: 12px;
           border: 1px solid var(--border-bright);
-          background: rgba(255,255,255,0.06);
+          background: var(--surface2);
           backdrop-filter: blur(12px);
           -webkit-backdrop-filter: blur(12px);
           display: flex;
@@ -74,8 +74,8 @@ export function MobileMenu({ active, onSwitch }) {
           transition: background 0.2s, border-color 0.2s;
         }
         .mob-hamburger.is-open {
-          background: rgba(232,255,107,0.1);
-          border-color: rgba(232,255,107,0.3);
+          background: var(--accent-soft);
+          border-color: var(--accent-line);
         }
         .mob-hamburger span {
           display: block;
@@ -101,13 +101,13 @@ export function MobileMenu({ active, onSwitch }) {
           top: calc(100% + 10px);
           left: 0;
           min-width: 180px;
-          background: rgba(18,18,18,0.96);
+          background: var(--surface);
           border: 1px solid var(--border-bright);
           border-radius: 16px;
           padding: 6px;
           backdrop-filter: blur(28px);
           -webkit-backdrop-filter: blur(28px);
-          box-shadow: 0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+          box-shadow: var(--modal-shadow);
           animation: dropdownIn 0.18s cubic-bezier(0.34, 1.4, 0.64, 1) both;
           transform-origin: top left;
         }
@@ -137,15 +137,15 @@ export function MobileMenu({ active, onSwitch }) {
         }
         .mob-dropdown-item:hover,
         .mob-dropdown-item:active {
-          background: rgba(255,255,255,0.07);
+          background: var(--surface2);
           color: var(--text);
         }
         .mob-dropdown-item.active {
-          background: rgba(232,255,107,0.1);
-          color: var(--accent);
+          background: var(--accent-soft);
+          color: var(--accent-ink);
         }
         .mob-dropdown-item.active .mob-dd-icon {
-          color: var(--accent);
+          color: var(--accent-ink);
         }
         .mob-dd-icon {
           font-size: 16px;

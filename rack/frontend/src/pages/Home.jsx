@@ -77,7 +77,7 @@ const mobileCardStyles = `
   .rack-tracking-cta {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 12px; font-weight: 700; font-family: var(--font-display);
-    color: var(--accent); text-decoration: none; cursor: pointer;
+    color: var(--accent-ink); text-decoration: none; cursor: pointer;
     background: linear-gradient(90deg,
       rgba(232,255,107,0.0) 0%,
       rgba(232,255,107,0.25) 40%,
@@ -298,7 +298,7 @@ const mobileCardStyles = `
     padding: 7px 16px;
     border: 1px solid var(--border);
     border-radius: 999px;
-    background: rgba(255,255,255,0.025);
+    background: var(--chip-bg);
   }
   .rack-greeting-title {
     font-family: var(--font-body);
@@ -335,7 +335,7 @@ const mobileCardStyles = `
   }
   .rack-suggestion-chip {
     padding: 8px 16px;
-    background: rgba(255,255,255,0.025);
+    background: var(--chip-bg);
     border: 1px solid var(--border);
     border-radius: 999px;
     font-size: 11.5px;
@@ -348,7 +348,7 @@ const mobileCardStyles = `
   }
   .rack-suggestion-chip:hover {
     border-color: var(--accent-line, rgba(232,255,107,0.26));
-    color: var(--accent);
+    color: var(--accent-ink);
     background: var(--accent-soft, rgba(232,255,107,0.07));
     transform: translateY(-1px);
   }
@@ -536,13 +536,13 @@ const mobileCardStyles = `
     gap: 10px;
     max-width: 820px;
     margin: 0 auto;
-    background: rgba(22,22,28,0.78);
+    background: var(--input-bg);
     backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
-    border: 1px solid var(--border-bright);
+    border: 1px solid var(--input-border);
     border-radius: 22px;
     padding: 14px 14px 14px 21px;
     transition: border-color 0.25s ease, box-shadow 0.25s ease;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 16px 48px rgba(0,0,0,0.5);
+    box-shadow: var(--input-shadow);
   }
   /* Perch wire — the lit line the creature walks on */
   .rack-chat-input-inner::before {
@@ -550,14 +550,14 @@ const mobileCardStyles = `
     position: absolute;
     top: -1px; left: 28px; right: 28px;
     height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(232,255,107,0.32) 30%, rgba(232,255,107,0.32) 70%, transparent);
+    background: linear-gradient(90deg, transparent, var(--input-wire) 30%, var(--input-wire) 70%, transparent);
     opacity: 0.55;
     transition: opacity 0.25s ease;
     pointer-events: none;
   }
   .rack-chat-input-inner:focus-within {
     border-color: var(--accent-line, rgba(232,255,107,0.3));
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 16px 48px rgba(0,0,0,0.5), 0 0 0 4px rgba(232,255,107,0.05);
+    box-shadow: var(--input-focus-shadow);
   }
   .rack-chat-input-inner:focus-within::before { opacity: 1; }
   .rack-chat-textarea {
@@ -572,7 +572,7 @@ const mobileCardStyles = `
     font-weight: 400;
     max-height: 180px;
     min-height: 28px;
-    caret-color: var(--accent);
+    caret-color: var(--accent-ink);
     overflow-y: auto;
     scrollbar-width: none;
   }
@@ -599,7 +599,7 @@ const mobileCardStyles = `
   }
   .rack-chat-attach-btn:hover {
     border-color: var(--accent-line, rgba(232,255,107,0.35));
-    color: rgba(232,255,107,0.75);
+    color: var(--accent-ink);
     background: var(--accent-soft, rgba(232,255,107,0.05));
   }
   .rack-chat-attach-btn:disabled {
@@ -784,7 +784,7 @@ function scoreColor(score) {
 function recommendationStyle(rec) {
   switch (rec) {
     case 'Strong Match': return { color: 'var(--accent3)', bg: 'rgba(52,211,153,0.12)', border: 'rgba(52,211,153,0.25)' }
-    case 'Good Match':   return { color: 'var(--accent)',  bg: 'rgba(232,255,107,0.10)', border: 'rgba(232,255,107,0.22)' }
+    case 'Good Match':   return { color: 'var(--accent-ink)',  bg: 'rgba(232,255,107,0.10)', border: 'rgba(232,255,107,0.22)' }
     case 'Partial Match':return { color: '#fb923c',        bg: 'rgba(251,146,60,0.10)',  border: 'rgba(251,146,60,0.22)' }
     default:             return { color: 'var(--danger)',  bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.22)' }
   }
@@ -1046,7 +1046,7 @@ function ValuePreviewCard({ results, onSignIn }) {
           }}
         >
           <span style={{ fontSize: '14px' }}>✦</span>
-          <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 700, color: 'var(--accent)' }}>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', fontWeight: 700, color: 'var(--accent-ink)' }}>
             {totalJobs.toLocaleString()} jobs matched
           </span>
           <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>tap to view →</span>
@@ -1086,13 +1086,13 @@ function ValuePreviewCard({ results, onSignIn }) {
             {/* Title */}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent)' }}>
+                <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent-ink)' }}>
                   ✦ Auto-Match Preview
                 </span>
               </div>
               <div style={{ fontFamily: 'var(--font-display)', fontSize: '17px', fontWeight: 800, color: 'var(--text)', lineHeight: 1.2 }}>
                 Found{' '}
-                <span style={{ color: 'var(--accent)' }}>{totalJobs.toLocaleString()} live jobs</span>
+                <span style={{ color: 'var(--accent-ink)' }}>{totalJobs.toLocaleString()} live jobs</span>
                 {' '}matching for your resume{previews.length > 1 ? 's' : ''}
               </div>
             </div>
@@ -3720,7 +3720,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               style={{
                 padding: '14px 40px', borderRadius: '40px',
                 border: '1px solid var(--accent)', background: 'transparent',
-                color: 'var(--accent)', fontSize: '15px', fontWeight: 500,
+                color: 'var(--accent-ink)', fontSize: '15px', fontWeight: 500,
                 fontFamily: 'var(--font-body)', letterSpacing: '0.04em',
                 cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
               }}
@@ -3758,7 +3758,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               </div>
               <h1 className="rack-greeting-title">
                 Drop the JD.<br />
-                <span style={{ color: 'var(--accent)', fontStyle: 'italic', fontWeight: 300, textShadow: '0 0 36px rgba(232,255,107,0.3)' }}>
+                <span style={{ color: 'var(--accent-ink)', fontStyle: 'italic', fontWeight: 300, textShadow: 'var(--accent-text-glow)' }}>
                   We'll find your fit.
                 </span>
               </h1>
@@ -3785,7 +3785,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                       padding: '8px 14px', borderRadius: 20, cursor: 'pointer',
                       background: 'rgba(232,255,107,0.08)',
                       border: '1px solid rgba(232,255,107,0.3)',
-                      color: 'var(--accent)', fontSize: 13, fontWeight: 600,
+                      color: 'var(--accent-ink)', fontSize: 13, fontWeight: 600,
                     }}
                   >
                     <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)', animation: 'pulse 1.6s ease-in-out infinite' }} />
@@ -3813,7 +3813,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 7,
                       padding: '8px 14px', borderRadius: 20, cursor: 'pointer',
-                      background: 'rgba(255,255,255,0.03)',
+                      background: 'var(--chip-bg)',
                       border: '1px solid rgba(255,255,255,0.12)',
                       color: 'var(--text-mid)', fontSize: 13, fontWeight: 500,
                     }}
@@ -3821,7 +3821,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                     Top: <span style={{ color: 'var(--text)', fontWeight: 600 }}>
                       {commandCenter.top_match.job_title} · {commandCenter.top_match.company}
                     </span>
-                    <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{commandCenter.top_match.score}%</span>
+                    <span style={{ color: 'var(--accent-ink)', fontWeight: 700 }}>{commandCenter.top_match.score}%</span>
                   </button>
                 )}
                 {commandCenter.profile && commandCenter.profile.missing.length > 0 && (
@@ -3830,7 +3830,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 7,
                       padding: '8px 14px', borderRadius: 20,
-                      background: 'rgba(255,255,255,0.02)',
+                      background: 'var(--chip-bg)',
                       border: '1px dashed rgba(255,255,255,0.15)',
                       color: 'var(--text-dim)', fontSize: 13, fontWeight: 500,
                     }}
@@ -3960,7 +3960,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
               const parts = text.split(/(\*\*[^*]+\*\*)/g)
               return parts.map((part, i) =>
                 part.startsWith('**') && part.endsWith('**')
-                  ? <strong key={i} style={{ color: 'var(--accent)', fontWeight: 700 }}>{part.slice(2, -2)}</strong>
+                  ? <strong key={i} style={{ color: 'var(--accent-ink)', fontWeight: 700 }}>{part.slice(2, -2)}</strong>
                   : part.split('\n').map((line, j, arr) => (
                       <span key={`${i}-${j}`}>{line}{j < arr.length - 1 ? <br /> : null}</span>
                     ))
@@ -4057,7 +4057,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                   <span style={{
                                     fontSize: 11, padding: '2px 8px', borderRadius: 20,
                                     background: 'rgba(232,255,107,0.08)', border: '1px solid rgba(232,255,107,0.15)',
-                                    color: 'var(--accent)', fontWeight: 600,
+                                    color: 'var(--accent-ink)', fontWeight: 600,
                                   }}>
                                     {r.years_experience}y exp
                                   </span>
@@ -4168,7 +4168,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                       display: 'flex', flexDirection: 'column', gap: '14px',
                     }}>
                       <p style={{ margin: 0, fontSize: '14px', color: 'var(--text)', lineHeight: 1.65 }}>
-                        The best way to apply is through the <strong style={{ color: 'var(--accent)' }}>Tracking tab</strong> — all your matched jobs are there with one-click Apply buttons. You can review each role, see your match score, and apply with your tailored resume.
+                        The best way to apply is through the <strong style={{ color: 'var(--accent-ink)' }}>Tracking tab</strong> — all your matched jobs are there with one-click Apply buttons. You can review each role, see your match score, and apply with your tailored resume.
                       </p>
                       <button
                         onClick={() => {
@@ -4453,7 +4453,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                           {title}
                                         </span>
                                         {isAI && (
-                                          <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.08em', flexShrink: 0 }}>AI</span>
+                                          <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent-ink)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.08em', flexShrink: 0 }}>AI</span>
                                         )}
                                         {rec && (
                                           <span style={{
@@ -4503,7 +4503,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                             onClick={(e) => handleDownload(e, jobResumeId, jobResumeName)}
                                             style={{
                                               background: 'none', border: 'none', padding: '0 2px',
-                                              cursor: 'pointer', color: 'var(--accent)', fontWeight: 600,
+                                              cursor: 'pointer', color: 'var(--accent-ink)', fontWeight: 600,
                                               fontSize: '11px', fontFamily: 'var(--font-body)',
                                               textDecoration: 'underline', textDecorationStyle: 'dotted',
                                               textUnderlineOffset: '2px',
@@ -4512,7 +4512,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                             {jobResumeName} ↓
                                           </button>
                                         ) : (
-                                          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{jobResumeName}</span>
+                                          <span style={{ color: 'var(--accent-ink)', fontWeight: 600 }}>{jobResumeName}</span>
                                         )}
                                       </div>
                                     ) : <div />}
@@ -4684,7 +4684,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                                   fontSize: '11px', fontWeight: 600, padding: '3px 12px',
                                   borderRadius: '20px', cursor: 'pointer', fontFamily: 'var(--font-body)',
                                   background: 'rgba(232,255,107,0.08)', border: '1px solid rgba(232,255,107,0.25)',
-                                  color: 'var(--accent)', transition: 'all 0.15s ease',
+                                  color: 'var(--accent-ink)', transition: 'all 0.15s ease',
                                 }}
                                 onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.15)' }}
                                 onMouseLeave={e => { e.currentTarget.style.background = 'rgba(232,255,107,0.08)' }}
@@ -4748,7 +4748,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                             {/* Header */}
                             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '16px' }}>
                               <div>
-                                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: '5px' }}>
+                                <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--accent-ink)', marginBottom: '5px' }}>
                                   ✦ Tailored Resume Ready
                                 </div>
                                 <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 800, color: 'var(--text)', lineHeight: 1.25 }}>
@@ -4898,7 +4898,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                           </div>
                           <div className="rack-jd-chips" style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
                             {(msg.jdParsed.required_skills || []).slice(0, 7).map(s => (
-                              <span key={s} className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '2px 9px', borderRadius: '20px', background: 'rgba(232,255,107,0.06)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.15)', whiteSpace: 'nowrap' }}>
+                              <span key={s} className="rack-jd-chip" style={{ fontSize: '11px', fontWeight: 500, padding: '2px 9px', borderRadius: '20px', background: 'rgba(232,255,107,0.06)', color: 'var(--accent-ink)', border: '1px solid rgba(232,255,107,0.15)', whiteSpace: 'nowrap' }}>
                                 {s}
                               </span>
                             ))}
@@ -5182,7 +5182,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>{tool.label}</span>
                       {tool.authRequired && (
-                        <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.06em', flexShrink: 0 }}>AUTH</span>
+                        <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: '20px', background: 'rgba(232,255,107,0.1)', color: 'var(--accent-ink)', border: '1px solid rgba(232,255,107,0.2)', letterSpacing: '0.06em', flexShrink: 0 }}>AUTH</span>
                       )}
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 300, marginTop: '1px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tool.description}</div>
@@ -5204,7 +5204,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
                 borderRadius: '20px',
               }}>
                 <span style={{ fontSize: '11px' }}>{tool.icon}</span>
-                <span style={{ fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 700, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{tool.label}</span>
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: '12px', fontWeight: 700, color: 'var(--accent-ink)', whiteSpace: 'nowrap' }}>{tool.label}</span>
                 <button
                   onClick={clearActiveMode}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(232,255,107,0.5)', fontSize: '12px', padding: '0 0 0 2px', lineHeight: 1, display: 'flex', alignItems: 'center' }}
@@ -5368,7 +5368,7 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
             <span style={{ color:'#f87171' }}>⚠ {micError}</span>
           )}
           {!micError && micState === 'recording' && (
-            <span style={{ color:'var(--accent)' }}>Listening… tap ↑ to send, ⏹ to insert as text, ✕ to discard</span>
+            <span style={{ color:'var(--accent-ink)' }}>Listening… tap ↑ to send, ⏹ to insert as text, ✕ to discard</span>
           )}
           {!micError && micState === 'transcribing' && (
             <span style={{ color:'var(--text-mid)' }}>Transcribing your voice…</span>

@@ -35,6 +35,24 @@
   --accent-glow: 0 4px 20px rgba(232,255,107,0.22); /* solid-CTA shadow    */
   --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
 
+  /* ── NEW: split accent — fill vs ink ──────────────────────────────────
+     --accent      = solid FILL (send btn, dots) — vivid in both themes
+     --accent-ink  = accent as TEXT / thin line — on dark this IS the lime,
+                     on light it darkens to stay legible on paper.
+     Defining it = --accent here means the dark theme is byte-identical.   */
+  --accent-ink: var(--accent);
+  --accent-text-glow: 0 0 36px rgba(232,255,107,0.30); /* hero accent-text halo */
+
+  /* ── NEW: chat-input surface + the lit "perch" wire above it ── */
+  --input-bg: rgba(22,22,28,0.78);
+  --input-border: var(--border-bright);
+  --input-wire: rgba(232,255,107,0.32);
+  --input-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 16px 48px rgba(0,0,0,0.5);
+  --input-focus-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 16px 48px rgba(0,0,0,0.5), 0 0 0 4px rgba(232,255,107,0.05);
+
+  /* ── NEW: subtle status-chip fill (was inline rgba(255,255,255,0.0x)) ── */
+  --chip-bg: rgba(255,255,255,0.03);
+
   /* ── Theme-specific extras ── */
   --blob-1: #16162a;
   --blob-2: #0c1c10;
@@ -136,28 +154,33 @@ html, body, #root {
 
 /* ── Light theme ─────────────────────────────────────────────────────────── */
 [data-theme="light"] {
-  --bg: #FAF9F5;
-  --surface: #FFFFFF;
-  --surface2: #F2F0EA;
-  --surface3: #E9E6DE;
-  --border: rgba(0,0,0,0.07);
-  --border-bright: rgba(0,0,0,0.14);
-  --text: #18181A;
-  --text-dim: rgba(0,0,0,0.42);
-  --text-mid: rgba(0,0,0,0.66);
-  --accent: #b8d400;
-  --accent-strong: #a6c100;
-  --accent-contrast: #0a0a0a;
-  --accent-soft: rgba(150,176,0,0.09);
-  --accent-line: rgba(150,176,0,0.32);
-  --accent-glow: 0 4px 18px rgba(150,176,0,0.25);
+  /* ── Warm-paper elevation ladder — deeper page, white sits ABOVE it ── */
+  --bg: #F6F4EC;          /* warm paper — slightly deeper so surfaces lift */
+  --surface: #FFFFFF;     /* raised card / sheet                          */
+  --surface2: #F0EDE3;    /* recessed / inset fill                        */
+  --surface3: #E6E2D6;    /* deepest inset                                */
+  --border: rgba(56,50,28,0.10);        /* warm-tinted, not cold black    */
+  --border-bright: rgba(56,50,28,0.17);
+  --text: #1B1A15;        /* warm near-black                              */
+  --text-dim: rgba(34,30,18,0.44);
+  --text-mid: rgba(28,25,15,0.68);
+
+  /* ── Accent split: vivid FILL + dark INK ── */
+  --accent: #c2dd2f;          /* fills only — lime chip carries dark text */
+  --accent-strong: #b1cc1c;   /* solid-fill hover                         */
+  --accent-ink: #5f7611;      /* accent as TEXT / line — AA on --bg       */
+  --accent-contrast: #16180a; /* near-black warm — text ON the lime fill  */
+  --accent-soft: rgba(120,150,0,0.11);
+  --accent-line: rgba(120,150,0,0.30);
+  --accent-glow: 0 6px 22px rgba(150,176,0,0.26);
+  --accent-text-glow: none;   /* no neon halo on paper                    */
   --accent2: #7c3aed;
   --accent3: #059669;
   --danger: #dc2626;
 
-  --blob-1: #e8f4e8;
-  --blob-2: #f0eaff;
-  --blob-3: #fff8e1;
+  --blob-1: #d6ebbe;
+  --blob-2: #e6dcfa;
+  --blob-3: #fdecba;
 
   --tabbar-bg: rgba(255,255,255,0.78);
   --tabbar-border: rgba(0,0,0,0.1);
@@ -180,8 +203,8 @@ html, body, #root {
 
   --scrollbar-thumb: rgba(0,0,0,0.12);
 
-  --card-border: rgba(0,0,0,0.09);
-  --card-shadow: inset 0 1px 0 rgba(255,255,255,0.85), 0 4px 18px rgba(0,0,0,0.07);
+  --card-border: rgba(56,50,28,0.10);
+  --card-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 2px rgba(60,52,30,0.04), 0 10px 30px rgba(60,52,30,0.08);
   --icon-btn-bg: rgba(0,0,0,0.04);
   --icon-btn-border: rgba(0,0,0,0.1);
   --icon-btn-color: rgba(0,0,0,0.45);
@@ -206,7 +229,20 @@ html, body, #root {
   --upload-disabled-border: rgba(0,0,0,0.1);
   --upload-disabled-color: rgba(0,0,0,0.2);
   --spinner-track: rgba(0,0,0,0.08);
+
+  /* ── NEW (light): chat-input as a raised paper sheet, not a dark slab ── */
+  --input-bg: rgba(255,255,255,0.94);
+  --input-border: rgba(56,50,28,0.12);
+  --input-wire: rgba(120,150,0,0.32);
+  --input-shadow: inset 0 1px 0 rgba(255,255,255,0.95), 0 2px 6px rgba(60,52,30,0.05), 0 16px 40px rgba(60,52,30,0.10);
+  --input-focus-shadow: inset 0 1px 0 rgba(255,255,255,0.95), 0 16px 40px rgba(60,52,30,0.13), 0 0 0 4px rgba(150,176,0,0.13);
+
+  /* ── NEW (light): visible subtle status-chip fill ── */
+  --chip-bg: rgba(40,34,16,0.04);
 }
+
+/* Selection — readable on paper (global rule sets white text, invisible on light) */
+[data-theme="light"] ::selection { background: rgba(150,176,0,0.30); color: #1B1A15; }
 
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }

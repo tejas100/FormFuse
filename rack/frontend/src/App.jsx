@@ -239,6 +239,15 @@ function AppInner() {
           -webkit-background-clip: text;
           background-clip: text;
         }
+        /* Light: lime shimmer is illegible on paper — fall back to a clean ink byline */
+        [data-theme="light"] .byline-link,
+        [data-theme="light"] .byline-link:hover {
+          background: none;
+          -webkit-text-fill-color: var(--text-dim);
+          color: var(--text-dim);
+          animation: none;
+        }
+        [data-theme="light"] .byline-link:hover { -webkit-text-fill-color: var(--text-mid); color: var(--text-mid); }
         @media (max-width: 600px) {
           .byline-link {
             position: fixed;
@@ -406,8 +415,8 @@ function AppInner() {
           margin-bottom: 12px;
         }
         .gate-btn-google:hover {
-          background: rgba(255,255,255,0.07);
-          border-color: rgba(255,255,255,0.2);
+          background: var(--surface2);
+          border-color: var(--border-bright);
         }
         .gate-perks {
           display: flex;
@@ -617,7 +626,7 @@ function GateScreen({ tab, onSignIn }) {
             fontSize: 14, fontWeight: 600, cursor: 'pointer',
             transition: 'background 0.18s',
           }}
-          onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
+          onMouseEnter={e => e.currentTarget.style.background = 'var(--surface2)'}
           onMouseLeave={e => e.currentTarget.style.background = 'var(--surface)'}
         >
           <GoogleIcon size={18} />

@@ -439,7 +439,7 @@ export default function Resumes() {
               animation: 'spin 0.8s linear infinite',
               margin: '0 auto 16px'
             }} />
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 700, color: 'var(--accent)' }}>
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 700, color: 'var(--accent-ink)' }}>
               Processing resume…
             </div>
             <div style={{ fontSize: '13px', color: 'var(--text-dim)', marginTop: '6px' }}>
@@ -527,8 +527,8 @@ export default function Resumes() {
             fontSize: '12px', color: 'var(--subtle-text)', lineHeight: 1.65,
             flex: '1 1 180px', position: 'relative', zIndex: 1,
           }}>
-            Attach a <code style={{ fontSize: '11px', background: 'var(--pill-bg)', padding: '1px 5px', borderRadius: 4, color: 'var(--accent)' }}>.tex</code> file to each resume to activate{' '}
-            <span style={{ color: 'var(--accent)', fontWeight: 600 }}>autrack</span>.{' '}
+            Attach a <code style={{ fontSize: '11px', background: 'var(--pill-bg)', padding: '1px 5px', borderRadius: 4, color: 'var(--accent-ink)' }}>.tex</code> file to each resume to activate{' '}
+            <span style={{ color: 'var(--accent-ink)', fontWeight: 600 }}>autrack</span>.{' '}
             RACK tailors your resume to every role, automatically.
           </span>
           {resumes.every(r => r.has_tex) && (
@@ -690,7 +690,7 @@ export default function Resumes() {
                 <div style={{ fontSize: '12px', color: 'var(--meta-color)', marginBottom: '12px' }}>
                   {formatTime(r.uploaded_at)}
                   {r.file_ext && (
-                    <span style={{ marginLeft: '6px', color: 'var(--accent)', opacity: 0.7 }}>
+                    <span style={{ marginLeft: '6px', color: 'var(--accent-ink)', opacity: 0.7 }}>
                       · {r.file_ext.replace('.', '').toUpperCase()}
                     </span>
                   )}
