@@ -1713,20 +1713,21 @@ async def start_matching(
             if uid:
                 await run_pipeline_for_new_user(uid, force_pool=True, force=force)
             else:
-                try:
-                    from services.auto_match import run_pipeline_for_all_users
-                    await run_pipeline_for_all_users()
-                except ImportError:
-                    from db.database import AsyncSessionLocal
-                    from models.orm import User as _User
-                    from sqlalchemy import select as _sel
-                    async with AsyncSessionLocal() as session:
-                        rows = await session.execute(_sel(_User))
-                        users = rows.scalars().all()
-                    for u in users:
-                        prefs = u.preferences or {}
-                        if prefs.get("target_roles"):
-                            await run_pipeline_for_new_user(str(u.id), force_pool=True, force=force)
+                # Score all users with target_roles set.
+                # run_pipeline_for_all_users() has been removed — it only fetched
+                # the job pool and never scored users. The correct behaviour for
+                # "run matching for everyone" is to call run_pipeline_for_new_user
+                # per user, which is what this block has always done as the fallback.
+                from db.database import AsyncSessionLocal
+                from models.orm import User as _User
+                from sqlalchemy import select as _sel
+                async with AsyncSessionLocal() as session:
+                    rows = await session.execute(_sel(_User))
+                    users = rows.scalars().all()
+                for u in users:
+                    prefs = u.preferences or {}
+                    if prefs.get("target_roles"):
+                        await run_pipeline_for_new_user(str(u.id), force_pool=True, force=force)
         except Exception:
             import traceback, logging
             logging.getLogger("admin").error("Manual run failed:\n" + traceback.format_exc())

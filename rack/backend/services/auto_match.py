@@ -1,30 +1,29 @@
 """
-services/auto_match.py — Fully automatic job discovery + matching pipeline.
+services/auto_match.py — Per-user job matching and scoring pipeline.
 
 Powers the "Auto Matches" tab on the Tracking page.
 
-Session 16: run_auto_pipeline() accepts db (AsyncSession) for pgvector search.
-Session 20: Results and archive now stored in Supabase DB instead of JSON files.
-Session 21: Normalized DB schema — one row per (user, job) in auto_match_results.
-  - Removed _save_snapshot_to_db() and _load_snapshot_from_db() (snapshot model gone)
-  - Removed _get_run_dates_from_db() (no more date history)
-  - Added _save_results_to_db()  — upserts individual job rows
-  - Added _load_results_from_db() — loads all scored jobs for a user, sorted by score
-  - run_auto_pipeline() now incremental: only scores jobs not already in DB
-  - force=True bypasses results cache but does NOT re-fetch pool if still fresh
-Session 31: Multi-source expansion + batched Phase 1.
-  - Replaced inline _fetch_greenhouse() with job_fetcher.fetch_all_auto_match()
-  - Added Ashby + Lever fetching via job_fetcher.py
-  - Removed PHASE1_JOB_CAP — Phase 1 now processes all new jobs in batches of BATCH_SIZE
-  - Pool staleness reduced from 24h to 0.5h (30 min)
-  - Removed auto_job_pool.json disk cache — pool fetched fresh every cycle
-Session 50: Shared job pool cache + clean two-phase scheduler architecture.
-  - Restored job_pool.json disk cache (POOL_CACHE_PATH) with POOL_MAX_AGE_MINUTES=90
-  - run_pipeline_for_all_users(): fetch once → write to disk → score all users concurrently
-  - _run_auto_pipeline_inner(): no longer fetches — accepts job_pool list as parameter
-  - run_pipeline_for_new_user(): on-demand entry point for new user onboarding trigger;
-    reads cached pool if fresh, fetches fresh only if stale — no user-facing button
-  - Scheduler interval: 60 minutes (was 30)
+Responsibilities (scoring only — fetch/store live in job_fetcher.py):
+  - Load the shared job pool from Postgres (written by job_fetcher.refresh_job_pool)
+  - Filter jobs by each user's target roles + location preferences
+  - Phase 1: hybrid scoring (pgvector semantic + skill overlap + experience)
+  - Phase 2: LLM deep scoring (GPT-4o-mini, one call per job)
+  - Store results in auto_match_results (one row per user × job)
+  - Serve results to Tracking tab via run_auto_pipeline()
+
+Entry points:
+  run_auto_pipeline()         — called by tracking.py (user-triggered refresh)
+  run_pipeline_for_new_user() — called on onboarding completion (asyncio.create_task)
+  run_matching.py             — launchd scheduler (8am / 1pm / 8pm), calls run_auto_pipeline per user
+
+Session history:
+  Session 16: pgvector replaces FAISS.
+  Session 20: Results stored in Supabase DB.
+  Session 21: Normalized schema — one row per (user, job).
+  Session 31: Multi-source job boards via job_fetcher.fetch_all_jobs().
+  Session 50: Two-phase scheduler — fetch (job_fetcher) separate from score (this file).
+  Session 86: Fetch + store moved entirely to job_fetcher.py. run_pipeline_for_all_users
+              removed. auto_match.py now owns scoring only.
 """
 
 import asyncio
@@ -73,180 +72,15 @@ MAX_CONCURRENT         = 15
 ROLE_MATCH_RATIO       = 0.60  # Word overlap ratio for title matching — 0.60 balances precision vs recall
 
 # ── Shared job pool cache ─────────────────────────────────────────────
-# Written by run_pipeline_for_all_users() once per scheduled run.
+# Written by job_fetcher.refresh_job_pool() (run_fetching.py, every 2 hours).
 # Read by run_pipeline_for_new_user() so new users skip the job board fetch entirely.
 POOL_CACHE_PATH    = os.path.join(WATCHLIST_DIR, "job_pool.json")
 POOL_MAX_AGE_MINUTES = 90   # Pool older than 90 min is considered stale for new-user trigger
 
 
-def _save_pool_to_disk(pool: list) -> None:
-    """
-    Upsert the fetched job pool into the Postgres job_pool table.
-
-    Strategy:
-      1. Bulk-upsert all fetched jobs (INSERT ... ON CONFLICT DO UPDATE).
-      2. Mark any job not touched by this fetch as is_active=False — these
-         are roles that have been taken down since the last run.
-
-    Falls back to local disk write if the DB upsert fails, so the scheduler
-    never aborts due to a transient DB error.
-    """
-    import psycopg2
-    from urllib.parse import urlparse, unquote
-
-    now = datetime.now(timezone.utc)
-
-    # ── Primary: Postgres job_pool table ─────────────────────────────
-    try:
-        db_url = os.environ["DATABASE_URL_DIRECT"]
-        # Parse the SQLAlchemy URL into psycopg2 kwargs
-        parsed   = urlparse(db_url.replace("postgresql+psycopg2://", "postgresql://"))
-        password = unquote(parsed.password or "")
-        conn = psycopg2.connect(
-            host=parsed.hostname,
-            port=parsed.port or 5432,
-            dbname=parsed.path.lstrip("/"),
-            user=parsed.username,
-            password=password,
-            sslmode="require",
-        )
-        cur = conn.cursor()
-
-        upsert_sql = """
-            INSERT INTO job_pool (
-                job_id, source, external_id, title, company, location, url,
-                description_text, posted_at, department, commitment,
-                board_token, fetched_at, is_active
-            ) VALUES (
-                %(job_id)s, %(source)s, %(external_id)s, %(title)s, %(company)s,
-                %(location)s, %(url)s, %(description_text)s, %(posted_at)s,
-                %(department)s, %(commitment)s, %(board_token)s, %(fetched_at)s, TRUE
-            )
-            ON CONFLICT (job_id) DO UPDATE SET
-                title            = EXCLUDED.title,
-                company          = EXCLUDED.company,
-                location         = EXCLUDED.location,
-                url              = EXCLUDED.url,
-                description_text = EXCLUDED.description_text,
-                posted_at        = EXCLUDED.posted_at,
-                department       = EXCLUDED.department,
-                commitment       = EXCLUDED.commitment,
-                board_token      = EXCLUDED.board_token,
-                fetched_at       = EXCLUDED.fetched_at,
-                is_active        = TRUE
-        """
-
-        rows = []
-        for j in pool:
-            posted_raw = j.get("posted_at")
-            try:
-                posted_dt = datetime.fromisoformat(
-                    posted_raw.replace("Z", "+00:00")
-                ) if posted_raw else None
-            except Exception:
-                posted_dt = None
-
-            rows.append({
-                "job_id":           j["job_id"],
-                "source":           j.get("source", ""),
-                "external_id":      j.get("external_id", ""),
-                "title":            j.get("title", ""),
-                "company":          j.get("company", ""),
-                "location":         j.get("location", "Not specified"),
-                "url":              j.get("url", ""),
-                "description_text": j.get("description_text", ""),
-                "posted_at":        posted_dt,
-                "department":       j.get("department", ""),
-                "commitment":       j.get("commitment", ""),
-                "board_token":      j.get("board_token", ""),
-                "fetched_at":       now,
-            })
-
-        cur.executemany(upsert_sql, rows)
-
-        # Mark jobs not seen in this fetch as inactive
-        fetched_ids = [j["job_id"] for j in pool]
-        cur.execute(
-            "UPDATE job_pool SET is_active = FALSE "
-            "WHERE fetched_at < %s AND is_active = TRUE",
-            (now,)
-        )
-
-        conn.commit()
-        cur.close()
-        logger.info(f"[AutoMatch] Pool written to Postgres: {len(pool)} jobs upserted")
-
-        # Prune stale listings — reuse the same connection (upsert already committed)
-        _prune_stale_pool(conn)
-        conn.close()
-        return
-
-    except Exception as e:
-        logger.warning(f"[AutoMatch] Postgres pool upsert failed ({e}) — falling back to disk")
-
-    # ── Fallback: local disk ──────────────────────────────────────────
-    try:
-        payload = {
-            "fetched_at": now.isoformat(),
-            "job_count":  len(pool),
-            "jobs":       pool,
-        }
-        os.makedirs(WATCHLIST_DIR, exist_ok=True)
-        with open(POOL_CACHE_PATH, "w") as f:
-            f.write(json.dumps(payload))
-        logger.info(f"[AutoMatch] Pool written to disk (fallback): {len(pool)} jobs")
-    except Exception as e2:
-        logger.error(f"[AutoMatch] Disk fallback also failed: {e2}")
-
-
-def _prune_stale_pool(conn) -> None:
-    """
-    Delete job listings older than 35 days from job_pool.
-
-    Two passes:
-      1. Jobs with a known posted_at older than 35 days — clearly dead listings.
-      2. Jobs with NULL posted_at whose fetched_at is also older than 35 days —
-         boards (mostly Lever/Ashby) that don't expose a posting date; use fetch
-         time as the proxy so they don't accumulate indefinitely.
-
-    seen_job_ids rows are intentionally NOT touched — they are a permanent
-    deduplication guard and must survive pool pruning.
-
-    Called inside _save_pool_to_disk() after the upsert commits, as a separate
-    transaction so a prune failure never rolls back the upsert.
-    """
-    PRUNE_DAYS = 35
-    try:
-        cur = conn.cursor()
-
-        # Pass 1 — dated jobs older than 35 days
-        cur.execute(
-            "DELETE FROM job_pool WHERE posted_at < NOW() - INTERVAL '%s days'",
-            (PRUNE_DAYS,)
-        )
-        dated_pruned = cur.rowcount
-
-        # Pass 2 — undated jobs whose fetched_at is also older than 35 days
-        cur.execute(
-            "DELETE FROM job_pool "
-            "WHERE posted_at IS NULL AND fetched_at < NOW() - INTERVAL '%s days'",
-            (PRUNE_DAYS,)
-        )
-        undated_pruned = cur.rowcount
-
-        conn.commit()
-        cur.close()
-        total = dated_pruned + undated_pruned
-        logger.info(
-            f"[AutoMatch] Pool pruned: {dated_pruned} dated + {undated_pruned} undated "
-            f"= {total} stale jobs removed (>{PRUNE_DAYS}d old)"
-        )
-    except Exception as e:
-        logger.warning(f"[AutoMatch] Pool prune failed (non-fatal): {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+# Pool write path lives in job_fetcher.py — upsert_pool_to_db() and _prune_stale_pool().
+# run_fetching.py calls job_fetcher.refresh_job_pool() directly.
+# auto_match.py owns only the scoring pipeline from here on.
 
 
 def _build_title_keywords(
@@ -851,8 +685,9 @@ async def _run_auto_pipeline_inner(
     """
     Incremental auto-matching pipeline (inner — called only when lock is held).
 
-    job_pool is always provided by the caller (run_pipeline_for_all_users or
-    run_pipeline_for_new_user). This function never hits job board APIs.
+    job_pool is always provided by the caller (run_auto_pipeline or
+    run_pipeline_for_new_user). Pool fetching is handled by job_fetcher.refresh_job_pool()
+    and is completely separate from this scoring pipeline.
 
     Each run:
       1. Filters the provided job pool by role + location for this user
@@ -1250,35 +1085,9 @@ async def _run_auto_pipeline_inner(
     }
 
 
-# ── APScheduler entry point ───────────────────────────────────────────
-async def run_pipeline_for_all_users() -> int:
-    """
-    Called by run_fetching.py every 2 hours on MacBook via launchd.
-
-    Phase A ONLY — fetch job pool from all job boards, upsert to Postgres,
-    prune stale listings. No user scoring happens here.
-
-    Per-user matching (Phase B) runs via run_matching.py — 8am/1pm/8pm.
-
-    Returns the number of jobs fetched (used by run_fetching.py for notifications).
-    """
-    from services.job_fetcher import fetch_all_auto_match
-
-    logger.info("[Scheduler] Starting pool refresh (fetch only — no user scoring)…")
-    t0 = datetime.now(timezone.utc)
-
-    try:
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-        raw_pool = await fetch_all_auto_match(semaphore)
-        logger.info(f"[Scheduler] Pool fetched: {len(raw_pool)} jobs")
-        _save_pool_to_disk(raw_pool)
-    except Exception as e:
-        logger.error(f"[Scheduler] Job pool fetch failed: {e}")
-        return 0
-
-    elapsed = round((datetime.now(timezone.utc) - t0).total_seconds())
-    logger.info(f"[Scheduler] ✓ Pool refresh complete in {elapsed}s — {len(raw_pool)} jobs upserted")
-    return len(raw_pool)
+# run_pipeline_for_all_users() has been removed.
+# Job pool fetching: call job_fetcher.refresh_job_pool() directly.
+# Per-user scoring:  call run_pipeline_for_new_user() per user, or use run_matching.py.
 
 
 async def run_pipeline_for_new_user(user_id: str, force_pool: bool = False, force: bool = False) -> None:
