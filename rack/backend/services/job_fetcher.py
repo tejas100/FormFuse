@@ -796,18 +796,18 @@ def _prune_stale_pool(conn) -> None:
     Called inside upsert_pool_to_db() after the upsert commits, as a separate
     transaction so a prune failure never rolls back the upsert.
     """
-    PRUNE_DAYS = 65
+    PRUNE_DAYS = 40
     try:
         cur = conn.cursor()
 
-        # Pass 1 — dated jobs older than 35 days
+        # Pass 1 — dated jobs older than 40 days
         cur.execute(
             "DELETE FROM job_pool WHERE posted_at < NOW() - INTERVAL '%s days'",
             (PRUNE_DAYS,)
         )
         dated_pruned = cur.rowcount
 
-        # Pass 2 — undated jobs whose fetched_at is also older than 35 days
+        # Pass 2 — undated jobs whose fetched_at is also older than 40 days
         cur.execute(
             "DELETE FROM job_pool "
             "WHERE posted_at IS NULL AND fetched_at < NOW() - INTERVAL '%s days'",
@@ -815,12 +815,16 @@ def _prune_stale_pool(conn) -> None:
         )
         undated_pruned = cur.rowcount
 
+        # Pass 3 — inactive jobs (not seen in last fetch, definitively taken down)
+        cur.execute("DELETE FROM job_pool WHERE is_active = FALSE")
+        inactive_pruned = cur.rowcount
+
         conn.commit()
         cur.close()
-        total = dated_pruned + undated_pruned
+        total = dated_pruned + undated_pruned + inactive_pruned
         logger.info(
             f"[JobFetcher] Pool pruned: {dated_pruned} dated + {undated_pruned} undated "
-            f"= {total} stale jobs removed (>{PRUNE_DAYS}d old)"
+            f"+ {inactive_pruned} inactive = {total} stale jobs removed"
         )
     except Exception as e:
         logger.warning(f"[JobFetcher] Pool prune failed (non-fatal): {e}")
@@ -979,21 +983,11 @@ async def refresh_job_pool() -> int:
         semaphore = asyncio.Semaphore(15)
         raw_pool = await fetch_all_jobs(semaphore)
         logger.info(f"[JobFetcher] Fetched {len(raw_pool)} jobs from all boards")
-        # Run sync psycopg2 upsert in a thread so it doesn't block asyncio.
-        # We await the future explicitly so the process never exits before the upsert completes.
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, upsert_pool_to_db, raw_pool)
+        upsert_pool_to_db(raw_pool)
     except Exception as e:
-        import traceback
-        logger.error(f"[JobFetcher] Pool refresh failed: {type(e).__name__}: {e}")
-        logger.error(f"[JobFetcher] Traceback:\n{traceback.format_exc()}")
-        # Flush handlers so the error lands in the log file before process exits
-        for h in logging.getLogger().handlers:
-            h.flush()
+        logger.error(f"[JobFetcher] Pool refresh failed: {e}")
         return 0
 
     elapsed = round((datetime.now(timezone.utc) - t0).total_seconds())
     logger.info(f"[JobFetcher] ✓ Pool refresh complete in {elapsed}s — {len(raw_pool)} jobs upserted")
-    for h in logging.getLogger().handlers:
-        h.flush()
     return len(raw_pool)
