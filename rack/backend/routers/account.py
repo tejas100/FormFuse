@@ -65,6 +65,24 @@ class ProfileUpdate(BaseModel):
     veteran_status: Optional[str] = None          # "protected_veteran"|"not_a_veteran"|"decline"
     disability_status: Optional[str] = None       # "yes"|"no"|"decline"
     ethnicity_eeo: Optional[str] = None           # "asian"|"black"|"hispanic"|"white"|"two_or_more"|"decline"
+    # Work eligibility detail (visa type selection)
+    work_auth_type: Optional[str] = None          # "US Citizen"|"H-1B"|"F-1 (Student)"|"OPT"|etc.
+    # Checklist — quick-fire preferences filled during onboarding
+    open_to_inperson: Optional[str] = None        # "yes"|"no"
+    willing_to_relocate: Optional[str] = None     # "yes"|"no"
+    can_start_immediately: Optional[str] = None   # "yes"|"no"
+    reliable_transportation: Optional[str] = None # "yes"|"no"
+    needs_accommodation: Optional[str] = None     # "yes"|"no"|"prefer not"
+    gov_clearance: Optional[str] = None           # "yes"|"no"
+    family_ties_foreign_gov: Optional[str] = None # "yes"|"no"
+    additional_info: Optional[str] = None         # free-text notes for form-filling
+    # Application password — used by auto-apply for Workday/iCIMS/Oracle account creation
+    app_password: Optional[str] = None            # plaintext for now; encryption TODO
+    # Resume optimization mode chosen during onboarding
+    optimize_mode: Optional[str] = None           # "off"|"honest"|"aggressive"
+    auto_approve: Optional[str] = None            # "yes"|"no" — skip review step
+    # Onboarding completion flag — App.jsx checks this to skip the wizard on return visits
+    onboarding_complete: Optional[bool] = None
 
 
 class RoleAliasRequest(BaseModel):
@@ -125,6 +143,20 @@ async def save_profile(
     if req.veteran_status      is not None: updates["veteran_status"]       = req.veteran_status
     if req.disability_status   is not None: updates["disability_status"]    = req.disability_status
     if req.ethnicity_eeo       is not None: updates["ethnicity_eeo"]        = req.ethnicity_eeo
+    # Onboarding wizard fields
+    if req.work_auth_type          is not None: updates["work_auth_type"]          = req.work_auth_type
+    if req.open_to_inperson        is not None: updates["open_to_inperson"]        = req.open_to_inperson
+    if req.willing_to_relocate     is not None: updates["willing_to_relocate"]     = req.willing_to_relocate
+    if req.can_start_immediately   is not None: updates["can_start_immediately"]   = req.can_start_immediately
+    if req.reliable_transportation is not None: updates["reliable_transportation"] = req.reliable_transportation
+    if req.needs_accommodation     is not None: updates["needs_accommodation"]     = req.needs_accommodation
+    if req.gov_clearance           is not None: updates["gov_clearance"]           = req.gov_clearance
+    if req.family_ties_foreign_gov is not None: updates["family_ties_foreign_gov"] = req.family_ties_foreign_gov
+    if req.additional_info         is not None: updates["additional_info"]         = req.additional_info
+    if req.app_password            is not None: updates["app_password"]            = req.app_password
+    if req.optimize_mode           is not None: updates["optimize_mode"]           = req.optimize_mode
+    if req.auto_approve            is not None: updates["auto_approve"]            = req.auto_approve
+    if req.onboarding_complete     is not None: updates["onboarding_complete"]     = req.onboarding_complete
 
     new_prefs = {**existing, **updates}
 

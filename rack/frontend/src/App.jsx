@@ -32,6 +32,7 @@ import Account from './pages/Account'
 
 // 1. Import at the top
 import Landing from './pages/Landing'
+import Onboarding from './pages/Onboarding'
 
 
 
@@ -48,7 +49,9 @@ function AppInner() {
   // showLanding: null = waiting for auth to resolve, true = show landing, false = skip to app
   const [showLanding, setShowLanding] = useState(null)
   const [skipping, setSkipping] = useState(false)
-  const { user, authLoading, signInWithGoogle } = useAuth()
+  // showOnboarding: null = resolving, true = show wizard, false = already complete
+  const [showOnboarding, setShowOnboarding] = useState(null)
+  const { user, session, authLoading, signInWithGoogle } = useAuth()
   const { theme } = useTheme()
   const { show: showWelcome, dismiss: dismissWelcome } = useFirstVisit()
 
@@ -59,9 +62,33 @@ function AppInner() {
       setShowLanding(false)           // logged in → skip landing entirely
     } else if (showLanding === null) {
       setShowLanding(true)            // first resolution, no user → show landing
+      setShowOnboarding(false)        // no user → no onboarding
     }
     // If showLanding is already false (user clicked "Skip"), don't reset it
   }, [authLoading, user]) // eslint-disable-line
+
+  // ── Onboarding gate: check if new user needs wizard ─────────────────────
+  // Fires once per sign-in. Reads preferences.onboarding_complete from DB.
+  // If not set → show the wizard. If already done → skip straight to app.
+  useEffect(() => {
+    if (!user || !session?.access_token) return
+    // Only check once (null = not checked yet)
+    if (showOnboarding !== null) return
+
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/account/profile`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    })
+      .then(r => r.ok ? r.json() : {})
+      .then(prefs => {
+        // Skip wizard if: explicitly completed, OR already has roles (pre-wizard account)
+        const alreadySetUp = prefs.onboarding_complete || (prefs.target_roles || []).length > 0
+        setShowOnboarding(!alreadySetUp)
+      })
+      .catch(() => {
+        // Network error — fail open, don't trap user in onboarding check
+        setShowOnboarding(false)
+      })
+  }, [user, session]) // eslint-disable-line
 
   const switchTab = (tab) => {
     setActive(tab)
@@ -99,6 +126,19 @@ function AppInner() {
 
   // ── Still resolving auth — render nothing to avoid flash ────────────────
   if (authLoading && showLanding === null) return null
+
+  // ── Onboarding wizard — new authenticated users only ────────────────────
+  // showOnboarding === null means we're still fetching their profile.
+  // We show nothing (null) rather than flashing the app underneath.
+  if (user && showOnboarding === null) return null
+  if (user && showOnboarding === true) {
+    return (
+      <Onboarding
+        user={user}
+        onComplete={() => setShowOnboarding(false)}
+      />
+    )
+  }
 
   // Overlay — white flash + "rack" wordmark zooms to fill screen, then fades
   const overlay = skipping ? (
