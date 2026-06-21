@@ -834,6 +834,91 @@ def _prune_stale_pool(conn) -> None:
             pass
 
 
+def _embed_new_jobs(conn, new_jobs: list[dict]) -> None:
+    """
+    Embed newly-inserted job_pool rows and store jd_embedding in Postgres.
+
+    Called by upsert_pool_to_db() immediately after the upsert commits,
+    before _prune_stale_pool(). Only runs for brand-new inserts that have
+    no embedding yet (is_insert=True, has_embedding=False).
+
+    Batching:
+      - Up to 100 jobs per OpenAI embeddings API call (API limit is 2048
+        input texts, but 100 keeps payloads small and retries cheap).
+      - Commits after each batch — a failure midway loses at most one batch,
+        not all progress.
+
+    Model: text-embedding-3-small (1536-dim) — same model and dimension as
+    resume_chunks embeddings. The vector space must be consistent for cosine
+    similarity to be meaningful.
+
+    Embed text format (matches _build_semantic_query() in matcher.py):
+      "{title} at {company}. {description_text[:400]}"
+    """
+    BATCH_SIZE   = 100
+    EMBED_MODEL  = "text-embedding-3-small"
+    OPENAI_URL   = "https://api.openai.com/v1/embeddings"
+    api_key      = os.environ.get("OPENAI_API_KEY", "")
+
+    if not api_key:
+        logger.error("[JobFetcher] OPENAI_API_KEY not set — skipping JD embedding")
+        return
+
+    cur = conn.cursor()
+    batches = [new_jobs[i:i + BATCH_SIZE] for i in range(0, len(new_jobs), BATCH_SIZE)]
+
+    for batch_idx, batch in enumerate(batches):
+        texts = [
+            f"{j['title']} at {j['company']}. {j['description_text'][:400]}"
+            for j in batch
+        ]
+
+        try:
+            response = httpx.post(
+                OPENAI_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": EMBED_MODEL, "input": texts},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            embeddings = response.json()["data"]  # [{embedding: [...], index: int}, ...]
+        except Exception as e:
+            logger.warning(
+                f"[JobFetcher] Embedding batch {batch_idx + 1}/{len(batches)} failed: {e} "
+                f"— skipping {len(batch)} jobs"
+            )
+            continue
+
+        for emb in embeddings:
+            job = batch[emb["index"]]
+            try:
+                cur.execute(
+                    "UPDATE job_pool SET jd_embedding = %s::vector WHERE job_id = %s",
+                    (json.dumps(emb["embedding"]), job["job_id"]),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[JobFetcher] Failed to write embedding for job_id={job['job_id']}: {e}"
+                )
+
+        # Commit after each batch so partial progress is never lost
+        try:
+            conn.commit()
+            logger.debug(
+                f"[JobFetcher] Embedded batch {batch_idx + 1}/{len(batches)} "
+                f"({len(batch)} jobs)"
+            )
+        except Exception as e:
+            logger.warning(f"[JobFetcher] Commit failed for embedding batch {batch_idx + 1}: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    cur.close()
+
+
+
 def upsert_pool_to_db(pool: list) -> None:
     """
     Bulk-upsert a normalized job pool into the Postgres job_pool table.
@@ -896,6 +981,9 @@ def upsert_pool_to_db(pool: list) -> None:
                 board_token      = EXCLUDED.board_token,
                 fetched_at       = EXCLUDED.fetched_at,
                 is_active        = TRUE
+            RETURNING job_id, title, company, description_text,
+                      (xmax = 0) AS is_insert,
+                      (jd_embedding IS NOT NULL) AS has_embedding
         """
 
         rows = []
@@ -924,7 +1012,23 @@ def upsert_pool_to_db(pool: list) -> None:
                 "fetched_at":       now,
             })
 
-        cur.executemany(upsert_sql, rows)
+        # Execute row-by-row (not executemany) so we can read RETURNING results.
+        # psycopg2's executemany discards RETURNING output; execute() in a loop
+        # lets us fetchone() per row to collect new inserts that need embedding.
+        new_jobs = []
+        for row in rows:
+            cur.execute(upsert_sql, row)
+            returned = cur.fetchone()
+            if returned is None:
+                continue
+            job_id, title, company, description_text, is_insert, has_embedding = returned
+            if is_insert and not has_embedding and description_text and description_text.strip():
+                new_jobs.append({
+                    "job_id":           job_id,
+                    "title":            title,
+                    "company":          company,
+                    "description_text": description_text,
+                })
 
         # Mark jobs not seen in this fetch run as inactive
         cur.execute(
@@ -936,6 +1040,14 @@ def upsert_pool_to_db(pool: list) -> None:
         conn.commit()
         cur.close()
         logger.info(f"[JobFetcher] Pool upserted to Postgres: {len(pool)} jobs")
+
+        # Step 4 — Embed new jobs and store jd_embedding
+        if new_jobs:
+            logger.info(f"[JobFetcher] Embedding {len(new_jobs)} new jobs...")
+            _embed_new_jobs(conn, new_jobs)
+            logger.info(f"[JobFetcher] Embeddings stored for {len(new_jobs)} new jobs")
+        else:
+            logger.info("[JobFetcher] No new jobs to embed")
 
         # Prune stale listings — separate transaction inside same connection
         _prune_stale_pool(conn)
