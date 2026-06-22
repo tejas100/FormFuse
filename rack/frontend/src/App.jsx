@@ -33,6 +33,7 @@ import Account from './pages/Account'
 // 1. Import at the top
 import Landing from './pages/Landing'
 import Onboarding from './pages/Onboarding'
+import Dashboard from './pages/Dashboard'
 
 
 
@@ -51,6 +52,8 @@ function AppInner() {
   const [skipping, setSkipping] = useState(false)
   // showOnboarding: null = resolving, true = show wizard, false = already complete
   const [showOnboarding, setShowOnboarding] = useState(null)
+  // showDashboard: authenticated users land on Dashboard; set false to eject to classic tab layout
+  const [showDashboard, setShowDashboard] = useState(true)
   const { user, session, authLoading, signInWithGoogle } = useAuth()
   const { theme } = useTheme()
   const { show: showWelcome, dismiss: dismissWelcome } = useFirstVisit()
@@ -69,7 +72,7 @@ function AppInner() {
 
   // ── Onboarding gate: check if new user needs wizard ─────────────────────
   // Fires once per sign-in. Reads preferences.onboarding_complete from DB.
-  // If not set → show the wizard. If already done → skip straight to app.
+  // If not set → show the wizard. If already done → skip straight to Dashboard.
   useEffect(() => {
     if (!user || !session?.access_token) return
     // Only check once (null = not checked yet)
@@ -140,6 +143,22 @@ function AppInner() {
     )
   }
 
+  // ── Dashboard — all authenticated users after onboarding ─────────────────
+  // Full-screen layout with its own sidebar — bypasses TabBar/blobs/logo.
+  // onNavigate('Tracking') etc. ejects into the classic tab layout for those pages.
+  if (user && showOnboarding === false && showDashboard) {
+    return (
+      <Dashboard
+        onNavigate={(tab) => {
+          if (tab === 'Dashboard') return  // already here
+          setShowDashboard(false)
+          setActive(tab)
+          setPageKey(k => k + 1)
+        }}
+      />
+    )
+  }
+
   // Overlay — white flash + "rack" wordmark zooms to fill screen, then fades
   const overlay = skipping ? (
     <div aria-hidden="true" style={{
@@ -183,6 +202,19 @@ function AppInner() {
           onSkip={handleSkip}
         />
         {overlay}
+      </>
+    )
+  }
+
+  // ── Tracking — renders its own full-screen sidebar layout, no shell needed ──
+  if (active === 'Tracking' && !isGated) {
+    return (
+      <>
+        {overlay}
+        <Tracking onNavigate={(tab) => {
+          if (tab === 'Dashboard') { setShowDashboard(true) }
+          else { switchTab(tab) }
+        }} />
       </>
     )
   }

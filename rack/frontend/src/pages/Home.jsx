@@ -1727,17 +1727,22 @@ export default function Home() {
       const count    = (resumeData.resumes || []).length
       const prefs    = profileData  // /api/account/profile returns flat prefs at top level
       const hasRoles = (prefs.target_roles || []).length > 0
+      // Users who completed the new stepped wizard have onboarding_complete: true
+      // but may not have target_roles set yet (roles are configured on the Account page later).
+      // Treat them as fully set up — bypass the old voice/text onboarding flow entirely.
+      const wizardDone = prefs.onboarding_complete === true
+      const isSetUp = hasRoles || wizardDone
 
       setResumeCount(count)
       setUserPreferences(prefs)
 
       // Single source of truth — DB state drives everything:
-      // hasRoles + hasResumes → fully set up returning user → 'done'
-      // hasRoles, no resumes → completed setup but hasn't uploaded yet → 'resume'
-      // no roles             → brand new user, start from the beginning → 'roles'
-      if (hasRoles && count > 0) {
+      // isSetUp + hasResumes → fully set up returning user → 'done'
+      // isSetUp, no resumes  → completed setup but hasn't uploaded yet → 'resume'
+      // not set up           → brand new user, start from the beginning → 'roles'
+      if (isSetUp && count > 0) {
         setOnboardingStep('done')
-      } else if (hasRoles && count === 0) {
+      } else if (isSetUp && count === 0) {
         setOnboardingStep('resume')
       } else {
         setOnboardingStep('roles')

@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { getAuthHeaders } from "../utils/api";
+import { useAuth } from "../context/AuthContext";
+import { useTheme } from "../App";
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const API = `${API_BASE}/api/tracking`;
@@ -106,61 +108,69 @@ async function downloadResume(resumeId, resumeName, fileExt) {
 /* ══════════════════════════════════════════════════════════════════
    TAB BAR — subtle two-tab switcher
    ══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+   TAB SWITCHER — sidebar-integrated vertical nav
+   ══════════════════════════════════════════════════════════════════ */
 function TabSwitcher({ activeTab, onSwitch, autoCount, freshCount, customCount, appliedCount, reviewCount, isPowerUser }) {
   const allTabs = [
-    { id: "auto",    label: "Auto Matches",  icon: "✦", count: autoCount,    power: false },
-    { id: "review",  label: "Review",        icon: "◎", count: reviewCount,  power: false },
-    { id: "applied", label: "Applied",        icon: "✓", count: appliedCount, power: false },
-    { id: "fresh",   label: "Fresh Jobs",    icon: "◈", count: freshCount,   power: true  },
-    { id: "custom",  label: "Custom Search", icon: "⚙", count: customCount,  power: true  },
+    { id: "auto",    label: "Auto Matches",  icon: <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="5" height="5" rx="1.4"/><rect x="9" y="2" width="5" height="5" rx="1.4"/><rect x="2" y="9" width="5" height="5" rx="1.4"/><rect x="9" y="9" width="5" height="5" rx="1.4"/></svg>, count: autoCount, power: false },
+    { id: "review",  label: "Review",        icon: <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5l2 1.5"/></svg>, count: reviewCount,  power: false },
+    { id: "applied", label: "Applied",        icon: <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>, count: appliedCount, power: false },
+    { id: "fresh",   label: "Fresh Jobs",    icon: <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M8 2v2M8 12v2M2 8h2M12 8h2M4.2 4.2l1.4 1.4M10.4 10.4l1.4 1.4M4.2 11.8l1.4-1.4M10.4 5.6l1.4-1.4"/></svg>, count: freshCount,   power: true  },
+    { id: "custom",  label: "Search",        icon: <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg>, count: customCount,  power: true  },
   ];
   const tabs = allTabs.filter(t => !t.power || isPowerUser);
   return (
-    <div style={{
-      display: "inline-flex",
-      background: "var(--surface)",
-      border: "1px solid var(--border)",
-      borderRadius: 12,
-      padding: 3,
-      gap: 2,
-      marginBottom: 20,
-    }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       {tabs.map((tab) => {
         const active = activeTab === tab.id;
         return (
-          <button
+          <SideTabItem
             key={tab.id}
+            icon={tab.icon}
+            label={tab.label}
+            count={tab.count}
+            active={active}
             onClick={() => onSwitch(tab.id)}
-            style={{
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "7px 16px", borderRadius: 9, border: "none",
-              background: active ? "var(--surface2)" : "transparent",
-              color: active ? "var(--text)" : "var(--text-dim)",
-              fontFamily: "var(--font-body)", fontSize: 12, fontWeight: active ? 600 : 400,
-              cursor: "pointer", transition: "all 0.18s",
-              boxShadow: active ? "0 1px 4px rgba(0,0,0,0.2)" : "none",
-            }}
-          >
-            <span style={{
-              fontSize: 9,
-              color: active ? "var(--accent)" : "var(--text-dim)",
-              transition: "color 0.18s",
-            }}>{tab.icon}</span>
-            {tab.label}
-            {tab.count > 0 && (
-              <span style={{
-                fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20,
-                background: active ? "rgba(232,255,107,0.15)" : "var(--surface2)",
-                color: active ? "var(--accent)" : "var(--text-dim)",
-                minWidth: 18, textAlign: "center",
-              }}>
-                {tab.count}
-              </span>
-            )}
-          </button>
+          />
         );
       })}
     </div>
+  );
+}
+
+function SideTabItem({ icon, label, count, active, onClick }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '9px 12px', borderRadius: 10, cursor: 'pointer',
+        border: active ? '1px solid var(--accent-line)' : '1px solid transparent',
+        background: active ? 'var(--accent-soft)' : hov ? 'var(--surface2)' : 'transparent',
+        color: active ? 'var(--text)' : hov ? 'var(--text)' : 'var(--text-mid)',
+        fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: active ? 600 : 500,
+        textAlign: 'left', width: '100%',
+        transition: 'background 0.15s, color 0.12s, border-color 0.15s',
+      }}
+    >
+      <span style={{ color: active ? 'var(--accent-ink)' : 'inherit', display: 'flex', flexShrink: 0 }}>
+        {icon}
+      </span>
+      <span style={{ flex: 1 }}>{label}</span>
+      {count > 0 && (
+        <span style={{
+          fontFamily: "'Fira Code', monospace", fontSize: 10, fontWeight: 600,
+          color: active ? 'var(--accent-ink)' : 'var(--text-dim)',
+          background: active ? 'var(--accent-soft)' : 'var(--chip-bg)',
+          border: active ? '1px solid var(--accent-line)' : '1px solid transparent',
+          padding: '1px 7px', borderRadius: 20, lineHeight: '16px',
+        }}>{count}</span>
+      )}
+    </button>
   );
 }
 
@@ -3317,7 +3327,50 @@ function ReviewTab({ onCountChange }) {
 }
 
 
-export default function Tracking() {
+// ── Sidebar helpers (shared with Dashboard) ──────────────────────────────────
+
+function brandColor(company) {
+  const palette = ['#635bff','#e0930f','#5b6472','#7c5cff','#7c3aed','#1597c4','#e0492a','#1f6feb','#059669','#dc2626','#0ea5e9','#8b5cf6','#f59e0b','#10b981','#3b82f6']
+  let hash = 0
+  for (let i = 0; i < (company || '').length; i++) hash = (hash * 31 + company.charCodeAt(i)) & 0xffffffff
+  return palette[Math.abs(hash) % palette.length]
+}
+
+function TNavItem({ icon, label, active, badge, onClick }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 12, padding: '11px 13px',
+        borderRadius: 11, cursor: 'pointer', fontSize: 14,
+        fontWeight: active ? 600 : 500,
+        border: active ? '1px solid var(--accent-line)' : '1px solid transparent',
+        background: active ? 'var(--accent-soft)' : hovered ? 'var(--surface2)' : 'transparent',
+        color: active ? 'var(--text)' : hovered ? 'var(--text)' : 'var(--text-mid)',
+        transition: 'background 0.18s, color 0.15s, border-color 0.18s',
+        userSelect: 'none',
+      }}>
+      <span style={{ color: active ? 'var(--accent-ink)' : 'inherit', display: 'flex' }}>{icon}</span>
+      {label}
+      {badge != null && badge > 0 && (
+        <span style={{
+          marginLeft: 'auto', fontFamily: "'Fira Code', monospace", fontSize: 11, fontWeight: 600,
+          color: active ? 'var(--accent-ink)' : 'var(--text-dim)',
+          background: active ? 'var(--accent-soft)' : 'var(--chip-bg)',
+          padding: '2px 7px', borderRadius: 20,
+          border: active ? '1px solid var(--accent-line)' : 'none',
+        }}>{badge}</span>
+      )}
+    </div>
+  )
+}
+
+export default function Tracking({ onNavigate }) {
+  const { user } = useAuth()
+  const { theme, toggleTheme } = useTheme()
+
   // Deep-link support: Home's BatchApplyCard sets rack_tracking_tab before
   // dispatching rack:navigate, so "Review & approve" lands directly here.
   const [activeTab, setActiveTab] = useState(() => {
@@ -3336,6 +3389,12 @@ export default function Tracking() {
   const [reviewCount, setReviewCount] = useState(0);
 
   const isPowerUser = userRole === "admin" || userRole === "pro";
+
+  const navigate = (tab) => { if (onNavigate) onNavigate(tab) }
+
+  const displayName = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'there'
+  const firstName = displayName.split(' ')[0]
+  const userInitial = firstName.charAt(0).toUpperCase()
 
   // Load profile + role + cached counts for tab badges
   useEffect(() => {
@@ -3376,23 +3435,100 @@ export default function Tracking() {
     }
   }, [userRole]);
 
-  return (
-    <div style={{
-      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "flex-start",
-      padding: "20px", paddingTop: "var(--page-padding-top)", paddingBottom: "var(--page-padding-bottom)", overflowY: "auto",
-      animation: "fadeUp 0.4s ease both",
-    }}>
-      <div style={{ width: "100%", maxWidth: 760 }}>
+  // ── Sidebar nav items ─────────────────────────────────────────────────────
+  const navItems = [
+    {
+      id: 'Dashboard', label: 'Matches',
+      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="5" height="5" rx="1.4"/><rect x="9" y="2" width="5" height="5" rx="1.4"/><rect x="2" y="9" width="5" height="5" rx="1.4"/><rect x="9" y="9" width="5" height="5" rx="1.4"/></svg>,
+    },
+    {
+      id: 'Tracking', label: 'Browse all jobs', active: true,
+      badge: autoMatches.length,
+      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M2 8h7M2 12h4"/><circle cx="12" cy="11.5" r="2.4"/><path d="M13.7 13.2L15 14.5"/></svg>,
+    },
+    {
+      id: 'Home', label: 'Chat assistant',
+      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>,
+    },
+    {
+      id: 'Resumes', label: 'Resumes',
+      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="1.5" width="10" height="13" rx="1.6"/><path d="M6 5h4M6 8h4M6 11h2.5"/></svg>,
+    },
+    {
+      id: 'Account', label: 'Account',
+      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="5" r="3"/><path d="M2.5 14c0-3 2.4-4.6 5.5-4.6S13.5 11 13.5 14"/></svg>,
+    },
+  ]
 
-        {/* ── Header ─────────────────────────────────────────── */}
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 500, letterSpacing: "-0.02em", marginBottom: 4 }}>
-            matches
+  return (
+    <div
+      data-theme={theme}
+      style={{
+        display: 'flex', height: '100vh', width: '100%', overflow: 'hidden',
+        background: 'var(--bg)', color: 'var(--text)',
+        fontFamily: "'DM Sans', sans-serif",
+        position: 'fixed', inset: 0, zIndex: 1,
+      }}
+    >
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+        @keyframes rkFadeIn { from{opacity:0} to{opacity:1} }
+        @keyframes rkScaleIn { from{opacity:0;transform:scale(.97)} to{opacity:1;transform:scale(1)} }
+        @keyframes rkBeacon { 0%,100%{box-shadow:0 0 0 0 rgba(232,255,107,0.0)} 50%{box-shadow:0 0 0 5px rgba(232,255,107,0.16)} }
+        .trk-root ::-webkit-scrollbar{width:8px;height:8px}
+        .trk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px}
+        .trk-root ::-webkit-scrollbar-track{background:transparent}
+      `}</style>
+
+      {/* ── SIDEBAR ── */}
+      <aside style={{
+        width: 252, flexShrink: 0, height: '100%',
+        background: 'var(--sidebar-bg)', borderRight: '1px solid var(--border)',
+        display: 'flex', flexDirection: 'column', padding: '22px 16px 16px',
+        position: 'relative', zIndex: 5,
+      }}>
+        {/* Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '4px 8px 22px' }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 9,
+            background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: 'var(--accent-glow)', flexShrink: 0,
+          }}>
+            <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="var(--accent-contrast)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 11V5l6-3 6 3v6l-6 3z"/><path d="M8 8l6-3M8 8v6M8 8L2 5"/></svg>
           </div>
+          <span style={{ fontFamily: "'Fira Code', monospace", fontWeight: 600, fontSize: 18, letterSpacing: '0.02em' }}>
+            RACK
+          </span>
         </div>
 
-        {/* ── Tab switcher — shown for all authenticated users */}
+        {/* Nav */}
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {navItems.map(item => (
+            <TNavItem
+              key={item.id}
+              icon={item.icon}
+              label={item.label}
+              active={item.active || false}
+              badge={item.badge}
+              onClick={() => {
+                if (item.id === 'Tracking') return  // already here
+                navigate(item.id)
+              }}
+            />
+          ))}
+        </nav>
+
+        {/* ── Tab sub-nav ── */}
+        <div style={{ height: 1, background: 'var(--border)', margin: '14px 8px 12px' }}/>
+        <div style={{
+          fontFamily: "'Fira Code', monospace", fontSize: 9.5, fontWeight: 600,
+          letterSpacing: '0.12em', textTransform: 'uppercase',
+          color: 'var(--text-dim)', padding: '0 12px', marginBottom: 6,
+        }}>
+          Views
+        </div>
         {userRole !== null && (
           <TabSwitcher
             activeTab={activeTab}
@@ -3406,47 +3542,138 @@ export default function Tracking() {
           />
         )}
 
-        {/* ── Tab content ─────────────────────────────────────── */}
-        {activeTab === "review" && userRole !== null && (
-          <ReviewTab onCountChange={setReviewCount} />
-        )}
-        {activeTab === "auto" && userRole !== null && (
-          <AutoMatchesTab profile={profile} isPowerUser={isPowerUser} />
-        )}
-        {activeTab === "auto" && userRole === null && (
-          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center" }}>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
-              finding your matches
-            </div>
-            <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
-              We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
-            </div>
+        <div style={{ height: 1, background: 'var(--border)', margin: '14px 8px' }}/>
+
+        {/* Ask Rack */}
+        <button
+          onClick={() => navigate('Home')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 12, padding: 13,
+            borderRadius: 13, cursor: 'pointer',
+            border: '1px solid var(--border-bright)',
+            background: 'linear-gradient(135deg, var(--surface2), var(--surface))',
+            color: 'var(--text)', fontFamily: "'DM Sans', sans-serif",
+            fontSize: 13.5, fontWeight: 600, textAlign: 'left', width: '100%',
+          }}>
+          <span style={{
+            width: 30, height: 30, borderRadius: 9, background: 'var(--accent-soft)',
+            border: '1px solid var(--accent-line)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            animation: 'rkBeacon 3s ease-in-out infinite',
+          }}>
+            <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="var(--accent-ink)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>
+          </span>
+          <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            Ask Rack
+            <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-dim)' }}>Refine, ask, auto-apply</span>
+          </span>
+        </button>
+
+        <div style={{ flex: 1 }}/>
+
+        {/* User card */}
+        <div style={{
+          border: '1px solid var(--border)', background: 'var(--surface)',
+          borderRadius: 15, padding: 15, boxShadow: 'var(--card-shadow)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{firstName}</span>
+            <span style={{
+              fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase',
+              letterSpacing: '0.08em', background: 'var(--chip-bg)', padding: '2px 7px', borderRadius: 6,
+            }}>Free</span>
           </div>
-        )}
-        {activeTab === "applied" && userRole !== null && (
-          <AppliedJobsTab />
-        )}
-        {activeTab === "fresh" && isPowerUser && (
-          <FreshJobsTab />
-        )}
-        {activeTab === "custom" && isPowerUser && (
-          <CustomSearchTab profile={profile} />
-        )}
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 6 }}>
+            {autoMatches.length > 0
+              ? <><span style={{ fontFamily: "'Fira Code', monospace", fontWeight: 700, color: 'var(--accent-ink)' }}>{autoMatches.length}</span> jobs matched</>
+              : 'Scanning…'
+            }
+          </div>
+        </div>
+      </aside>
 
-      </div>
+      {/* ── MAIN CONTENT ── */}
+      <main className="trk-root" style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
+        {/* Ambient glow */}
+        <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
+        <div style={{ position: 'absolute', top: 120, right: -140, width: 480, height: 480, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-2), transparent 70%)', pointerEvents: 'none', zIndex: 0 }}/>
 
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(8px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50%      { opacity: 0.55; }
-        }
-      `}</style>
+        <div style={{ position: 'relative', zIndex: 1, maxWidth: 900, margin: '0 auto', padding: '30px 40px 60px' }}>
+
+          {/* ── Page header — dynamic per active tab ── */}
+          {(() => {
+            const tabMeta = {
+              auto:    { label: 'Auto Matches',  sub: autoMatches.length > 0 ? <><span style={{ color: 'var(--accent-ink)', fontFamily: "'Fira Code', monospace", fontWeight: 600 }}>{autoMatches.length}</span> total matches · ranked by fit + recency</> : 'AI-scored matches from 150+ company boards' },
+              review:  { label: 'Review',         sub: 'Applications waiting for your approval' },
+              applied: { label: 'Applied',         sub: appliedCount > 0 ? <><span style={{ color: 'var(--accent-ink)', fontFamily: "'Fira Code', monospace", fontWeight: 600 }}>{appliedCount}</span> applications submitted</> : 'Your submitted applications' },
+              fresh:   { label: 'Fresh Jobs',      sub: 'New roles posted in the last hour' },
+              custom:  { label: 'Search',          sub: 'Search all jobs in the pool' },
+            }
+            const meta = tabMeta[activeTab] || tabMeta.auto
+            return (
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, marginBottom: 28 }}>
+                <div>
+                  <h1 style={{ fontSize: 25, fontWeight: 600, letterSpacing: '-0.01em', margin: '0 0 5px' }}>{meta.label}</h1>
+                  <p style={{ fontSize: 14, color: 'var(--text-mid)', margin: 0 }}>{meta.sub}</p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button onClick={toggleTheme} title="Toggle theme"
+                    style={{
+                      width: 40, height: 40, borderRadius: 11, cursor: 'pointer',
+                      border: '1px solid var(--border-bright)', background: 'var(--surface)',
+                      color: 'var(--text-mid)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      transition: 'border-color 0.18s, color 0.18s',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent-line)'; e.currentTarget.style.color = 'var(--text)' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-bright)'; e.currentTarget.style.color = 'var(--text-mid)' }}
+                  >
+                    {theme === 'dark'
+                      ? <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1M12.5 12.5l-1.1-1.1M4.6 4.6L3.5 3.5"/></svg>
+                      : <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M13.5 9.2A5.6 5.6 0 0 1 6.8 2.5 5.6 5.6 0 1 0 13.5 9.2z"/></svg>
+                    }
+                  </button>
+                  <div onClick={() => navigate('Account')}
+                    style={{
+                      width: 40, height: 40, borderRadius: 11, cursor: 'pointer',
+                      background: 'linear-gradient(135deg, var(--accent2), var(--accent3))',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontWeight: 600, fontSize: 14, color: '#fff',
+                    }}>
+                    {userInitial}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* ── Tab content ─────────────────────────────────────── */}
+          {activeTab === "review" && userRole !== null && (
+            <ReviewTab onCountChange={setReviewCount} />
+          )}
+          {activeTab === "auto" && userRole !== null && (
+            <AutoMatchesTab profile={profile} isPowerUser={isPowerUser} />
+          )}
+          {activeTab === "auto" && userRole === null && (
+            <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
+              <div style={{ fontFamily: "'Fira Code', monospace", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
+              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.01em" }}>Finding your matches</div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
+                We're scanning top tech companies and scoring the best roles for your resumes. Check back shortly.
+              </div>
+            </div>
+          )}
+          {activeTab === "applied" && userRole !== null && (
+            <AppliedJobsTab />
+          )}
+          {activeTab === "fresh" && isPowerUser && (
+            <FreshJobsTab />
+          )}
+          {activeTab === "custom" && isPowerUser && (
+            <CustomSearchTab profile={profile} />
+          )}
+
+        </div>
+      </main>
     </div>
   );
 }

@@ -73,15 +73,14 @@ const OPTIMIZE_OPTIONS = [
 
 // Terminal log lines shown while resume processes
 const TERMINAL_PHASES = [
-  { delay: 0,    text: '→ uploading resume to storage...' },
-  { delay: 800,  text: '→ extracting text from PDF...' },
-  { delay: 2200, text: '→ parsing sections (experience, skills, education)...' },
-  { delay: 4000, text: '→ chunking text into semantic units...' },
-  { delay: 6000, text: '→ generating embeddings via text-embedding-3-small...' },
-  { delay: 9000, text: '→ writing chunks to resume_chunks table...' },
-  { delay: 11000,text: '→ building pgvector index...' },
-  { delay: 13000,text: '→ pre-matching against 14k+ job pool...' },
-  { delay: 16000,text: '✓ resume ready. matches queued.' },
+  { delay: 0,     text: 'upload',     label: 'uploading to secure storage',          done: false },
+  { delay: 900,   text: 'extract',    label: 'extracting text from PDF',             done: false },
+  { delay: 2400,  text: 'parse',      label: 'parsing experience · skills · dates',  done: false },
+  { delay: 4200,  text: 'chunk',      label: 'chunking into semantic units',         done: false },
+  { delay: 6500,  text: 'embed',      label: 'embedding via text-embedding-3-small', done: false },
+  { delay: 9500,  text: 'index',      label: 'writing to pgvector index',            done: false },
+  { delay: 12000, text: 'match',      label: 'pre-matching against 14k+ job pool',   done: false },
+  { delay: 16000, text: 'done',       label: 'ready · matches queued',               done: true  },
 ]
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,10 +188,14 @@ function NativeSelect({ value, onChange, options, placeholder }) {
 // Left panel — resume ingestion terminal
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Left panel — resume ingestion terminal
+// ─────────────────────────────────────────────────────────────────────────────
+
 function IngestionTerminal({ uploadedFiles, uploadStarted }) {
-  const [lines, setLines] = useState([])
+  const [activeIdx, setActiveIdx] = useState(-1)
+  const [completedIdxs, setCompletedIdxs] = useState(new Set())
   const [cursor, setCursor] = useState(true)
-  const scrollRef = useRef(null)
 
   // Blink cursor
   useEffect(() => {
@@ -200,27 +203,39 @@ function IngestionTerminal({ uploadedFiles, uploadStarted }) {
     return () => clearInterval(iv)
   }, [])
 
-  // Stream terminal lines once upload starts
+  // Drive phase rows on upload start
   useEffect(() => {
     if (!uploadStarted) return
-    setLines([])
+    setActiveIdx(-1)
+    setCompletedIdxs(new Set())
 
-    const timers = TERMINAL_PHASES.map(({ delay, text }) =>
-      setTimeout(() => {
-        setLines(prev => [...prev, text])
-      }, delay)
-    )
+    const timers = []
+    TERMINAL_PHASES.forEach(({ delay }, i) => {
+      // Activate row
+      timers.push(setTimeout(() => {
+        setActiveIdx(i)
+      }, delay))
+      // Mark previous as complete when next starts
+      if (i > 0) {
+        timers.push(setTimeout(() => {
+          setCompletedIdxs(prev => { const s = new Set(prev); s.add(i - 1); return s })
+        }, delay))
+      }
+    })
+    // Mark last as complete after a beat
+    timers.push(setTimeout(() => {
+      setCompletedIdxs(prev => {
+        const s = new Set(prev)
+        s.add(TERMINAL_PHASES.length - 1)
+        return s
+      })
+      setActiveIdx(TERMINAL_PHASES.length)  // past last = all done
+    }, TERMINAL_PHASES[TERMINAL_PHASES.length - 1].delay + 1200))
+
     return () => timers.forEach(clearTimeout)
   }, [uploadStarted])
 
-  // Auto-scroll to bottom
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [lines])
-
-  const isDone = lines.some(l => l.startsWith('✓'))
+  const isDone = activeIdx >= TERMINAL_PHASES.length
 
   return (
     <div style={{
@@ -233,43 +248,98 @@ function IngestionTerminal({ uploadedFiles, uploadStarted }) {
       <div style={{
         display: 'flex', alignItems: 'center', gap: 7,
         padding: '10px 14px',
-        borderBottom: '1px solid var(--terminal-divider)',
-        background: 'var(--terminal-header-bg)',
+        borderBottom: '1px solid var(--terminal-divider, rgba(255,255,255,0.06))',
+        background: 'var(--terminal-header-bg, rgba(255,255,255,0.025))',
       }}>
-        <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(255,80,80,0.5)' }} />
-        <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(255,190,50,0.5)' }} />
-        <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(50,200,100,0.4)' }} />
+        <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(255,80,80,0.4)' }} />
+        <div style={{ width: 9, height: 9, borderRadius: '50%', background: 'rgba(255,190,50,0.4)' }} />
+        <div style={{ width: 9, height: 9, borderRadius: '50%', background: isDone ? 'rgba(52,211,153,0.7)' : 'rgba(50,200,100,0.3)', transition: 'background 0.5s' }} />
         <span style={{
-          marginLeft: 8, fontSize: 10, color: 'var(--terminal-dim)',
+          marginLeft: 8, fontSize: 10, color: 'var(--terminal-dim, rgba(255,255,255,0.3))',
           fontFamily: 'var(--font-display)', letterSpacing: '0.06em',
         }}>rack · ingestion</span>
+        {isDone && (
+          <span style={{
+            marginLeft: 'auto', fontSize: 10, color: 'rgba(52,211,153,0.7)',
+            fontFamily: 'var(--font-display)', letterSpacing: '0.04em',
+            animation: 'termFadeIn 0.4s ease both',
+          }}>✓ complete</span>
+        )}
       </div>
-      {/* Body */}
-      <div ref={scrollRef} style={{
-        padding: '14px 16px', minHeight: 180, maxHeight: 220,
-        overflowY: 'auto', fontFamily: 'var(--font-display)',
-        fontSize: 11, lineHeight: 1.8,
-      }}>
-        {!uploadStarted && (
-          <span style={{ color: 'var(--terminal-dim)' }}>
-            waiting for resume upload...
-            <span style={{ opacity: cursor ? 1 : 0 }}>▌</span>
-          </span>
-        )}
-        {uploadStarted && lines.map((line, i) => (
-          <div
-            key={i}
-            style={{
-              color: line.startsWith('✓') ? 'var(--accent)' : 'var(--text-mid)',
-              animation: 'termLine 0.2s ease both',
-            }}
-          >
-            {line}
+
+      {/* Phase rows */}
+      <div style={{ padding: '12px 0' }}>
+        {!uploadStarted ? (
+          <div style={{ padding: '8px 16px' }}>
+            <span style={{ fontSize: 11, color: 'var(--terminal-dim, rgba(255,255,255,0.3))', fontFamily: 'var(--font-display)' }}>
+              awaiting upload
+              <span style={{ opacity: cursor ? 1 : 0 }}> ▌</span>
+            </span>
           </div>
-        ))}
-        {uploadStarted && !isDone && (
-          <span style={{ color: 'var(--terminal-dim)', opacity: cursor ? 1 : 0 }}>▌</span>
-        )}
+        ) : TERMINAL_PHASES.map(({ text, label, done: isDonePhase }, i) => {
+          const isComplete = completedIdxs.has(i)
+          const isActive   = activeIdx === i
+          const isPending  = activeIdx < i
+
+          return (
+            <div
+              key={text}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '6px 16px',
+                opacity: isPending ? 0.25 : 1,
+                transition: 'opacity 0.35s ease',
+                animation: isActive ? 'termRowIn 0.25s ease both' : 'none',
+              }}
+            >
+              {/* Status icon */}
+              <div style={{ width: 16, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {isComplete ? (
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ animation: 'termCheckIn 0.2s ease both' }}>
+                    <circle cx="6" cy="6" r="5.5" stroke="rgba(52,211,153,0.5)" strokeWidth="1" />
+                    <path d="M3.5 6l1.8 1.8L8.5 4.5" stroke="rgba(52,211,153,0.9)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : isActive ? (
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    border: '1.5px solid rgba(232,255,107,0.3)',
+                    borderTopColor: 'var(--accent)',
+                    animation: 'obSpin 0.7s linear infinite',
+                  }} />
+                ) : (
+                  <div style={{
+                    width: 5, height: 5, borderRadius: '50%',
+                    background: 'rgba(255,255,255,0.15)',
+                  }} />
+                )}
+              </div>
+
+              {/* Label */}
+              <span style={{
+                fontSize: 11, lineHeight: 1.4,
+                fontFamily: 'var(--font-display)',
+                color: isComplete
+                  ? isDonePhase ? 'rgba(52,211,153,0.9)' : 'rgba(255,255,255,0.45)'
+                  : isActive
+                    ? 'rgba(255,255,255,0.85)'
+                    : 'rgba(255,255,255,0.2)',
+                transition: 'color 0.3s ease',
+                letterSpacing: '0.01em',
+              }}>
+                {isDonePhase && isComplete ? '✓ ' : ''}{label}
+              </span>
+
+              {/* Active pulse */}
+              {isActive && (
+                <span style={{
+                  fontSize: 10, color: 'var(--terminal-dim, rgba(255,255,255,0.25))',
+                  fontFamily: 'var(--font-display)',
+                  opacity: cursor ? 1 : 0, transition: 'opacity 0.1s',
+                }}>▌</span>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -279,15 +349,27 @@ function IngestionTerminal({ uploadedFiles, uploadStarted }) {
 function LeftPanel({ step, uploadedFiles, uploadStarted }) {
   const isUploadStep = step === 0
 
+  // Steps for the animated progress display (steps 1–6 of wizard)
+  const WIZARD_STEPS = [
+    { key: 'location',  label: 'Location' },
+    { key: 'contact',   label: 'Contact' },
+    { key: 'work',      label: 'Work Status' },
+    { key: 'checklist', label: 'Checklist' },
+    { key: 'password',  label: 'Password' },
+    { key: 'settings',  label: 'Apply Settings' },
+  ]
+  // step 1 = index 0, step 6 = index 5
+  const wizardIdx = step - 1  // -1 when step=0
+
   return (
     <div style={{
-      width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24,
+      width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 20,
       paddingTop: isUploadStep ? 0 : 8,
     }}>
       {/* "Getting started" card */}
       <div style={{
         background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 14, padding: '20px 20px 18px',
+        borderRadius: 14, padding: '18px 18px 16px', overflow: 'hidden',
       }}>
         <div style={{
           fontSize: 10, fontWeight: 600, letterSpacing: '0.12em',
@@ -297,34 +379,106 @@ function LeftPanel({ step, uploadedFiles, uploadStarted }) {
 
         {!isUploadStep ? (
           <>
-            {/* Resume status */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <div style={{
-                width: 7, height: 7, borderRadius: '50%',
-                background: uploadedFiles.length > 0 ? 'var(--accent3, #34d399)' : 'var(--accent)',
-                boxShadow: `0 0 6px ${uploadedFiles.length > 0 ? 'rgba(52,211,153,0.6)' : 'rgba(232,255,107,0.5)'}`,
-                animation: uploadedFiles.length === 0 ? 'none' : 'pulse-ring 2.5s ease infinite',
-              }} />
-              <span style={{ fontSize: 11, color: 'var(--text-mid)', fontFamily: 'var(--font-display)' }}>
-                {uploadedFiles.length > 0
-                  ? uploadedFiles.some(f => f.status === 'done') ? 'resume · done' : 'resume · in progress'
-                  : 'resume · pending'}
-              </span>
+            {/* Resume status row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <div style={{ position: 'relative', width: 20, height: 20, flexShrink: 0 }}>
+                {/* Spinning progress ring */}
+                <svg width="20" height="20" viewBox="0 0 20 20" style={{ position: 'absolute', inset: 0 }}>
+                  <circle cx="10" cy="10" r="7.5" fill="none" stroke="rgba(232,255,107,0.1)" strokeWidth="2" />
+                  <circle
+                    cx="10" cy="10" r="7.5"
+                    fill="none"
+                    stroke="var(--accent)"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeDasharray="12 35"
+                    style={{
+                      transformOrigin: '10px 10px',
+                      animation: uploadedFiles.length > 0 ? 'obSpin 1.4s linear infinite' : 'none',
+                      opacity: uploadedFiles.length > 0 ? 1 : 0,
+                      transition: 'opacity 0.4s',
+                    }}
+                  />
+                </svg>
+                {/* Center dot */}
+                <div style={{
+                  position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <div style={{
+                    width: 6, height: 6, borderRadius: '50%',
+                    background: uploadedFiles.length > 0 ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
+                    transition: 'background 0.4s',
+                    boxShadow: uploadedFiles.length > 0 ? '0 0 5px rgba(232,255,107,0.5)' : 'none',
+                  }} />
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-mid)', fontFamily: 'var(--font-display)', lineHeight: 1 }}>
+                  {uploadedFiles.length > 0 ? 'resume · processing' : 'resume · pending'}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
+                  {uploadedFiles.length > 0 ? 'parsing in background' : 'upload to begin'}
+                </div>
+              </div>
             </div>
 
-            <p style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.65, marginBottom: 14 }}>
-              {uploadedFiles.length > 0
-                ? 'We\'re pulling your work history and skills while you finish these.'
-                : 'Upload your resume above to begin processing.'}
-            </p>
+            {/* Wizard step list */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+              {WIZARD_STEPS.map(({ key, label }, i) => {
+                const isDone   = i < wizardIdx
+                const isActive = i === wizardIdx
+                const isPending = i > wizardIdx
+                return (
+                  <div
+                    key={key}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '7px 0',
+                      borderBottom: i < WIZARD_STEPS.length - 1 ? '1px solid var(--border)' : 'none',
+                    }}
+                  >
+                    {/* Icon */}
+                    <div style={{ width: 18, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {isDone ? (
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ animation: 'termCheckIn 0.2s ease both' }}>
+                          <circle cx="7" cy="7" r="6.5" fill="rgba(52,211,153,0.1)" stroke="rgba(52,211,153,0.4)" strokeWidth="1" />
+                          <path d="M4 7l2 2 4-4" stroke="rgba(52,211,153,0.9)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      ) : isActive ? (
+                        <div style={{
+                          width: 8, height: 8, borderRadius: '50%',
+                          background: 'var(--accent)',
+                          boxShadow: '0 0 6px rgba(232,255,107,0.5)',
+                          animation: 'pulse-ring 2.5s ease infinite',
+                        }} />
+                      ) : (
+                        <div style={{
+                          width: 5, height: 5, borderRadius: '50%',
+                          background: 'rgba(255,255,255,0.12)',
+                        }} />
+                      )}
+                    </div>
+                    <span style={{
+                      fontSize: 12,
+                      fontFamily: 'var(--font-display)',
+                      color: isDone
+                        ? 'rgba(52,211,153,0.7)'
+                        : isActive
+                          ? 'var(--text)'
+                          : 'var(--text-dim)',
+                      fontWeight: isActive ? 600 : 400,
+                      transition: 'color 0.3s ease, font-weight 0.3s ease',
+                      letterSpacing: '0.01em',
+                    }}>{label}</span>
+                  </div>
+                )
+              })}
+            </div>
 
             {/* Why we ask */}
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-mid)', marginBottom: 8 }}>
-                Why we ask
-              </div>
-              <p style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
-                Every application asks these. Answer once here, we fill the forms.
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 12 }}>
+              <p style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.6, margin: 0 }}>
+                Answer once here — we fill the forms on every application.
               </p>
             </div>
           </>
@@ -496,19 +650,13 @@ function StepUpload({ files, onFilesChange, onContinue, uploading }) {
         onChange={e => { addFiles(e.target.files); e.target.value = '' }}
       />
 
-      {/* Referral code */}
-      <div style={{ marginBottom: 32 }}>
-        <FieldLabel optional>Referral Code</FieldLabel>
-        <StyledInput placeholder="e.g. JOHN1234" value="" onChange={() => {}} />
-      </div>
-
       {/* CTA */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 4 }}>
         <button
           onClick={onContinue}
           disabled={files.length === 0 || uploading}
           style={{
-            padding: '14px 28px', borderRadius: 30,
+            padding: '12px 24px', borderRadius: 8,
             background: files.length > 0 ? 'var(--accent)' : 'var(--surface2)',
             border: 'none',
             color: files.length > 0 ? 'var(--accent-contrast)' : 'var(--text-dim)',
@@ -528,9 +676,15 @@ function StepUpload({ files, onFilesChange, onContinue, uploading }) {
           ) : (
             <>
               Continue
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path d="M4 8h8M9 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                padding: '2px 6px', borderRadius: 4,
+                background: 'rgba(0,0,0,0.18)',
+                fontSize: 10, fontFamily: 'var(--font-display)',
+                color: files.length > 0 ? 'rgba(0,0,0,0.5)' : 'var(--text-dim)',
+                letterSpacing: '0.04em', lineHeight: 1.4,
+                fontWeight: 600,
+              }}>↵</span>
             </>
           )}
         </button>
@@ -1450,10 +1604,9 @@ export default function Onboarding({ user, onComplete }) {
   }
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────────
-  // Enter = next step, Shift+Tab = previous step.
-  // Guard: only fire when no textarea/input is actively focused to avoid
-  // intercepting typing. We check activeElement tag instead of relying on
-  // the event's defaultPrevented so native browser Tab still works.
+  // Enter = next step (triggers button press animation), Shift+Tab = previous step.
+  // Guard: only fire when no input/select is focused.
+  // Exception: when the dropdown is open on StepLocation (Enter picks suggestion — handled there with stopPropagation).
   useEffect(() => {
     const onKey = (e) => {
       const tag = document.activeElement?.tagName?.toLowerCase()
@@ -1461,6 +1614,18 @@ export default function Onboarding({ user, onComplete }) {
 
       if (e.key === 'Enter' && !isTyping && !e.shiftKey) {
         e.preventDefault()
+
+        // Animate the Continue button press
+        const btn = document.getElementById('ob-continue-btn')
+        if (btn && !saving) {
+          btn.style.transform = 'scale(0.96)'
+          btn.style.boxShadow = 'none'
+          setTimeout(() => {
+            btn.style.transform = ''
+            btn.style.boxShadow = 'var(--accent-glow)'
+          }, 100)
+        }
+
         if (step === 0 && uploadedFiles.length > 0 && !uploading) {
           handleUploadContinue()
         } else if (step >= 1 && !saving) {
@@ -1531,15 +1696,8 @@ export default function Onboarding({ user, onComplete }) {
           Rack
         </div>
 
-        {/* Step counter */}
-        {stepLabel && (
-          <div style={{ fontSize: 12, color: 'var(--text-dim)', fontFamily: 'var(--font-display)', letterSpacing: '0.06em' }}>
-            {stepLabel}
-          </div>
-        )}
-
         {/* Back link */}
-        {isWizardStep && step > 1 && (
+        {isWizardStep && step > 1 ? (
           <button
             onClick={handleBack}
             style={{
@@ -1555,23 +1713,7 @@ export default function Onboarding({ user, onComplete }) {
             </svg>
             Back
           </button>
-        )}
-        {!isWizardStep && <div style={{ width: 60 }} />}
-
-        {/* Progress bar — underneath the top bar */}
-        {isWizardStep && (
-          <div style={{
-            position: 'absolute', bottom: 0, left: 0, right: 0, height: 2,
-            background: 'var(--border)',
-          }}>
-            <div style={{
-              height: '100%', background: 'var(--accent)',
-              width: `${progress}%`,
-              transition: 'width 0.4s var(--ease-spring)',
-              boxShadow: '0 0 8px rgba(232,255,107,0.5)',
-            }} />
-          </div>
-        )}
+        ) : <div style={{ width: 60 }} />}
       </div>
 
       {/* ── Body ── */}
@@ -1594,24 +1736,55 @@ export default function Onboarding({ user, onComplete }) {
 
           {/* Right — step content */}
           <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Scoped step counter + progress bar — only for wizard steps */}
+            {isWizardStep && (
+              <div style={{ marginBottom: 32 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <span style={{
+                    fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-display)',
+                    letterSpacing: '0.08em', textTransform: 'uppercase',
+                  }}>{stepLabel}</span>
+                  <span style={{
+                    fontSize: 11, color: 'var(--accent-ink)', fontFamily: 'var(--font-display)',
+                    fontWeight: 600, letterSpacing: '0.04em',
+                  }}>{Math.round(progress)}%</span>
+                </div>
+                {/* Progress track */}
+                <div style={{
+                  height: 3, background: 'var(--border)',
+                  borderRadius: 4, overflow: 'hidden',
+                }}>
+                  <div style={{
+                    height: '100%',
+                    background: 'var(--accent)',
+                    width: `${progress}%`,
+                    borderRadius: 4,
+                    transition: 'width 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
+                    boxShadow: '0 0 8px rgba(232,255,107,0.4)',
+                  }} />
+                </div>
+              </div>
+            )}
+
             {renderStep()}
 
             {/* ── Step navigation footer (wizard steps only) ── */}
             {isWizardStep && (
-              <div style={{ marginTop: 40, display: 'flex', alignItems: 'center', gap: 16 }}>
+              <div style={{ marginTop: 40, display: 'flex', alignItems: 'center', gap: 14 }}>
                 {saveError && (
                   <span style={{ fontSize: 12, color: 'var(--danger)' }}>{saveError}</span>
                 )}
                 <button
+                  id="ob-continue-btn"
                   onClick={handleNext}
                   disabled={saving}
                   style={{
-                    padding: '13px 28px', borderRadius: 30,
+                    padding: '12px 24px', borderRadius: 8,
                     background: 'var(--accent)', border: 'none',
                     color: 'var(--accent-contrast)', fontSize: 14, fontWeight: 700,
                     cursor: saving ? 'default' : 'pointer',
                     fontFamily: 'var(--font-body)', display: 'flex', alignItems: 'center', gap: 10,
-                    boxShadow: 'var(--accent-glow)', transition: 'background 0.2s',
+                    boxShadow: 'var(--accent-glow)', transition: 'background 0.15s, transform 0.08s',
                     opacity: saving ? 0.7 : 1,
                   }}
                   onMouseEnter={e => { if (!saving) e.currentTarget.style.background = 'var(--accent-strong)' }}
@@ -1632,26 +1805,26 @@ export default function Onboarding({ user, onComplete }) {
                   ) : (
                     <>
                       Continue
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                        <path d="M4 8h8M9 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        padding: '2px 6px', borderRadius: 4,
+                        background: 'rgba(0,0,0,0.18)',
+                        fontSize: 10, fontFamily: 'var(--font-display)',
+                        color: 'rgba(0,0,0,0.5)',
+                        letterSpacing: '0.04em', lineHeight: 1.4,
+                        fontWeight: 600,
+                      }}>↵</span>
                     </>
                   )}
                 </button>
 
                 {/* Keyboard hint */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <kbd style={{ padding: '2px 6px', borderRadius: 5, border: '1px solid var(--border-bright)', background: 'var(--surface2)', fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-display)' }}>Enter</kbd>
-                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Continue</span>
+                {step > 1 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <kbd style={{ padding: '2px 6px', borderRadius: 4, border: '1px solid var(--border-bright)', background: 'var(--surface2)', fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-display)' }}>⇧ Tab</kbd>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Back</span>
                   </div>
-                  {step > 1 && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <kbd style={{ padding: '2px 6px', borderRadius: 5, border: '1px solid var(--border-bright)', background: 'var(--surface2)', fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-display)' }}>⇧ + Tab</kbd>
-                      <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Back</span>
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
             )}
           </div>
@@ -1668,9 +1841,29 @@ export default function Onboarding({ user, onComplete }) {
           from { transform: rotate(0deg); }
           to   { transform: rotate(360deg); }
         }
-        @keyframes termLine {
-          from { opacity: 0; transform: translateX(-4px); }
+        @keyframes termRowIn {
+          from { opacity: 0; transform: translateX(-6px); }
           to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes termCheckIn {
+          from { opacity: 0; transform: scale(0.6); }
+          to   { opacity: 1; transform: scale(1); }
+        }
+        @keyframes termFadeIn {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        @keyframes progressSpin {
+          from { transform: rotate(-90deg); }
+          to   { transform: rotate(270deg); }
+        }
+        @keyframes pulse-ring {
+          0%   { box-shadow: 0 0 0 0 rgba(232,255,107,0.4); }
+          70%  { box-shadow: 0 0 0 5px rgba(232,255,107,0); }
+          100% { box-shadow: 0 0 0 0 rgba(232,255,107,0); }
+        }
+        #ob-continue-btn {
+          transition: background 0.15s, transform 0.08s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s;
         }
       `}</style>
     </div>
