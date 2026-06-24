@@ -1335,7 +1335,7 @@ function FreshJobsTab() {
       ))}
 
       {/* Pagination */}
-      {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
+      {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); }} />}
       {!loading && sorted.length > 0 && (
         <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text-dim)", ...mono }}>
           showing {(page - 1) * PAGE_SIZE_F + 1}–{Math.min(page * PAGE_SIZE_F, sorted.length)} of {sorted.length} jobs
@@ -1617,7 +1617,252 @@ function AppliedJobsTab() {
 /* ══════════════════════════════════════════════════════════════
    AUTO MATCHES TAB
    ══════════════════════════════════════════════════════════════ */
-const PAGE_SIZE = 10;
+/* ══════════════════════════════════════════════════════════════
+   TRK MATCH RING — circular score ring (mirrors Dashboard)
+   ══════════════════════════════════════════════════════════════ */
+function TrkMatchRing({ score, size = 52, strokeW = 3.5 }) {
+  const r    = (size / 2) - strokeW;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - Math.min(score, 100) / 100);
+  const ring = score >= 85 ? 'var(--accent3)'
+             : score >= 70 ? 'var(--accent-ink)'
+             : score >= 55 ? '#f5a623'
+             : 'var(--danger)';
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="var(--ring-track)" strokeWidth={strokeW}/>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={ring} strokeWidth={strokeW}
+        strokeLinecap="round"
+        strokeDasharray={circ} strokeDashoffset={offset}
+        style={{ transform: 'rotate(-90deg)', transformOrigin: 'center',
+          transition: 'stroke-dashoffset 1.1s cubic-bezier(0.22,1,0.36,1)' }}
+      />
+      <text x={size/2} y={size/2 - 1} textAnchor="middle"
+        style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: size * 0.25, fill: 'var(--text)' }}>
+        {Math.round(score)}%
+      </text>
+      <text x={size/2} y={size/2 + size * 0.195} textAnchor="middle"
+        style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: size * 0.105, letterSpacing: '0.1em', fill: 'var(--text-dim)' }}>
+        MATCH
+      </text>
+    </svg>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   TRK JOB CARD — squarish card (matches Dashboard JobCard style)
+   ══════════════════════════════════════════════════════════════ */
+function trkBrandColor(company) {
+  const palette = [
+    '#635bff','#e0930f','#5b6472','#7c5cff','#7c3aed',
+    '#1597c4','#e0492a','#1f6feb','#059669','#dc2626',
+    '#0ea5e9','#8b5cf6','#f59e0b','#10b981','#3b82f6',
+  ];
+  let hash = 0;
+  const s = company || '';
+  for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) & 0xffffffff;
+  return palette[Math.abs(hash) % palette.length];
+}
+
+function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }) {
+  const [hovered, setHovered] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  const score    = Math.round(match.llm_score ?? match.score ?? 0);
+  const company  = match.company || '';
+  const title    = match.job_title || 'Untitled';
+  const location = match.location && match.location !== 'Not specified' ? match.location : 'Remote';
+  const posted   = match.posted_at || match.matched_at;
+  const skills   = match.matched_skills || [];
+  const source   = (match.source || 'greenhouse').toUpperCase();
+  const brand    = trkBrandColor(company);
+  const initial  = (company || '?').charAt(0).toUpperCase();
+  const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
+  const tierColor = score >= 85 ? 'var(--accent3)' : score >= 70 ? 'var(--accent-ink)' : score >= 55 ? '#f5a623' : 'var(--danger)';
+  const shownSkills = skills.slice(0, 3);
+  const extraSkills = skills.length > 3 ? skills.length - 3 : 0;
+
+  const handleDownloadClick = async (e) => {
+    e.stopPropagation();
+    if (!match.resume_id || downloading) return;
+    setDownloading(true);
+    await downloadResume(match.resume_id, match.resume_name, match.file_ext);
+    setDownloading(false);
+  };
+
+  return (
+    <div
+      style={{
+        borderRadius: 18,
+        border: isNew ? '1px solid rgba(232,255,107,0.28)' : '1px solid var(--border)',
+        background: 'var(--surface)',
+        boxShadow: hovered ? 'var(--card-hover-shadow)' : 'var(--card-shadow)',
+        padding: 18, display: 'flex', flexDirection: 'column', gap: 12,
+        position: 'relative',
+        opacity: 0,
+        animation: `fadeUp 0.4s ease ${Math.min(index * 0.04, 0.35)}s forwards`,
+        transition: 'border-color 0.22s ease, box-shadow 0.28s ease',
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {/* New badge top stripe */}
+      {isNew && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: 3,
+          borderRadius: '18px 18px 0 0',
+          background: 'linear-gradient(90deg, var(--accent), #a3e635)',
+        }}/>
+      )}
+
+      {/* Top row: company logo + save star + match ring */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 11, flexShrink: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontWeight: 700, fontSize: 16, color: '#fff',
+            background: brand, boxShadow: `0 4px 12px ${brand}4d`,
+          }}>{initial}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {company || '—'}
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.1em', color: 'var(--text-dim)', marginTop: 1 }}>
+              {source}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+          {onSave && (
+            <button onClick={(e) => { e.stopPropagation(); onSave(); }} title={isSaved ? 'Saved' : 'Save'}
+              style={{
+                width: 28, height: 28, borderRadius: 8, border: 'none',
+                background: 'transparent', cursor: 'pointer',
+                color: isSaved ? 'var(--accent)' : 'var(--text-dim)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 14, transition: 'color 0.15s', marginTop: 2,
+              }}>
+              {isSaved ? '★' : '☆'}
+            </button>
+          )}
+          <TrkMatchRing score={score} />
+        </div>
+      </div>
+
+      {/* Title */}
+      <div style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.35, letterSpacing: '-0.01em', minHeight: 40 }}>
+        {title}
+        {isNew && (
+          <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
+            color: 'var(--accent)', letterSpacing: '0.12em', textTransform: 'uppercase',
+            verticalAlign: 'middle' }}>new</span>
+        )}
+        {isApplied && (
+          <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
+            color: 'var(--accent3)', letterSpacing: '0.12em', textTransform: 'uppercase',
+            verticalAlign: 'middle' }}>applied</span>
+        )}
+      </div>
+
+      {/* Location + posted */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, color: 'var(--text-mid)', flexWrap: 'wrap' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
+          {location.length > 28 ? location.slice(0, 28) + '…' : location}
+        </span>
+        {posted && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>
+            {timeAgo(posted)}
+          </span>
+        )}
+      </div>
+
+      {/* Skills */}
+      {shownSkills.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+          {shownSkills.map((sk, i) => (
+            <span key={i} style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-mid)',
+              background: 'var(--chip-bg)', border: '1px solid var(--chip-border)',
+              padding: '3px 8px', borderRadius: 7,
+            }}>{sk}</span>
+          ))}
+          {extraSkills > 0 && (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-dim)', padding: '3px 4px' }}>+{extraSkills}</span>
+          )}
+        </div>
+      )}
+
+      {/* Best resume */}
+      {match.resume_name && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ fontSize: 10.5, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>best:</span>
+          {match.resume_id ? (
+            <button onClick={handleDownloadClick} disabled={downloading}
+              style={{
+                background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--accent)',
+                display: 'inline-flex', alignItems: 'center', gap: 3,
+                opacity: downloading ? 0.5 : 1,
+                textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 2,
+              }}>
+              {downloading ? 'Downloading…' : `${match.resume_name} ↓`}
+            </button>
+          ) : (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-mid)' }}>{match.resume_name}</span>
+          )}
+        </div>
+      )}
+
+      <div style={{ flex: 1 }}/>
+      <div style={{ height: 1, background: 'var(--border)' }}/>
+
+      {/* Footer: tier label + apply button */}
+      {isApplied ? (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          height: 36, borderRadius: 10,
+          background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
+          color: 'var(--accent-ink)', fontSize: 12.5, fontWeight: 600,
+        }}>
+          <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
+          Applied
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 600, color: tierColor }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
+            {tierLabel}
+          </span>
+          {match.job_url && onApply && (
+            <a
+              href={match.job_url} target="_blank" rel="noopener noreferrer"
+              onClick={(e) => { e.stopPropagation(); onApply(); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '0 14px', height: 34, borderRadius: 10,
+                border: 'none', background: 'var(--accent)',
+                color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
+                fontSize: 12.5, fontWeight: 600,
+                boxShadow: 'var(--accent-glow)', textDecoration: 'none',
+                transition: 'background 0.18s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
+            >
+              apply ↗
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+const PAGE_SIZE = 12; // 3-col grid — multiple of 3
 
 function AutoMatchesTab({ profile, isPowerUser }) {
   const [matches, setMatches]           = useState([]);
@@ -2250,20 +2495,30 @@ function AutoMatchesTab({ profile, isPowerUser }) {
         </div>
       )}
 
-      {!loading && paginated.map((m, i) => {
-        const isNew = isSlotView && newJobIds.has(m.job_id);
-        return (
-          <MatchCard key={m.job_id} match={m} index={(page - 1) * PAGE_SIZE + i}
-            expanded={expandedId === m.job_id}
-            onToggle={() => setExpandedId(expandedId === m.job_id ? null : m.job_id)}
-            isAuto={true}
-            isNew={isNew}
-            isApplied={appliedJobs.has(m.job_id)}
-            onApply={() => handleApplyClick(m.job_id, m.job_title)}
-            isSaved={savedJobs.has(m.job_id)}
-            onSave={(e) => { e.stopPropagation(); toggleSaved(m.job_id); }} />
-        );
-      })}
+      {!loading && paginated.length > 0 && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 16,
+          marginBottom: 8,
+        }}>
+          {paginated.map((m, i) => {
+            const isNew = isSlotView && newJobIds.has(m.job_id);
+            return (
+              <TrkJobCard
+                key={m.job_id}
+                match={m}
+                index={(page - 1) * PAGE_SIZE + i}
+                isNew={isNew}
+                isApplied={appliedJobs.has(m.job_id)}
+                isSaved={savedJobs.has(m.job_id)}
+                onApply={() => handleApplyClick(m.job_id, m.job_title)}
+                onSave={() => toggleSaved(m.job_id)}
+              />
+            );
+          })}
+        </div>
+      )}
 
       {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
       {!loading && sorted.length > 0 && (
@@ -3598,7 +3853,7 @@ export default function Tracking({ onNavigate }) {
         <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
         <div style={{ position: 'absolute', top: 120, right: -140, width: 480, height: 480, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-2), transparent 70%)', pointerEvents: 'none', zIndex: 0 }}/>
 
-        <div style={{ position: 'relative', zIndex: 1, maxWidth: 900, margin: '0 auto', padding: '30px 40px 60px' }}>
+        <div style={{ position: 'relative', zIndex: 1, padding: '30px 32px 60px' }}>
 
           {/* ── Page header — dynamic per active tab ── */}
           {(() => {
