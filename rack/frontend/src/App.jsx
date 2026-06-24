@@ -219,6 +219,18 @@ function AppInner() {
     )
   }
 
+  if (active === 'Resumes' && !isGated) {
+    return (
+      <>
+        {overlay}
+        <Resumes onNavigate={(tab) => {
+          if (tab === 'Dashboard') { setShowDashboard(true) }
+          else { switchTab(tab) }
+        }} />
+      </>
+    )
+  }
+
   return (
     <>
     {overlay}
