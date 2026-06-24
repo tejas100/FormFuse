@@ -36,11 +36,15 @@ function brandColor(company) {
 
 function statusMeta(status) {
   switch (status) {
-    case 'submitted': return { label: 'Submitted', color: 'var(--accent3)',  bg: 'rgba(52,211,153,0.12)' }
-    case 'inflight':  return { label: 'In flight', color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
-    case 'needsyou':  return { label: 'Needs you', color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
-    case 'failed':    return { label: 'Failed',    color: 'var(--danger)',    bg: 'rgba(248,113,113,0.12)' }
-    default:          return { label: status,      color: 'var(--text-dim)', bg: 'var(--chip-bg)' }
+    case 'submitted':         return { label: 'Submitted',      color: 'var(--accent3)',  bg: 'rgba(52,211,153,0.12)' }
+    case 'inflight':          return { label: 'In flight',      color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
+    case 'needsyou':          return { label: 'Needs you',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
+    case 'needs_attention':   return { label: 'Needs you',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
+    case 'approved':          return { label: 'Approved',       color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
+    case 'replaying':         return { label: 'Applying…',      color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
+    case 'awaiting_otp':      return { label: 'Needs OTP',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
+    case 'failed':            return { label: 'Failed',         color: 'var(--danger)',   bg: 'rgba(248,113,113,0.12)' }
+    default:                  return { label: status?.replace(/_/g, ' ') || '—', color: 'var(--text-dim)', bg: 'var(--chip-bg)' }
   }
 }
 
@@ -724,7 +728,7 @@ export default function Dashboard({ onNavigate }) {
   const { theme, toggleTheme } = useTheme()
 
   // ── Data state ──────────────────────────────────────────────────────────────
-  const [phase, setPhase]           = useState('loading') // 'loading' | 'scanning' | 'ready' | 'error'
+  const [phase, setPhase]           = useState('fetching') // 'fetching' | 'scanning' | 'ready' | 'error'
   const [allJobs, setAllJobs]       = useState([])
   const [appliedIds, setAppliedIds] = useState(new Set())
   const [passedIds, setPassedIds]   = useState(new Set())
@@ -760,20 +764,27 @@ export default function Dashboard({ onNavigate }) {
   const fetchMatches = useCallback(async (force = false) => {
     if (!session?.access_token) return
     try {
-      setPhase('scanning')
-      setScanStep(0)
-      setScanPct(0)
-      setRevealCount(0)
+      // Only show the scanning animation when force-refreshing.
+      // On a normal page visit (force=false) we stay in 'fetching' — no overlay, no animation.
+      const showScan = force
+      if (showScan) {
+        setPhase('scanning')
+        setScanStep(0)
+        setScanPct(100)
+        setRevealCount(0)
+      }
 
-      // Animate scan steps while request is in-flight
+      // Animate scan steps while request is in-flight (only when showing scan UI)
       const steps = 4
       const stepDelay = 780
       const stepTimers = []
-      for (let i = 1; i <= steps; i++) {
-        stepTimers.push(setTimeout(() => {
-          setScanStep(i)
-          setScanPct(Math.round((i / steps) * 100))
-        }, i * stepDelay))
+      if (showScan) {
+        for (let i = 1; i <= steps; i++) {
+          stepTimers.push(setTimeout(() => {
+            setScanStep(i)
+            setScanPct(Math.round((i / steps) * 100))
+          }, i * stepDelay))
+        }
       }
 
       const headers = await getAuthHeaders()
@@ -789,11 +800,13 @@ export default function Dashboard({ onNavigate }) {
       const data = await res.json()
       const matches = (data.matches || [])
 
-      setScanStep(steps)
-      setScanPct(100)
+      if (showScan) {
+        setScanStep(steps)
+        setScanPct(100)
+        // Small pause so the completed bar is visible before cards appear
+        await new Promise(r => setTimeout(r, 480))
+      }
 
-      // Small pause then switch to ready
-      await new Promise(r => setTimeout(r, 480))
       setAllJobs(matches)
       setPhase('ready')
       startReveal(matches.length)
@@ -811,7 +824,8 @@ export default function Dashboard({ onNavigate }) {
     if (!session?.access_token) return
     try {
       const headers = await getAuthHeaders()
-      const res = await fetch(`${API_BASE}/api/tracking`, { headers })
+      // Apply batch jobs (submitted, inflight, needsyou, failed)
+      const res = await fetch(`${API_BASE}/api/apply/review`, { headers })
       if (res.ok) {
         const data = await res.json()
         setAppsData(data.jobs || [])
@@ -820,8 +834,9 @@ export default function Dashboard({ onNavigate }) {
   }, [session]) // eslint-disable-line
 
   useEffect(() => {
-    if (session?.access_token && phase === 'loading') {
+    if (session?.access_token && phase === 'fetching') {
       fetchMatches(false)
+      fetchTrackedJobs()
     }
   }, [session]) // eslint-disable-line
 
@@ -908,7 +923,7 @@ export default function Dashboard({ onNavigate }) {
     return jobs
   })()
 
-  const DASHBOARD_JOB_CAP = 10   // dashboard shows top 10; "Browse all" → Tracking
+  const DASHBOARD_JOB_CAP = 6    // dashboard shows top 6; "Browse all" → Tracking
 
   const freshCount = allJobs.filter(j => {
     const d = new Date(j.matched_at || j.posted_at || 0)
@@ -1183,8 +1198,16 @@ export default function Dashboard({ onNavigate }) {
           )}
 
           {/* ── States ── */}
-          {(phase === 'loading' || phase === 'scanning') && (
+          {phase === 'scanning' && (
             <ScanningOverlay step={scanStep} total={4} pct={scanPct} />
+          )}
+
+          {phase === 'fetching' && (
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18,
+            }}>
+              {[0,1,2,3,4,5,6,7,8].map(i => <SkeletonCard key={i}/>)}
+            </div>
           )}
 
           {phase === 'error' && (
@@ -1225,19 +1248,13 @@ export default function Dashboard({ onNavigate }) {
                     ))}
                   </div>
 
-                  {/* Browse All CTA — shown when there are more jobs than the cap */}
-                  {filteredJobs.length > DASHBOARD_JOB_CAP && (
-                    <BrowseAllCTA
-                      total={filteredJobs.length}
-                      shown={visibleJobs.length}
-                      onClick={() => navigate('Tracking')}
-                    />
-                  )}
+
                 </>
               )}
 
-              {/* Applications strip */}
+              {/* Applications strip — fade in below cards */}
               {appsData.length > 0 && (
+                <div style={{ animation: 'rkFadeUp 0.55s cubic-bezier(0.22,1,0.36,1) 0.3s both' }}>
                 <ApplicationsStrip
                   apps={filteredApps}
                   allApps={appsData}
@@ -1246,6 +1263,7 @@ export default function Dashboard({ onNavigate }) {
                   onTabChange={setAppsTab}
                   onOpenTracker={() => navigate('Tracking')}
                 />
+                </div>
               )}
             </>
           )}
