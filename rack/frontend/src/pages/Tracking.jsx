@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { getAuthHeaders } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../App";
+import Sidebar from "../components/Sidebar";
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const API = `${API_BASE}/api/tracking`;
@@ -1664,9 +1665,8 @@ function trkBrandColor(company) {
   return palette[Math.abs(hash) % palette.length];
 }
 
-function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }) {
+function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, onViewDetail }) {
   const [hovered, setHovered] = useState(false);
-  const [downloading, setDownloading] = useState(false);
 
   const score    = Math.round(match.llm_score ?? match.score ?? 0);
   const company  = match.company || '';
@@ -1679,56 +1679,51 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }
   const initial  = (company || '?').charAt(0).toUpperCase();
   const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
   const tierColor = score >= 85 ? 'var(--accent3)' : score >= 70 ? 'var(--accent-ink)' : score >= 55 ? '#f5a623' : 'var(--danger)';
-  const shownSkills = skills.slice(0, 3);
-  const extraSkills = skills.length > 3 ? skills.length - 3 : 0;
-
-  const handleDownloadClick = async (e) => {
-    e.stopPropagation();
-    if (!match.resume_id || downloading) return;
-    setDownloading(true);
-    await downloadResume(match.resume_id, match.resume_name, match.file_ext);
-    setDownloading(false);
-  };
+  const shownSkills = skills.slice(0, 2);
+  const extraSkills = skills.length > 2 ? skills.length - 2 : 0;
 
   return (
     <div
+      onClick={() => onViewDetail && onViewDetail(match)}
       style={{
-        borderRadius: 18,
-        border: isNew ? '1px solid rgba(232,255,107,0.28)' : '1px solid var(--border)',
+        borderRadius: 16,
+        border: isNew ? '1px solid rgba(232,255,107,0.3)' : '1px solid var(--border)',
         background: 'var(--surface)',
         boxShadow: hovered ? 'var(--card-hover-shadow)' : 'var(--card-shadow)',
-        padding: 18, display: 'flex', flexDirection: 'column', gap: 12,
-        position: 'relative',
+        padding: '14px 14px 12px',
+        display: 'flex', flexDirection: 'column', gap: 9,
+        position: 'relative', cursor: 'pointer', minWidth: 0,
         opacity: 0,
-        animation: `fadeUp 0.4s ease ${Math.min(index * 0.04, 0.35)}s forwards`,
-        transition: 'border-color 0.22s ease, box-shadow 0.28s ease',
+        animation: `fadeUp 0.4s ease ${Math.min(index * 0.04, 0.3)}s forwards`,
+        transition: 'border-color 0.2s, box-shadow 0.22s, transform 0.2s',
+        transform: hovered ? 'translateY(-3px)' : 'none',
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* New badge top stripe */}
+      {/* New stripe */}
       {isNew && (
         <div style={{
           position: 'absolute', top: 0, left: 0, right: 0, height: 3,
-          borderRadius: '18px 18px 0 0',
+          borderRadius: '16px 16px 0 0',
           background: 'linear-gradient(90deg, var(--accent), #a3e635)',
         }}/>
       )}
 
-      {/* Top row: company logo + save star + match ring */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+      {/* Top: company + ring */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <div style={{
-            width: 40, height: 40, borderRadius: 11, flexShrink: 0,
+            width: 30, height: 30, borderRadius: 8, flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontWeight: 700, fontSize: 16, color: '#fff',
-            background: brand, boxShadow: `0 4px 12px ${brand}4d`,
+            fontWeight: 700, fontSize: 12, color: '#fff',
+            background: brand, boxShadow: `0 3px 8px ${brand}4d`,
           }}>{initial}</div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <div style={{ fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text)' }}>
               {company || '—'}
             </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.1em', color: 'var(--text-dim)', marginTop: 1 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 600, letterSpacing: '0.1em', color: 'var(--text-dim)', marginTop: 1 }}>
               {source}
             </div>
           </div>
@@ -1737,43 +1732,39 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }
           {onSave && (
             <button onClick={(e) => { e.stopPropagation(); onSave(); }} title={isSaved ? 'Saved' : 'Save'}
               style={{
-                width: 28, height: 28, borderRadius: 8, border: 'none',
+                width: 22, height: 22, borderRadius: 6, border: 'none',
                 background: 'transparent', cursor: 'pointer',
                 color: isSaved ? 'var(--accent)' : 'var(--text-dim)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 14, transition: 'color 0.15s', marginTop: 2,
+                fontSize: 12, transition: 'color 0.15s',
               }}>
               {isSaved ? '★' : '☆'}
             </button>
           )}
-          <TrkMatchRing score={score} />
+          <TrkMatchRing score={score} size={40} strokeW={3} />
         </div>
       </div>
 
       {/* Title */}
-      <div style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.35, letterSpacing: '-0.01em', minHeight: 40 }}>
+      <div style={{
+        fontSize: 13, fontWeight: 600, lineHeight: 1.3, letterSpacing: '-0.01em',
+        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+        overflow: 'hidden', minHeight: 34,
+      }}>
         {title}
-        {isNew && (
-          <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
-            color: 'var(--accent)', letterSpacing: '0.12em', textTransform: 'uppercase',
-            verticalAlign: 'middle' }}>new</span>
-        )}
-        {isApplied && (
-          <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
-            color: 'var(--accent3)', letterSpacing: '0.12em', textTransform: 'uppercase',
-            verticalAlign: 'middle' }}>applied</span>
-        )}
+        {isNew && <span style={{ marginLeft: 6, fontFamily: 'var(--font-mono)', fontSize: 8, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.12em', textTransform: 'uppercase', verticalAlign: 'middle' }}>new</span>}
+        {isApplied && <span style={{ marginLeft: 6, fontFamily: 'var(--font-mono)', fontSize: 8, fontWeight: 700, color: 'var(--accent3)', letterSpacing: '0.12em', textTransform: 'uppercase', verticalAlign: 'middle' }}>applied</span>}
       </div>
 
       {/* Location + posted */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, color: 'var(--text-mid)', flexWrap: 'wrap' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
-          {location.length > 28 ? location.slice(0, 28) + '…' : location}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--text-dim)' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+          <svg width={9} height={9} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
+          {location.length > 22 ? location.slice(0, 22) + '…' : location}
         </span>
         {posted && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>
+            <svg width={9} height={9} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>
             {timeAgo(posted)}
           </span>
         )}
@@ -1781,37 +1772,17 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }
 
       {/* Skills */}
       {shownSkills.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {shownSkills.map((sk, i) => (
             <span key={i} style={{
-              fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-mid)',
+              fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--text-mid)',
               background: 'var(--chip-bg)', border: '1px solid var(--chip-border)',
-              padding: '3px 8px', borderRadius: 7,
+              padding: '2px 7px', borderRadius: 6,
+              maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>{sk}</span>
           ))}
           {extraSkills > 0 && (
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-dim)', padding: '3px 4px' }}>+{extraSkills}</span>
-          )}
-        </div>
-      )}
-
-      {/* Best resume */}
-      {match.resume_name && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <span style={{ fontSize: 10.5, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>best:</span>
-          {match.resume_id ? (
-            <button onClick={handleDownloadClick} disabled={downloading}
-              style={{
-                background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--accent)',
-                display: 'inline-flex', alignItems: 'center', gap: 3,
-                opacity: downloading ? 0.5 : 1,
-                textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 2,
-              }}>
-              {downloading ? 'Downloading…' : `${match.resume_name} ↓`}
-            </button>
-          ) : (
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-mid)' }}>{match.resume_name}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--text-dim)', padding: '2px 3px' }}>+{extraSkills}</span>
           )}
         </div>
       )}
@@ -1819,21 +1790,21 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }
       <div style={{ flex: 1 }}/>
       <div style={{ height: 1, background: 'var(--border)' }}/>
 
-      {/* Footer: tier label + apply button */}
+      {/* Footer */}
       {isApplied ? (
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-          height: 36, borderRadius: 10,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+          height: 30, borderRadius: 8,
           background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
-          color: 'var(--accent-ink)', fontSize: 12.5, fontWeight: 600,
+          color: 'var(--accent-ink)', fontSize: 11, fontWeight: 600,
         }}>
-          <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
+          <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
           Applied
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, fontWeight: 600, color: tierColor }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, fontWeight: 600, color: tierColor }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
             {tierLabel}
           </span>
           {match.job_url && onApply && (
@@ -1841,13 +1812,13 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }
               href={match.job_url} target="_blank" rel="noopener noreferrer"
               onClick={(e) => { e.stopPropagation(); onApply(); }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                padding: '0 14px', height: 34, borderRadius: 10,
+                display: 'flex', alignItems: 'center', gap: 4,
+                padding: '0 10px', height: 28, borderRadius: 7,
                 border: 'none', background: 'var(--accent)',
                 color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
-                fontSize: 12.5, fontWeight: 600,
+                fontSize: 11.5, fontWeight: 600,
                 boxShadow: 'var(--accent-glow)', textDecoration: 'none',
-                transition: 'background 0.18s',
+                transition: 'background 0.18s', flexShrink: 0,
               }}
               onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
               onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
@@ -1861,8 +1832,301 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave }
   );
 }
 
+// ── Job Detail Modal ─────────────────────────────────────────────────────────
 
-const PAGE_SIZE = 12; // 3-col grid — multiple of 3
+function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved }) {
+  const score     = Math.round(match.llm_score ?? match.score ?? 0);
+  const company   = match.company || '';
+  const title     = match.job_title || 'Untitled';
+  const location  = match.location && match.location !== 'Not specified' ? match.location : '';
+  const posted    = match.posted_at || match.matched_at;
+  const skills    = match.matched_skills || [];
+  const missing   = match.missing_skills || [];
+  const source    = (match.source || 'greenhouse').toUpperCase();
+  const brand     = trkBrandColor(company);
+  const initial   = (company || '?').charAt(0).toUpperCase();
+  const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
+  const tierColor = score >= 85 ? 'var(--accent3)' : score >= 70 ? 'var(--accent-ink)' : score >= 55 ? '#f5a623' : 'var(--danger)';
+  const reasoning = match.llm_reasoning || match.llm_analysis || '';
+
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return createPortal(
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{
+        position: 'fixed', inset: 0, background: 'rgba(4,4,6,0.62)',
+        zIndex: 9000, animation: 'rkFadeIn 0.22s ease both',
+        backdropFilter: 'blur(4px)',
+      }}/>
+
+      {/* Panel */}
+      <div style={{
+        position: 'fixed', top: '50%', left: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: 'min(760px, 92vw)', maxHeight: '88vh',
+        background: 'var(--surface)', border: '1px solid var(--border-bright)',
+        borderRadius: 22, boxShadow: '0 32px 80px rgba(0,0,0,0.55)',
+        zIndex: 9001, display: 'flex', flexDirection: 'column',
+        animation: 'rkScaleIn 0.32s cubic-bezier(0.22,1,0.36,1) both',
+        overflow: 'hidden',
+        fontFamily: "'DM Sans', sans-serif",
+      }}>
+        {/* ── Header ── */}
+        <div style={{ padding: '22px 26px 18px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          {/* Company row + close */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+              <div style={{
+                width: 46, height: 46, borderRadius: 12, flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 700, fontSize: 18, color: '#fff',
+                background: brand, boxShadow: `0 6px 18px ${brand}55`,
+              }}>{initial}</div>
+              <div>
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>{company}</div>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600,
+                  letterSpacing: '0.1em', color: 'var(--text-dim)',
+                  background: 'var(--chip-bg)', padding: '2px 7px', borderRadius: 5,
+                  display: 'inline-block', marginTop: 3,
+                }}>{source}</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {onSave && (
+                <button onClick={onSave} title={isSaved ? 'Saved' : 'Save'}
+                  style={{
+                    width: 34, height: 34, borderRadius: 10,
+                    border: `1px solid ${isSaved ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+                    background: isSaved ? 'var(--accent-soft)' : 'transparent',
+                    cursor: 'pointer', color: isSaved ? 'var(--accent)' : 'var(--text-dim)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 16, transition: 'all 0.15s',
+                  }}>
+                  {isSaved ? '★' : '☆'}
+                </button>
+              )}
+              <button onClick={onClose} style={{
+                width: 34, height: 34, borderRadius: 10, border: '1px solid var(--border-bright)',
+                background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--text-mid)'; }}
+                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)'; }}
+              >
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Title */}
+          <h2 style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.25, letterSpacing: '-0.02em', margin: '0 0 14px', color: 'var(--text)' }}>
+            {title}
+          </h2>
+
+          {/* Meta row */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px 18px', marginBottom: 14 }}>
+            {location && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: 'var(--text-mid)' }}>
+                <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
+                {location}
+              </span>
+            )}
+            {posted && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: 'var(--text-dim)' }}>
+                <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M11 1.5V4M5 1.5V4M2 7h12"/></svg>
+                Posted {timeAgo(posted)}
+              </span>
+            )}
+          </div>
+
+          {/* Score + tier + skills */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <TrkMatchRing score={score} size={52} strokeW={3.5} />
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
+                <span style={{ fontSize: 13, fontWeight: 600, color: tierColor }}>{tierLabel}</span>
+              </div>
+              {(skills.length > 0 || missing.length > 0) && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                  {skills.slice(0, 5).map((s, i) => (
+                    <span key={i} style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'rgba(52,211,153,0.1)', color: 'var(--accent3)', border: '1px solid rgba(52,211,153,0.2)' }}>✓ {s}</span>
+                  ))}
+                  {missing.slice(0, 3).map((s, i) => (
+                    <span key={i} style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'rgba(248,113,113,0.08)', color: 'var(--danger)', border: '1px solid rgba(248,113,113,0.18)' }}>✗ {s}</span>
+                  ))}
+                  {skills.length > 5 && <span style={{ fontSize: 10, color: 'var(--text-dim)', padding: '2px 4px' }}>+{skills.length - 5} more</span>}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Scrollable body ── */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '22px 26px' }}>
+          {/* AI reasoning */}
+          {reasoning && (
+            <div style={{ marginBottom: 24 }}>
+              <h3 style={{
+                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                color: 'var(--text-dim)', margin: '0 0 10px',
+                paddingBottom: 7, borderBottom: '1px solid var(--border)',
+              }}>RACK Analysis</h3>
+              <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-mid)', fontStyle: 'italic' }}>
+                "{reasoning}"
+              </p>
+            </div>
+          )}
+
+          {/* LLM component scores */}
+          {(match.llm_scores || match.component_scores) && (
+            <div style={{ marginBottom: 24 }}>
+              <h3 style={{
+                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                color: 'var(--text-dim)', margin: '0 0 10px',
+                paddingBottom: 7, borderBottom: '1px solid var(--border)',
+              }}>Score Breakdown</h3>
+              {Object.entries(match.llm_scores || match.component_scores || {}).map(([key, val]) => {
+                const display = typeof val === 'object' ? (val.score || val.weighted || 0) : val;
+                const pct = Math.min(Math.round(typeof display === 'number' && display <= 1 ? display * 100 : display), 100);
+                const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                return (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-mid)', minWidth: 100 }}>{label}</span>
+                    <div style={{ flex: 1, height: 6, borderRadius: 4, background: 'var(--surface3)', overflow: 'hidden' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', background: scoreGradient(pct), borderRadius: 4, transition: 'width 0.6s ease' }}/>
+                    </div>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', minWidth: 28, textAlign: 'right' }}>{pct}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* All matched/missing skills */}
+          {(skills.length > 0 || missing.length > 0) && (
+            <div style={{ marginBottom: 24 }}>
+              <h3 style={{
+                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                color: 'var(--text-dim)', margin: '0 0 10px',
+                paddingBottom: 7, borderBottom: '1px solid var(--border)',
+              }}>Skills Match</h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {skills.map((s, i) => (
+                  <span key={i} style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(52,211,153,0.1)', color: 'var(--accent3)', border: '1px solid rgba(52,211,153,0.2)' }}>✓ {s}</span>
+                ))}
+                {missing.map((s, i) => (
+                  <span key={i} style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(248,113,113,0.08)', color: 'var(--danger)', border: '1px solid rgba(248,113,113,0.18)' }}>✗ {s}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Best resume */}
+          {match.resume_name && (
+            <div style={{ marginBottom: 24 }}>
+              <h3 style={{
+                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                color: 'var(--text-dim)', margin: '0 0 10px',
+                paddingBottom: 7, borderBottom: '1px solid var(--border)',
+              }}>Best Matching Resume</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface2)' }}>
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="var(--accent-ink)" strokeWidth="1.5" strokeLinecap="round"><rect x="3" y="1.5" width="10" height="13" rx="1.6"/><path d="M6 5h4M6 8h4M6 11h2.5"/></svg>
+                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{match.resume_name}</span>
+                {match.hybrid_score != null && (
+                  <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+                    hybrid: {match.hybrid_score}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* No data fallback */}
+          {!reasoning && !match.llm_scores && !match.component_scores && skills.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--text-dim)', fontSize: 13 }}>
+              Detailed analysis will appear here after the LLM scoring pass completes.
+            </div>
+          )}
+        </div>
+
+        {/* ── Footer ── */}
+        <div style={{
+          padding: '14px 26px 18px', borderTop: '1px solid var(--border)',
+          flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            {match.job_url && (
+              <a href={match.job_url} target="_blank" rel="noopener noreferrer" style={{
+                display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                color: 'var(--text-dim)', textDecoration: 'none',
+                padding: '7px 12px', borderRadius: 8,
+                border: '1px solid var(--border-bright)', background: 'var(--surface2)',
+                transition: 'color 0.15s',
+              }}
+                onMouseEnter={e => e.currentTarget.style.color = 'var(--text)'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-dim)'}
+              >
+                <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9M10 2h4v4M8 8l6-6"/></svg>
+                View original posting
+              </a>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button onClick={onClose} style={{
+              padding: '8px 16px', borderRadius: 9, cursor: 'pointer',
+              border: '1px solid var(--border-bright)', background: 'transparent',
+              color: 'var(--text-mid)', fontFamily: "'DM Sans', sans-serif", fontSize: 12.5, fontWeight: 500,
+            }}>Close</button>
+            {isApplied ? (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 7,
+                padding: '8px 16px', borderRadius: 9,
+                background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
+                color: 'var(--accent-ink)', fontSize: 12.5, fontWeight: 600,
+              }}>
+                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
+                Applied
+              </div>
+            ) : (
+              match.job_url && (
+                <a
+                  href={match.job_url} target="_blank" rel="noopener noreferrer"
+                  onClick={() => { onApply?.(); onClose(); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 7,
+                    padding: '8px 20px', borderRadius: 9,
+                    border: 'none', background: 'var(--accent)',
+                    color: 'var(--accent-contrast)', fontFamily: "'DM Sans', sans-serif",
+                    fontSize: 13, fontWeight: 600, boxShadow: 'var(--accent-glow)',
+                    textDecoration: 'none', transition: 'background 0.18s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
+                >
+                  Apply ↗
+                </a>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+    </>,
+    document.body
+  );
+}
+
+
+
+
+const PAGE_SIZE = 10; // 5-col grid — multiple of 5
 
 function AutoMatchesTab({ profile, isPowerUser }) {
   const [matches, setMatches]           = useState([]);
@@ -1892,6 +2156,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
   const [dailySlots, setDailySlots]     = useState([]);
   const [slotsIsFresh, setSlotsIsFresh] = useState(false);
   const [expandedSlotId, setExpandedSlotId] = useState(null);
+  const [selectedMatch, setSelectedMatch] = useState(null); // for job detail modal
   const pendingApplyRef = useRef(null);
   const hasRun = useRef(false);
 
@@ -2498,8 +2763,8 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       {!loading && paginated.length > 0 && (
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: 16,
+          gridTemplateColumns: 'repeat(5, 1fr)',
+          gap: 14,
           marginBottom: 8,
         }}>
           {paginated.map((m, i) => {
@@ -2514,10 +2779,23 @@ function AutoMatchesTab({ profile, isPowerUser }) {
                 isSaved={savedJobs.has(m.job_id)}
                 onApply={() => handleApplyClick(m.job_id, m.job_title)}
                 onSave={() => toggleSaved(m.job_id)}
+                onViewDetail={setSelectedMatch}
               />
             );
           })}
         </div>
+      )}
+
+      {/* Job Detail Modal */}
+      {selectedMatch && (
+        <TrkJobDetailModal
+          match={selectedMatch}
+          onClose={() => setSelectedMatch(null)}
+          onApply={() => handleApplyClick(selectedMatch.job_id, selectedMatch.job_title)}
+          isApplied={appliedJobs.has(selectedMatch.job_id)}
+          onSave={() => toggleSaved(selectedMatch.job_id)}
+          isSaved={savedJobs.has(selectedMatch.job_id)}
+        />
       )}
 
       {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
@@ -3591,37 +3869,6 @@ function brandColor(company) {
   return palette[Math.abs(hash) % palette.length]
 }
 
-function TNavItem({ icon, label, active, badge, onClick }) {
-  const [hovered, setHovered] = useState(false)
-  return (
-    <div
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 12, padding: '11px 13px',
-        borderRadius: 11, cursor: 'pointer', fontSize: 14,
-        fontWeight: active ? 600 : 500,
-        border: active ? '1px solid var(--accent-line)' : '1px solid transparent',
-        background: active ? 'var(--accent-soft)' : hovered ? 'var(--surface2)' : 'transparent',
-        color: active ? 'var(--text)' : hovered ? 'var(--text)' : 'var(--text-mid)',
-        transition: 'background 0.18s, color 0.15s, border-color 0.18s',
-        userSelect: 'none',
-      }}>
-      <span style={{ color: active ? 'var(--accent-ink)' : 'inherit', display: 'flex' }}>{icon}</span>
-      {label}
-      {badge != null && badge > 0 && (
-        <span style={{
-          marginLeft: 'auto', fontFamily: "'Fira Code', monospace", fontSize: 11, fontWeight: 600,
-          color: active ? 'var(--accent-ink)' : 'var(--text-dim)',
-          background: active ? 'var(--accent-soft)' : 'var(--chip-bg)',
-          padding: '2px 7px', borderRadius: 20,
-          border: active ? '1px solid var(--accent-line)' : 'none',
-        }}>{badge}</span>
-      )}
-    </div>
-  )
-}
-
 export default function Tracking({ onNavigate }) {
   const { user } = useAuth()
   const { theme, toggleTheme } = useTheme()
@@ -3691,35 +3938,13 @@ export default function Tracking({ onNavigate }) {
   }, [userRole]);
 
   // ── Sidebar nav items ─────────────────────────────────────────────────────
-  const navItems = [
-    {
-      id: 'Dashboard', label: 'Matches',
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="5" height="5" rx="1.4"/><rect x="9" y="2" width="5" height="5" rx="1.4"/><rect x="2" y="9" width="5" height="5" rx="1.4"/><rect x="9" y="9" width="5" height="5" rx="1.4"/></svg>,
-    },
-    {
-      id: 'Tracking', label: 'Browse all jobs', active: true,
-      badge: autoMatches.length,
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M2 8h7M2 12h4"/><circle cx="12" cy="11.5" r="2.4"/><path d="M13.7 13.2L15 14.5"/></svg>,
-    },
-    {
-      id: 'Home', label: 'Chat assistant',
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>,
-    },
-    {
-      id: 'Resumes', label: 'Resumes',
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="1.5" width="10" height="13" rx="1.6"/><path d="M6 5h4M6 8h4M6 11h2.5"/></svg>,
-    },
-    {
-      id: 'Account', label: 'Account',
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="5" r="3"/><path d="M2.5 14c0-3 2.4-4.6 5.5-4.6S13.5 11 13.5 14"/></svg>,
-    },
-  ]
 
   return (
     <div
+      data-trk-root
       data-theme={theme}
       style={{
-        display: 'flex', height: '100vh', width: '100%', overflow: 'hidden',
+        display: 'flex', height: '100dvh', width: '100%', overflow: 'hidden',
         background: 'var(--bg)', color: 'var(--text)',
         fontFamily: "'DM Sans', sans-serif",
         position: 'fixed', inset: 0, zIndex: 1,
@@ -3735,56 +3960,26 @@ export default function Tracking({ onNavigate }) {
         .trk-root ::-webkit-scrollbar{width:8px;height:8px}
         .trk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px}
         .trk-root ::-webkit-scrollbar-track{background:transparent}
+        @media (max-width: 767px) {
+          [data-trk-root] { flex-direction: column !important; }
+          .trk-root { flex: 1 !important; min-height: 0 !important; height: auto !important; }
+          .trk-main-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+        }
       `}</style>
 
       {/* ── SIDEBAR ── */}
-      <aside style={{
-        width: 252, flexShrink: 0, height: '100%',
-        background: 'var(--sidebar-bg)', borderRight: '1px solid var(--border)',
-        display: 'flex', flexDirection: 'column', padding: '22px 16px 16px',
-        position: 'relative', zIndex: 5,
-      }}>
-        {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '4px 8px 22px' }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 9,
-            background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: 'var(--accent-glow)', flexShrink: 0,
-          }}>
-            <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="var(--accent-contrast)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 11V5l6-3 6 3v6l-6 3z"/><path d="M8 8l6-3M8 8v6M8 8L2 5"/></svg>
-          </div>
-          <span style={{ fontFamily: "'Fira Code', monospace", fontWeight: 600, fontSize: 18, letterSpacing: '0.02em' }}>
-            RACK
-          </span>
-        </div>
-
-        {/* Nav */}
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {navItems.map(item => (
-            <TNavItem
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={item.active || false}
-              badge={item.badge}
-              onClick={() => {
-                if (item.id === 'Tracking') return  // already here
-                navigate(item.id)
-              }}
-            />
-          ))}
-        </nav>
-
-        {/* ── Tab sub-nav ── */}
-        <div style={{ height: 1, background: 'var(--border)', margin: '14px 8px 12px' }}/>
-        <div style={{
-          fontFamily: "'Fira Code', monospace", fontSize: 9.5, fontWeight: 600,
-          letterSpacing: '0.12em', textTransform: 'uppercase',
-          color: 'var(--text-dim)', padding: '0 12px', marginBottom: 6,
-        }}>
-          Views
-        </div>
-        {userRole !== null && (
+      <Sidebar
+        activeNav="Tracking"
+        onNavigate={(id) => {
+          if (id === 'Tracking') return
+          navigate(id)
+        }}
+        userName={firstName}
+        userInitial={userInitial}
+        badge={{ Tracking: autoMatches.length || null }}
+        onAskRack={() => navigate('Home')}
+        extraNavLabel="VIEWS"
+        extraNav={userRole !== null ? (
           <TabSwitcher
             activeTab={activeTab}
             onSwitch={setActiveTab}
@@ -3795,57 +3990,15 @@ export default function Tracking({ onNavigate }) {
             customCount={isPowerUser ? customMatches.length : 0}
             isPowerUser={isPowerUser}
           />
-        )}
-
-        <div style={{ height: 1, background: 'var(--border)', margin: '14px 8px' }}/>
-
-        {/* Ask Rack */}
-        <button
-          onClick={() => navigate('Home')}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 12, padding: 13,
-            borderRadius: 13, cursor: 'pointer',
-            border: '1px solid var(--border-bright)',
-            background: 'linear-gradient(135deg, var(--surface2), var(--surface))',
-            color: 'var(--text)', fontFamily: "'DM Sans', sans-serif",
-            fontSize: 13.5, fontWeight: 600, textAlign: 'left', width: '100%',
-          }}>
-          <span style={{
-            width: 30, height: 30, borderRadius: 9, background: 'var(--accent-soft)',
-            border: '1px solid var(--accent-line)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            animation: 'rkBeacon 3s ease-in-out infinite',
-          }}>
-            <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="var(--accent-ink)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>
-          </span>
-          <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            Ask Rack
-            <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-dim)' }}>Refine, ask, auto-apply</span>
-          </span>
-        </button>
-
-        <div style={{ flex: 1 }}/>
-
-        {/* User card */}
-        <div style={{
-          border: '1px solid var(--border)', background: 'var(--surface)',
-          borderRadius: 15, padding: 15, boxShadow: 'var(--card-shadow)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>{firstName}</span>
-            <span style={{
-              fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase',
-              letterSpacing: '0.08em', background: 'var(--chip-bg)', padding: '2px 7px', borderRadius: 6,
-            }}>Free</span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 6 }}>
-            {autoMatches.length > 0
-              ? <><span style={{ fontFamily: "'Fira Code', monospace", fontWeight: 700, color: 'var(--accent-ink)' }}>{autoMatches.length}</span> jobs matched</>
-              : 'Scanning…'
-            }
-          </div>
-        </div>
-      </aside>
+        ) : null}
+        userStat={
+          autoMatches.length > 0
+            ? <><span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-ink)' }}>{autoMatches.length}</span> jobs matched</>
+            : 'Scanning…'
+        }
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
 
       {/* ── MAIN CONTENT ── */}
       <main className="trk-root" style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>

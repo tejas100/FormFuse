@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
 import { useTheme } from '../App'
+import Sidebar from '../components/Sidebar'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -50,23 +51,26 @@ function statusMeta(status) {
 
 // ── Sub-components ──────────────────────────────────────────────────────────────
 
-function NavItem({ icon, label, active, badge, onClick }) {
+function NavItem({ icon, label, active, badge, onClick, collapsed }) {
   const [hovered, setHovered] = useState(false)
   const style = {
-    display: 'flex', alignItems: 'center', gap: 12, padding: '11px 13px',
+    display: 'flex', alignItems: 'center', gap: collapsed ? 0 : 12,
+    padding: collapsed ? '11px 0' : '11px 13px',
+    justifyContent: collapsed ? 'center' : 'flex-start',
     borderRadius: 11, cursor: 'pointer', fontSize: 14, fontWeight: active ? 600 : 500,
     border: active ? '1px solid var(--accent-line)' : '1px solid transparent',
     background: active ? 'var(--accent-soft)' : hovered ? 'var(--surface2)' : 'transparent',
     color: active ? 'var(--text)' : hovered ? 'var(--text)' : 'var(--text-mid)',
     transition: 'background 0.18s, color 0.15s, border-color 0.18s',
-    userSelect: 'none',
+    userSelect: 'none', position: 'relative',
+    title: collapsed ? label : undefined,
   }
   return (
-    <div style={style} onClick={onClick}
+    <div style={style} onClick={onClick} title={collapsed ? label : undefined}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
-      <span style={{ color: active ? 'var(--accent-ink)' : 'inherit', display: 'flex' }}>{icon}</span>
-      {label}
-      {badge != null && (
+      <span style={{ color: active ? 'var(--accent-ink)' : 'inherit', display: 'flex', flexShrink: 0 }}>{icon}</span>
+      {!collapsed && label}
+      {!collapsed && badge != null && (
         <span style={{
           marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
           color: active ? 'var(--accent-ink)' : 'var(--text-dim)',
@@ -74,6 +78,12 @@ function NavItem({ icon, label, active, badge, onClick }) {
           padding: '2px 7px', borderRadius: 20,
           border: active ? '1px solid var(--accent-line)' : 'none',
         }}>{badge}</span>
+      )}
+      {collapsed && active && (
+        <span style={{
+          position: 'absolute', left: 2, top: '50%', transform: 'translateY(-50%)',
+          width: 3, height: 18, borderRadius: 3, background: 'var(--accent)',
+        }}/>
       )}
     </div>
   )
@@ -108,7 +118,7 @@ function MatchRing({ score, size = 52, strokeW = 3.5 }) {
 function SkeletonCard() {
   return (
     <div style={{
-      height: 224, borderRadius: 18, border: '1px solid var(--border)',
+      height: 200, borderRadius: 16, border: '1px solid var(--border)',
       background: 'var(--surface)', overflow: 'hidden', position: 'relative',
     }}>
       <div style={{
@@ -121,7 +131,7 @@ function SkeletonCard() {
   )
 }
 
-function JobCard({ job, appliedIds, passedIds, onApply, onPass, revealed }) {
+function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, revealed }) {
   const [hovered, setHovered] = useState(false)
   const jd       = job.job_data || {}
   const title    = job.job_title  || jd.title || jd.job_title || 'Untitled'
@@ -137,112 +147,450 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, revealed }) {
   const brand  = brandColor(company)
   const initial = (company || '?').charAt(0).toUpperCase()
   const { label: tierLabel, color: tierColor } = tierMeta(score)
-  const shownSkills = skills.slice(0, 3)
-  const extraSkills = skills.length > 3 ? skills.length - 3 : 0
+  const shownSkills = skills.slice(0, 2)
+  const extraSkills = skills.length > 2 ? skills.length - 2 : 0
 
   if (isPassed) return null
 
   return (
     <div
+      className="rk-job-card"
+      onClick={() => onViewDetail && onViewDetail(job)}
       style={{
-        borderRadius: 18, border: '1px solid var(--border)',
+        borderRadius: 16, border: '1px solid var(--border)',
         background: 'var(--surface)',
         boxShadow: hovered ? 'var(--card-hover-shadow)' : 'var(--card-shadow)',
-        padding: 18, display: 'flex', flexDirection: 'column', gap: 13,
+        padding: '14px 14px 12px', display: 'flex', flexDirection: 'column', gap: 10,
         position: 'relative',
         opacity: revealed ? 1 : 0,
         transform: revealed ? 'translateY(0)' : 'translateY(18px)',
-        transition: 'opacity 0.45s cubic-bezier(0.22,1,0.36,1), transform 0.45s cubic-bezier(0.22,1,0.36,1), border-color 0.22s ease, box-shadow 0.28s ease',
-        cursor: 'default',
+        transition: 'opacity 0.45s cubic-bezier(0.22,1,0.36,1), transform 0.45s cubic-bezier(0.22,1,0.36,1), border-color 0.22s ease, box-shadow 0.28s ease, transform 0.22s ease',
+        cursor: 'pointer',
+        minWidth: 0,
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Top row — company logo + match ring */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
+      {/* Top row — logo + score ring side by side */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
           <div style={{
-            width: 40, height: 40, borderRadius: 11, flexShrink: 0,
+            width: 32, height: 32, borderRadius: 9, flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontWeight: 700, fontSize: 16, color: '#fff',
-            background: brand, boxShadow: `0 4px 12px ${brand}4d`,
+            fontWeight: 700, fontSize: 13, color: '#fff',
+            background: brand, boxShadow: `0 3px 8px ${brand}4d`,
           }}>{initial}</div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text)' }}>
               {company || '—'}
             </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.1em', color: 'var(--text-dim)', marginTop: 2 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 600, letterSpacing: '0.1em', color: 'var(--text-dim)', marginTop: 1 }}>
               {source}
             </div>
           </div>
         </div>
-        <MatchRing score={score} />
+        <MatchRing score={score} size={42} strokeW={3} />
       </div>
 
       {/* Title */}
-      <h3 style={{ fontSize: 16, fontWeight: 600, lineHeight: 1.3, letterSpacing: '-0.01em', margin: 0, minHeight: 42 }}>
+      <h3 style={{
+        fontSize: 13.5, fontWeight: 600, lineHeight: 1.3, letterSpacing: '-0.01em',
+        margin: 0,
+        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        minHeight: 36,
+      }}>
         {title}
       </h3>
 
-      {/* Meta row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--text-mid)' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
+      {/* Location + time */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'var(--text-dim)' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+          <svg width={10} height={10} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
           {location}
         </span>
         {posted && (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <svg width={10} height={10} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>
             {daysAgoLabel(posted)}
           </span>
         )}
       </div>
 
-      {/* Skills */}
+      {/* Skills chips — max 2 */}
       {shownSkills.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {shownSkills.map((sk, i) => (
             <span key={i} style={{
-              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-mid)',
+              fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-mid)',
               background: 'var(--chip-bg)', border: '1px solid var(--chip-border)',
-              padding: '3px 9px', borderRadius: 7,
+              padding: '2px 7px', borderRadius: 6,
+              maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>{sk}</span>
           ))}
           {extraSkills > 0 && (
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)', padding: '3px 4px' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', padding: '2px 3px' }}>
               +{extraSkills}
             </span>
           )}
         </div>
       )}
 
-      <div style={{ height: 1, background: 'var(--border)', margin: '1px 0' }}/>
+      <div style={{ height: 1, background: 'var(--border)', margin: '0' }}/>
 
       {/* Footer */}
       {isApplied ? (
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-          height: 38, borderRadius: 10,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+          height: 32, borderRadius: 9,
           background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
-          color: 'var(--accent-ink)', fontSize: 13, fontWeight: 600,
+          color: 'var(--accent-ink)', fontSize: 11.5, fontWeight: 600,
           animation: 'rkScaleIn 0.35s cubic-bezier(0.22,1,0.36,1) both',
         }}>
-          <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
-          Queued to auto-apply
+          <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
+          Queued
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 600, color: tierColor }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, color: tierColor }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
             {tierLabel}
           </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <PassBtn onClick={() => onPass(jobId)} />
-            <ApplyBtn onClick={() => onApply(job)} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              onClick={e => { e.stopPropagation(); onPass(jobId) }}
+              title="Pass"
+              style={{
+                width: 30, height: 30, borderRadius: 8, cursor: 'pointer',
+                border: '1px solid var(--border-bright)', background: 'transparent',
+                color: 'var(--text-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'color 0.18s, border-color 0.18s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--danger)'; e.currentTarget.style.borderColor = 'var(--danger)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)' }}
+            >
+              <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); onApply(job) }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '0 11px', height: 30, borderRadius: 8, cursor: 'pointer',
+                border: 'none', background: 'var(--accent)',
+                color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
+                fontSize: 12, fontWeight: 600, boxShadow: 'var(--accent-glow)',
+                transition: 'background 0.18s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
+            >
+              Apply
+              <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
+            </button>
           </div>
         </div>
       )}
     </div>
+  )
+}
+
+// ── Job Detail Modal ────────────────────────────────────────────────────────────
+
+function JobDetailModal({ job, onClose, onApply, appliedIds }) {
+  const jd       = job?.job_data || {}
+  const title    = job?.job_title  || jd.title || jd.job_title || 'Untitled'
+  const company  = job?.company    || jd.company || ''
+  const location = job?.location   || jd.location || ''
+  const score    = Math.round(job?.score ?? 0)
+  const posted   = job?.posted_at  || job?.matched_at
+  const skills   = job?.matched_skills || jd.skills || []
+  const source   = (job?.source || jd.source || 'greenhouse').toUpperCase()
+  const jobId    = job?.job_id || job?.id
+  const isApplied = appliedIds?.has(jobId)
+  const brand    = brandColor(company)
+  const initial  = (company || '?').charAt(0).toUpperCase()
+  const { label: tierLabel, color: tierColor } = tierMeta(score)
+
+  // Raw description text — may contain newlines
+  const description = jd.description || jd.full_description || jd.body || ''
+  const applyUrl   = jd.apply_url || jd.url || job?.apply_url || null
+  const salary     = jd.salary || jd.salary_range || null
+  const jobType    = jd.job_type || jd.employment_type || null
+  const experience = jd.years_exp != null ? `${jd.years_exp}+ years` : null
+  const education  = jd.education || null
+  const openings   = jd.openings ?? null
+  const department = jd.department || null
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  if (!job) return null
+
+  // Parse description into sections heuristically
+  const parsedSections = (() => {
+    if (!description) return []
+    // Split on common section headers (lines that look like headers)
+    const lines = description.replace(/\r\n/g, '\n').split('\n')
+    const sections = []
+    let current = { heading: null, lines: [] }
+    const headerRe = /^(#{1,3}\s+|[A-Z][A-Za-z\s&/,\-]{2,40}:?\s*)$/
+    for (const raw of lines) {
+      const line = raw.trim()
+      if (!line) {
+        if (current.lines.length) current.lines.push('')
+        continue
+      }
+      // Treat short ALL-CAPS or title-case standalone lines as section headers
+      const isHeader = headerRe.test(line) && line.length < 60
+      if (isHeader && current.lines.filter(l => l).length > 0) {
+        sections.push({ ...current })
+        current = { heading: line.replace(/^#+\s*/, '').replace(/:$/, '').trim(), lines: [] }
+      } else if (isHeader && current.lines.filter(l => l).length === 0) {
+        current.heading = line.replace(/^#+\s*/, '').replace(/:$/, '').trim()
+      } else {
+        current.lines.push(line)
+      }
+    }
+    if (current.lines.filter(l => l).length || current.heading) sections.push(current)
+    return sections.filter(s => s.lines.filter(l => l).length > 0 || s.heading)
+  })()
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{
+        position: 'fixed', inset: 0, background: 'rgba(4,4,6,0.62)',
+        zIndex: 60, animation: 'rkFadeIn 0.22s ease both',
+        backdropFilter: 'blur(4px)',
+      }}/>
+
+      {/* Modal panel */}
+      <div style={{
+        position: 'fixed', top: '50%', left: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: 'min(780px, 92vw)', maxHeight: '88vh',
+        background: 'var(--surface)', border: '1px solid var(--border-bright)',
+        borderRadius: 22, boxShadow: '0 32px 80px rgba(0,0,0,0.55)',
+        zIndex: 61, display: 'flex', flexDirection: 'column',
+        animation: 'rkScaleIn 0.32s cubic-bezier(0.22,1,0.36,1) both',
+        overflow: 'hidden',
+      }}>
+        {/* ── Header ── */}
+        <div style={{
+          padding: '22px 26px 18px',
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+        }}>
+          {/* Top row: logo + close */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+              <div style={{
+                width: 48, height: 48, borderRadius: 13, flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 700, fontSize: 20, color: '#fff',
+                background: brand, boxShadow: `0 6px 18px ${brand}55`,
+              }}>{initial}</div>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{company}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
+                  <span style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600,
+                    letterSpacing: '0.1em', color: 'var(--text-dim)',
+                    background: 'var(--chip-bg)', padding: '2px 7px', borderRadius: 5,
+                  }}>{source}</span>
+                  {department && (
+                    <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{department}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <button onClick={onClose} style={{
+              width: 34, height: 34, borderRadius: 10, border: '1px solid var(--border-bright)',
+              background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0, transition: 'color 0.15s, border-color 0.15s',
+            }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--text-mid)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)' }}
+            >
+              <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+          </div>
+
+          {/* Title */}
+          <h2 style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.25, letterSpacing: '-0.02em', margin: '0 0 14px', color: 'var(--text)' }}>
+            {title}
+          </h2>
+
+          {/* Meta grid */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px', marginBottom: 14 }}>
+            {location && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
+                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
+                {location}
+              </span>
+            )}
+            {salary && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
+                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v1.5a2 2 0 0 1 0 3V11M6.5 6.5h2.2M6.5 9.5h2.2"/></svg>
+                {salary}
+              </span>
+            )}
+            {jobType && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
+                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>
+                {jobType}
+              </span>
+            )}
+            {experience && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
+                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="6" width="12" height="8" rx="1.5"/><path d="M5 6V4.5a3 3 0 0 1 6 0V6"/></svg>
+                {experience}
+              </span>
+            )}
+            {posted && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-dim)' }}>
+                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M11 1.5V4M5 1.5V4M2 7h12"/></svg>
+                Posted {daysAgoLabel(posted)}
+              </span>
+            )}
+          </div>
+
+          {/* Match score pill + tier */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <MatchRing score={score} size={52} strokeW={3.5} />
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
+                <span style={{ fontSize: 13.5, fontWeight: 600, color: tierColor }}>{tierLabel}</span>
+              </div>
+              {skills.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                  {skills.slice(0, 6).map((sk, i) => (
+                    <span key={i} style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-mid)',
+                      background: 'var(--chip-bg)', border: '1px solid var(--chip-border)',
+                      padding: '2px 8px', borderRadius: 6,
+                    }}>{sk}</span>
+                  ))}
+                  {skills.length > 6 && (
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-dim)', padding: '2px 4px' }}>+{skills.length - 6}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Scrollable body ── */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 26px' }}>
+          {parsedSections.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              {parsedSections.map((section, si) => (
+                <div key={si}>
+                  {section.heading && (
+                    <h3 style={{
+                      fontSize: 13, fontWeight: 700, letterSpacing: '0.06em',
+                      textTransform: 'uppercase', color: 'var(--text-dim)',
+                      margin: '0 0 10px', paddingBottom: 7,
+                      borderBottom: '1px solid var(--border)',
+                    }}>{section.heading}</h3>
+                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {section.lines.map((line, li) => {
+                      if (!line.trim()) return <div key={li} style={{ height: 6 }}/>
+                      const isBullet = line.startsWith('- ') || line.startsWith('• ') || line.startsWith('* ')
+                      const text = isBullet ? line.replace(/^[-•*]\s+/, '') : line
+                      return isBullet ? (
+                        <div key={li} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                          <span style={{ flexShrink: 0, marginTop: 6, width: 5, height: 5, borderRadius: '50%', background: 'var(--text-dim)' }}/>
+                          <span style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--text-mid)' }}>{text}</span>
+                        </div>
+                      ) : (
+                        <p key={li} style={{ margin: 0, fontSize: 14, lineHeight: 1.7, color: 'var(--text-mid)' }}>{text}</p>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : description ? (
+            <p style={{ margin: 0, fontSize: 14, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>
+              {description}
+            </p>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-dim)', fontSize: 13 }}>
+              No description available for this role.
+            </div>
+          )}
+        </div>
+
+        {/* ── Footer actions ── */}
+        <div style={{
+          padding: '14px 26px 18px',
+          borderTop: '1px solid var(--border)',
+          flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {applyUrl && (
+              <a href={applyUrl} target="_blank" rel="noopener noreferrer" style={{
+                display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5,
+                color: 'var(--text-dim)', textDecoration: 'none',
+                padding: '8px 13px', borderRadius: 9,
+                border: '1px solid var(--border-bright)', background: 'var(--surface2)',
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--text-mid)' }}
+                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)' }}
+              >
+                <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9M10 2h4v4M8 8l6-6"/></svg>
+                View original posting
+              </a>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button onClick={onClose} style={{
+              padding: '9px 18px', borderRadius: 10, cursor: 'pointer',
+              border: '1px solid var(--border-bright)', background: 'transparent',
+              color: 'var(--text-mid)', fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+              transition: 'color 0.15s',
+            }}>
+              Close
+            </button>
+            {isApplied ? (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 7,
+                padding: '9px 18px', borderRadius: 10,
+                background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
+                color: 'var(--accent-ink)', fontSize: 13, fontWeight: 600,
+              }}>
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
+                Queued to auto-apply
+              </div>
+            ) : (
+              <button onClick={() => { onApply(job); onClose() }} style={{
+                display: 'flex', alignItems: 'center', gap: 7,
+                padding: '9px 22px', borderRadius: 10, cursor: 'pointer',
+                border: 'none', background: 'var(--accent)',
+                color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
+                fontSize: 13.5, fontWeight: 600, boxShadow: 'var(--accent-glow)',
+                transition: 'background 0.18s',
+              }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
+              >
+                Apply
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -293,11 +641,7 @@ function ScanningOverlay({ step, total, pct }) {
   return (
     <div style={{ position: 'relative', minHeight: 440 }}>
       {/* Blurred skeleton grid behind */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-        gap: 18, opacity: 0.35, filter: 'blur(1px)',
-      }}>
+      <div className="rk-job-grid" style={{ opacity: 0.35, filter: 'blur(1px)' }}>
         {[0,1,2,3,4,5].map(i => <SkeletonCard key={i}/>)}
       </div>
       {/* Central scanner panel */}
@@ -605,7 +949,7 @@ function FilterBar({ activeFilters, onFilterChange, onClearAll }) {
   const hasAnyActive = Object.values(activeFilters).some(v => v !== 'all')
 
   return (
-    <div ref={barRef} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 28, alignItems: 'center' }}>
+    <div ref={barRef} className="rk-filter-bar" style={{ display: 'flex', alignItems: 'center' }}>
       {DROPDOWN_FILTERS.map(f => {
         const currentVal = activeFilters[f.id] || 'all'
         const isActive   = currentVal !== 'all'
@@ -745,6 +1089,7 @@ export default function Dashboard({ onNavigate }) {
   const [activeFilters, setActiveFilters]   = useState({})   // { date: 'all', location: 'remote', … }
   const [appsTab, setAppsTab]               = useState('all')
   const [appsData, setAppsData]             = useState([])
+  const [selectedJob, setSelectedJob]       = useState(null)
 
   // ── Derived user info ────────────────────────────────────────────────────────
   const displayName = user?.user_metadata?.full_name
@@ -946,41 +1291,6 @@ export default function Dashboard({ onNavigate }) {
     setAppliedIds(prev => new Set([...prev, ...ids]))
   }
 
-  // ── Navigate externally (to Tracking, Resumes, etc.) ────────────────────────
-  const navigate = (tab) => {
-    if (onNavigate) onNavigate(tab)
-  }
-
-  // ── Sidebar nav config ───────────────────────────────────────────────────────
-  const navItems = [
-    {
-      id: 'Matches', label: 'Matches',
-      badge: allJobs.length > 0 ? allJobs.length : null,
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="5" height="5" rx="1.4"/><rect x="9" y="2" width="5" height="5" rx="1.4"/><rect x="2" y="9" width="5" height="5" rx="1.4"/><rect x="9" y="9" width="5" height="5" rx="1.4"/></svg>,
-    },
-    {
-      id: 'BrowseAll', label: 'Browse all jobs',
-      badge: allJobs.length > 0 ? allJobs.length : null,
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M2 8h7M2 12h4"/><circle cx="12" cy="11.5" r="2.4"/><path d="M13.7 13.2L15 14.5"/></svg>,
-    },
-    {
-      id: 'Home', label: 'Chat assistant',
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>,
-    },
-    {
-      id: 'Resumes', label: 'Resumes',
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="1.5" width="10" height="13" rx="1.6"/><path d="M6 5h4M6 8h4M6 11h2.5"/></svg>,
-    },
-    {
-      id: 'Tracking', label: 'Tracker',
-      badge: appsData.filter(j => j.status === 'applied').length || null,
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 6h6M5 9h4"/></svg>,
-    },
-    {
-      id: 'Account', label: 'Account',
-      icon: <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="5" r="3"/><path d="M2.5 14c0-3 2.4-4.6 5.5-4.6S13.5 11 13.5 14"/></svg>,
-    },
-  ]
 
   // ── Apps strip tab config ───────────────────────────────────────────────────
   const appTabDefs = [
@@ -1007,13 +1317,16 @@ export default function Dashboard({ onNavigate }) {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
+  // ── Navigate ─────────────────────────────────────────────────────────────────
+  const navigate = (tab) => { if (onNavigate) onNavigate(tab) }
+
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div
       className="rk-root"
       data-theme={theme}
       style={{
-        display: 'flex', height: '100vh', width: '100%', overflow: 'hidden',
+        display: 'flex', height: '100dvh', width: '100%', overflow: 'hidden',
         background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-sans)',
         position: 'fixed', inset: 0, zIndex: 1,
       }}
@@ -1026,84 +1339,105 @@ export default function Dashboard({ onNavigate }) {
         @keyframes rkSpin    { to{transform:rotate(360deg)} }
         @keyframes rkPulse   { 0%,100%{opacity:.35} 50%{opacity:.9} }
         @keyframes rkShimmer { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
-        @keyframes rkBeacon  { 0%,100%{box-shadow:0 0 0 0 rgba(232,255,107,0.0)} 50%{box-shadow:0 0 0 5px rgba(232,255,107,0.16)} }
-        .rk-root ::-webkit-scrollbar{width:8px;height:8px}
+
+        .rk-root ::-webkit-scrollbar{width:6px;height:6px}
         .rk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px}
         .rk-root ::-webkit-scrollbar-track{background:transparent}
-        .rk-job-card:hover { transform: translateY(-4px) !important; border-color: var(--border-bright) !important; box-shadow: var(--card-hover-shadow) !important; }
-        .rk-nav-item:hover { background: var(--surface2) !important; color: var(--text) !important; }
-        .rk-app-row:hover { background: var(--surface2) !important; }
+        .rk-job-card:hover { transform: translateY(-3px) !important; border-color: var(--border-bright) !important; box-shadow: var(--card-hover-shadow) !important; }
+
+        /* ── Job grid — desktop default ── */
+        .rk-job-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }
+
+        /* ── Main content padding ── */
+        .rk-main-content { padding: 30px 32px 60px; position: relative; }
+
+        /* ── Header ── */
+        .rk-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+        .rk-header-actions { display: flex; align-items: center; gap: 10px; }
+        .rk-greeting { font-size: 25px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 5px; }
+        .rk-subline { font-size: 14px; }
+
+        /* ── Filter bar ── */
+        .rk-filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; align-items: center; }
+
+        /* ── Search ── */
+        .rk-search-wrap { position: relative; margin-bottom: 14px; }
+        .rk-search-input {
+          width: 100%; box-sizing: border-box;
+          padding: 0 18px 0 44px; height: 52px; border-radius: 14px;
+          border: 1px solid var(--border-bright); background: var(--surface);
+          box-shadow: var(--card-shadow);
+          font-family: var(--font-sans); font-size: 14.5px; color: var(--text);
+          outline: none;
+        }
+        .rk-search-kbd { display: flex; }
+
+        /* ── Tablet: 768–1199px ── */
+        @media (max-width: 1199px) {
+          .rk-job-grid { grid-template-columns: repeat(3, 1fr) !important; }
+          .rk-main-content { padding: 24px 20px 60px !important; }
+        }
+
+        /* ── Mobile: < 768px ── */
+        @media (max-width: 767px) {
+          .rk-root { flex-direction: column !important; }
+          .rk-main { flex: 1 !important; min-height: 0 !important; height: auto !important; }
+          .rk-main-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+          .rk-greeting { font-size: 20px !important; }
+          .rk-subline  { font-size: 12px !important; }
+          .rk-header-row { margin-bottom: 16px !important; }
+          .rk-header-actions { display: none !important; }
+          .rk-search-input { height: 44px !important; font-size: 13.5px !important; border-radius: 12px !important; padding: 0 12px 0 38px !important; }
+          .rk-search-wrap { margin-bottom: 10px !important; }
+          .rk-search-kbd { display: none !important; }
+          .rk-filter-bar { flex-wrap: nowrap !important; overflow-x: auto !important; margin-bottom: 16px !important; gap: 6px !important; -ms-overflow-style: none; scrollbar-width: none; }
+          .rk-filter-bar::-webkit-scrollbar { display: none; }
+          .rk-section-header { flex-direction: column !important; align-items: flex-start !important; gap: 10px !important; margin-bottom: 14px !important; }
+          .rk-section-header-actions { width: 100% !important; justify-content: space-between !important; }
+          .rk-job-grid { grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
+          .rk-job-card:hover { transform: none !important; }
+          .rk-apps-strip { margin-top: 24px !important; }
+          .rk-apps-table-header { display: none !important; }
+          .rk-app-resume-col, .rk-app-date-col { display: none !important; }
+          .rk-app-row-grid { grid-template-columns: 1fr auto !important; }
+        }
+
+        @media (max-width: 420px) {
+          .rk-job-grid { grid-template-columns: 1fr !important; }
+          .rk-main-content { padding: 14px 12px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+        }
       `}</style>
 
-      {/* ── SIDEBAR ── */}
-      <aside style={{
-        width: 252, flexShrink: 0, height: '100%',
-        background: 'var(--sidebar-bg)', borderRight: '1px solid var(--border)',
-        display: 'flex', flexDirection: 'column', padding: '22px 16px 16px',
-        position: 'relative', zIndex: 5,
-      }}>
-        {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '4px 8px 22px' }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 9,
-            background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: 'var(--accent-glow)', flexShrink: 0,
-          }}>
-            <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="var(--accent-contrast)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 11V5l6-3 6 3v6l-6 3z"/><path d="M8 8l6-3M8 8v6M8 8L2 5"/></svg>
-          </div>
-          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 18, letterSpacing: '0.02em' }}>
-            RACK
-          </span>
-        </div>
-
-        {/* Nav */}
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {navItems.map(item => (
-            <NavItem
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={activeNav === item.id}
-              badge={item.badge}
-              onClick={() => {
-                if (item.id === 'Matches') {
-                  setActiveNav('Matches')
-                } else if (item.id === 'BrowseAll') {
-                  navigate('Tracking')
-                } else {
-                  navigate(item.id)
-                }
-              }}
-            />
-          ))}
-        </nav>
-
-        <div style={{ height: 1, background: 'var(--border)', margin: '18px 8px' }}/>
-
-        {/* Ask Rack button */}
-        <AskRackButton onClick={() => setAssistantOpen(true)} />
-
-        <div style={{ flex: 1 }}/>
-
-        {/* User / usage card */}
-        <UserCard name={firstName} onUpgrade={() => navigate('Account')} />
-      </aside>
+      {/* ── SIDEBAR (shared component) ── */}
+      <Sidebar
+        activeNav="Dashboard"
+        onNavigate={(id) => {
+          if (id === 'Dashboard') setActiveNav('Matches')
+          navigate(id)
+        }}
+        userName={firstName}
+        userInitial={userInitial}
+        badge={{ Tracking: allJobs.length || null }}
+        onAskRack={() => setAssistantOpen(true)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
 
       {/* ── MAIN ── */}
-      <main style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
+      <main className="rk-main" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', position: 'relative', minWidth: 0 }}>
         {/* Ambient glows */}
         <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
         <div style={{ position: 'absolute', top: 120, right: -140, width: 480, height: 480, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-2), transparent 70%)', pointerEvents: 'none', zIndex: 0 }}/>
 
-        <div style={{ position: 'relative', zIndex: 1, maxWidth: 1240, margin: '0 auto', padding: '30px 40px 60px' }}>
+        <div className="rk-main-content" style={{ position: 'relative', zIndex: 1 }}>
 
           {/* Header row */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, marginBottom: 24 }}>
+          <div className="rk-header-row" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, marginBottom: 24 }}>
             <div>
-              <h1 style={{ fontSize: 25, fontWeight: 600, letterSpacing: '-0.01em', margin: '0 0 5px' }}>
+              <h1 className="rk-greeting" style={{ fontWeight: 600, letterSpacing: '-0.01em', margin: '0 0 5px' }}>
                 {greeting}, {firstName}
               </h1>
-              <p style={{ fontSize: 14, color: 'var(--text-mid)', margin: 0 }}>
+              <p className="rk-subline" style={{ color: 'var(--text-mid)', margin: 0 }}>
                 {phase === 'ready' && allJobs.length > 0 ? (
                   <>
                     <span style={{ color: 'var(--accent-ink)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
@@ -1120,35 +1454,27 @@ export default function Dashboard({ onNavigate }) {
                 )}
               </p>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="rk-header-actions" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
               <UserAvatar initial={userInitial} onClick={() => navigate('Account')} />
             </div>
           </div>
 
           {/* Search */}
-          <div style={{ position: 'relative' }}>
+          <div className="rk-search-wrap" style={{ position: 'relative' }}>
             <input
+              className="rk-search-input"
               data-rk-search
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               placeholder="Search by title, company, or skill…"
-              style={{
-                width: '100%', boxSizing: 'border-box',
-                display: 'flex', alignItems: 'center',
-                padding: '0 18px 0 48px', height: 52, borderRadius: 14,
-                border: '1px solid var(--border-bright)', background: 'var(--surface)',
-                boxShadow: 'var(--card-shadow)', marginBottom: 14,
-                fontFamily: 'var(--font-sans)', fontSize: 14.5, color: 'var(--text)',
-                outline: 'none',
-              }}
             />
-            <svg style={{ position: 'absolute', left: 18, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', marginTop: -7 }}
-              width={18} height={18} viewBox="0 0 16 16" fill="none" stroke="var(--text-dim)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <svg style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}
+              width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="var(--text-dim)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
               <circle cx={7} cy={7} r={5}/><path d="M11 11l3.5 3.5"/>
             </svg>
-            <kbd style={{
-              position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', marginTop: -7,
+            <kbd className="rk-search-kbd" style={{
+              position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
               fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)',
               border: '1px solid var(--border)', borderRadius: 6, padding: '3px 7px',
               background: 'var(--chip-bg)', pointerEvents: 'none',
@@ -1164,25 +1490,23 @@ export default function Dashboard({ onNavigate }) {
 
           {/* Section header */}
           {phase === 'ready' && allJobs.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
-              <div>
-                <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', gap: 9 }}>
-                  Top matches
-                  <span style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500,
-                    color: 'var(--text-dim)', background: 'var(--chip-bg)',
-                    padding: '2px 9px', borderRadius: 20,
-                  }}>
-                    {visibleJobs.length} shown
+            <div className="rk-section-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 18 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+                Top matches
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500,
+                  color: 'var(--text-dim)', background: 'var(--chip-bg)',
+                  padding: '2px 9px', borderRadius: 20,
+                }}>
+                  {visibleJobs.length} shown
+                </span>
+                {filteredJobs.length > DASHBOARD_JOB_CAP && (
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+                    of {filteredJobs.length}
                   </span>
-                  {filteredJobs.length > DASHBOARD_JOB_CAP && (
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>
-                      of {filteredJobs.length}
-                    </span>
-                  )}
-                </h2>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                )}
+              </h2>
+              <div className="rk-section-header-actions" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <SecondaryBtn onClick={() => navigate('Tracking')} icon={
                   <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M2 8h7M2 12h4"/><circle cx="12" cy="11.5" r="2.4"/></svg>
                 }>
@@ -1203,10 +1527,8 @@ export default function Dashboard({ onNavigate }) {
           )}
 
           {phase === 'fetching' && (
-            <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18,
-            }}>
-              {[0,1,2,3,4,5,6,7,8].map(i => <SkeletonCard key={i}/>)}
+            <div className="rk-job-grid">
+              {[0,1,2,3,4,5].map(i => <SkeletonCard key={i}/>)}
             </div>
           )}
 
@@ -1230,11 +1552,7 @@ export default function Dashboard({ onNavigate }) {
                 </div>
               ) : (
                 <>
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-                    gap: 18,
-                  }}>
+                  <div className="rk-job-grid">
                     {visibleJobs.map((job, i) => (
                       <JobCard
                         key={job.job_id || job.id || i}
@@ -1243,32 +1561,41 @@ export default function Dashboard({ onNavigate }) {
                         passedIds={passedIds}
                         onApply={handleApply}
                         onPass={handlePass}
+                        onViewDetail={setSelectedJob}
                         revealed={i < revealCount}
                       />
                     ))}
                   </div>
-
-
                 </>
               )}
 
-              {/* Applications strip — fade in below cards */}
+              {/* Applications strip */}
               {appsData.length > 0 && (
                 <div style={{ animation: 'rkFadeUp 0.55s cubic-bezier(0.22,1,0.36,1) 0.3s both' }}>
-                <ApplicationsStrip
-                  apps={filteredApps}
-                  allApps={appsData}
-                  activeTab={appsTab}
-                  tabDefs={appTabDefs}
-                  onTabChange={setAppsTab}
-                  onOpenTracker={() => navigate('Tracking')}
-                />
+                  <ApplicationsStrip
+                    apps={filteredApps}
+                    allApps={appsData}
+                    activeTab={appsTab}
+                    tabDefs={appTabDefs}
+                    onTabChange={setAppsTab}
+                    onOpenTracker={() => navigate('Tracking')}
+                  />
                 </div>
               )}
             </>
           )}
         </div>
       </main>
+
+      {/* ── Job Detail Modal ── */}
+      {selectedJob && (
+        <JobDetailModal
+          job={selectedJob}
+          onClose={() => setSelectedJob(null)}
+          onApply={handleApply}
+          appliedIds={appliedIds}
+        />
+      )}
 
       {/* ── Ask Rack Drawer ── */}
       <AskRackDrawer
@@ -1280,7 +1607,6 @@ export default function Dashboard({ onNavigate }) {
     </div>
   )
 }
-
 // ── Small reusable components ─────────────────────────────────────────────────
 
 function ThemeToggle({ theme, onToggle }) {
@@ -1480,8 +1806,8 @@ function BrowseAllCTA({ total, shown, onClick }) {
 
 function ApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onOpenTracker }) {
   return (
-    <div style={{ marginTop: 40 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, marginBottom: 16 }}>
+    <div className="rk-apps-strip" style={{ marginTop: 40 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 16 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Recent applications</h2>
         <SecondaryBtn onClick={onOpenTracker} icon={
           <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
@@ -1492,7 +1818,7 @@ function ApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onO
 
       <div style={{ border: '1px solid var(--border)', background: 'var(--surface)', borderRadius: 16, boxShadow: 'var(--card-shadow)', overflow: 'hidden' }}>
         {/* Tabs */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '13px 16px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '13px 16px', borderBottom: '1px solid var(--border)', overflowX: 'auto', flexWrap: 'nowrap' }}>
           {tabDefs.map(t => {
             const count = t.id === 'all' ? allApps.length : allApps.filter(a => a.status === t.id).length
             const active = activeTab === t.id
@@ -1501,8 +1827,8 @@ function ApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onO
             )
           })}
         </div>
-        {/* Table header */}
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.4fr 1.1fr 1fr', gap: 14, padding: '11px 18px', borderBottom: '1px solid var(--border)' }}>
+        {/* Table header — hidden on mobile via CSS */}
+        <div className="rk-apps-table-header" style={{ display: 'grid', gridTemplateColumns: '2fr 1.4fr 1.1fr 1fr', gap: 14, padding: '11px 18px', borderBottom: '1px solid var(--border)' }}>
           {['Company / Role', 'Resume', 'Status', 'Applied'].map((h, i) => (
             <span key={h} style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
@@ -1532,7 +1858,7 @@ function AppTabBtn({ label, count, active, onClick }) {
       style={{
         display: 'flex', alignItems: 'center', gap: 7, padding: '6px 12px',
         borderRadius: 9, cursor: 'pointer', fontFamily: 'var(--font-sans)',
-        fontSize: 12.5, fontWeight: 600,
+        fontSize: 12.5, fontWeight: 600, flexShrink: 0,
         border: `1px solid ${active ? 'var(--accent-line)' : hov ? 'var(--border-bright)' : 'var(--border)'}`,
         background: active ? 'var(--accent-soft)' : 'transparent',
         color: active ? 'var(--text)' : 'var(--text-mid)',
@@ -1556,6 +1882,7 @@ function AppRow({ app, last }) {
   const daysLabel = posted ? daysAgoLabel(posted) : '—'
   return (
     <div
+      className="rk-app-row-grid"
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
       style={{
         display: 'grid', gridTemplateColumns: '2fr 1.4fr 1.1fr 1fr', gap: 14,
@@ -1574,7 +1901,7 @@ function AppRow({ app, last }) {
           <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{app.company}</div>
         </div>
       </div>
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-mid)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <span className="rk-app-resume-col" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-mid)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {app.resume_name || '—'}
       </span>
       <span style={{
@@ -1586,7 +1913,7 @@ function AppRow({ app, last }) {
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: st.color, flexShrink: 0 }}/>
         {st.label}
       </span>
-      <span style={{ fontSize: 12, color: 'var(--text-dim)', textAlign: 'right' }}>{daysLabel}</span>
+      <span className="rk-app-date-col" style={{ fontSize: 12, color: 'var(--text-dim)', textAlign: 'right' }}>{daysLabel}</span>
     </div>
   )
 }
