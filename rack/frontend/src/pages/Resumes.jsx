@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
 import { useTheme } from '../App'
+import Sidebar from '../components/Sidebar'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const LS_KEY   = 'rack_resumes'
@@ -36,40 +37,10 @@ function formatTime(iso) {
   return d.toLocaleDateString()
 }
 
-// ── NavItem (matches Dashboard) ───────────────────────────────────────────────
-function NavItem({ icon, label, active, badge, onClick }) {
-  const [hov, setHov] = useState(false)
-  return (
-    <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 12, padding: '11px 13px',
-        borderRadius: 11, cursor: 'pointer', fontSize: 14, fontWeight: active ? 600 : 500,
-        border: active ? '1px solid var(--accent-line)' : '1px solid transparent',
-        background: active ? 'var(--accent-soft)' : hov ? 'var(--surface2)' : 'transparent',
-        color: active ? 'var(--text)' : hov ? 'var(--text)' : 'var(--text-mid)',
-        transition: 'background 0.18s, color 0.15s, border-color 0.18s', userSelect: 'none',
-      }}>
-      <span style={{ color: active ? 'var(--accent-ink)' : 'inherit', display: 'flex' }}>{icon}</span>
-      {label}
-      {badge != null && (
-        <span style={{
-          marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
-          color: active ? 'var(--accent-ink)' : 'var(--text-dim)',
-          background: active ? 'var(--accent-soft)' : 'var(--chip-bg)',
-          padding: '2px 7px', borderRadius: 20,
-          border: active ? '1px solid var(--accent-line)' : 'none',
-        }}>{badge}</span>
-      )}
-    </div>
-  )
-}
-
 // ── Resume card ───────────────────────────────────────────────────────────────
-function ResumeCard({ r, index, isAuthed, texUploading, onTexClick, onDownload, onView, onDelete, onNavigate }) {
+function ResumeCard({ r, index, isAuthed, onDownload, onView, onDelete, onNavigate }) {
   const [hov, setHov] = useState(false)
-  const hasTex = r.has_tex
   const isActive = r.status === 'active'
-  const uploading = texUploading === r.id
 
   return (
     <div
@@ -85,12 +56,10 @@ function ResumeCard({ r, index, isAuthed, texUploading, onTexClick, onDownload, 
         position: 'relative', overflow: 'hidden',
       }}
     >
-      {/* Top accent line — green if has_tex, subtle accent otherwise */}
+      {/* Top accent line */}
       <div style={{
         position: 'absolute', top: 0, left: 0, right: 0, height: 2, borderRadius: '18px 18px 0 0',
-        background: hasTex
-          ? 'linear-gradient(90deg, var(--accent3), #6ee7b7)'
-          : 'linear-gradient(90deg, rgba(232,255,107,0.3), rgba(232,255,107,0))',
+        background: 'linear-gradient(90deg, rgba(232,255,107,0.3), rgba(232,255,107,0))',
         transition: 'opacity 0.3s',
       }}/>
 
@@ -118,30 +87,6 @@ function ResumeCard({ r, index, isAuthed, texUploading, onTexClick, onDownload, 
             color: isActive ? '#34d399' : 'var(--text-dim)',
             border: isActive ? '1px solid rgba(52,211,153,0.2)' : '1px solid var(--border)',
           }}>{r.status || 'active'}</span>
-
-          {/* TeX button — auth only */}
-          {isAuthed && (
-            <button onClick={onTexClick} disabled={uploading}
-              title={hasTex ? 'LaTeX attached — click to replace' : 'Attach .tex for autrack'}
-              style={{
-                height: 26, padding: '0 7px', borderRadius: 7,
-                background: hasTex ? 'rgba(232,255,107,0.14)' : 'rgba(232,255,107,0.05)',
-                border: hasTex ? '1px solid rgba(232,255,107,0.45)' : '1px solid rgba(232,255,107,0.2)',
-                color: hasTex ? 'rgba(232,255,107,1)' : 'rgba(232,255,107,0.5)',
-                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
-                fontSize: 9.5, fontWeight: 700, fontFamily: 'var(--font-mono)',
-                transition: 'all 0.2s', flexShrink: 0,
-                animation: !hasTex && !uploading ? 'rkTexPulse 2.4s ease-in-out infinite' : 'none',
-                opacity: uploading ? 0.5 : 1,
-              }}>
-              {uploading
-                ? <span style={{ display: 'inline-block', animation: 'rkSpin 1s linear infinite', fontSize: 12 }}>⟳</span>
-                : hasTex
-                  ? <><svg width={9} height={9} viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg> TeX</>
-                  : <><svg width={9} height={9} viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3 4l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M1 10h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> TeX</>
-              }
-            </button>
-          )}
 
           {/* Download */}
           <button onClick={onDownload} title="Download"
@@ -306,10 +251,8 @@ export default function Resumes({ onNavigate }) {
   const [uploading, setUploading]         = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [toast, setToast]                 = useState(null)
-  const [texUploading, setTexUploading]   = useState(null)
 
   const fileInputRef = useRef(null)
-  const texInputRefs = useRef({})
   const blobUrlsRef  = useRef({})
 
   const navigate = (tab) => onNavigate?.(tab)
@@ -410,40 +353,14 @@ export default function Resumes({ onNavigate }) {
     } catch { showToast('Could not download file.', 'error') }
   }
 
-  // ── TeX upload ──────────────────────────────────────────────────────────────
-  const handleTexUpload = async (resumeId, file) => {
-    if (!file) return
-    if (!file.name.endsWith('.tex')) { showToast('Only .tex files accepted.', 'error'); return }
-    setTexUploading(resumeId)
-    try {
-      const fd = new FormData(); fd.append('file', file)
-      const h = await getAuthHeaders()
-      const r = await fetch(`${API_BASE}/api/resumes/${resumeId}/tex`, { method: 'POST', headers: h, body: fd })
-      if (!r.ok) { const e = await r.json(); throw new Error(e.detail || 'Upload failed') }
-      setResumes(p => p.map(r => r.id === resumeId ? { ...r, has_tex: true } : r))
-      showToast('LaTeX attached — autrack is now active.')
-    } catch (e) { showToast(e.message || 'Failed to attach LaTeX.', 'error') }
-    finally { setTexUploading(null); if (texInputRefs.current[resumeId]) texInputRefs.current[resumeId].value = '' }
-  }
-
   // ── Derived ─────────────────────────────────────────────────────────────────
   const activeCount = resumes.filter(r => r.status === 'active').length
   const cap   = isAuthed ? AUTH_CAP : ANON_CAP
   const atCap = resumes.length >= cap
-  const allHaveTex = resumes.length > 0 && resumes.every(r => r.has_tex)
 
   const displayName = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'there'
   const firstName   = displayName.split(' ')[0]
   const userInitial = firstName.charAt(0).toUpperCase()
-
-  // ── Nav items (same icon set as Dashboard) ───────────────────────────────────
-  const navItems = [
-    { id: 'Matches',  label: 'Matches',       icon: <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="2" width="5" height="5" rx="1.2"/><rect x="2" y="9" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/></svg> },
-    { id: 'Tracking', label: 'Browse all jobs', icon: <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M2 8h12M2 12h8"/></svg> },
-    { id: 'Home',     label: 'Chat assistant', icon: <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg> },
-    { id: 'Resumes',  label: 'Resumes',        icon: <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6z"/><path d="M9 2v4h4"/><path d="M5 9h6M5 11.5h4"/></svg> },
-    { id: 'Account',  label: 'Account',        icon: <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="5.5" r="2.5"/><path d="M2.5 13.5c0-2.5 2.5-4 5.5-4s5.5 1.5 5.5 4"/></svg> },
-  ]
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -453,89 +370,23 @@ export default function Resumes({ onNavigate }) {
         position: 'fixed', inset: 0, zIndex: 1 }}>
 
       <style>{`
-        @keyframes rkFadeUp   { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
-        @keyframes rkShimmer  { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
-        @keyframes rkSpin     { to{transform:rotate(360deg)} }
-        @keyframes rkTexPulse {
-          0%,100%{box-shadow:0 0 0 0 rgba(232,255,107,0);border-color:rgba(232,255,107,0.2)}
-          50%{box-shadow:0 0 0 3px rgba(232,255,107,0.08);border-color:rgba(232,255,107,0.45)}
-        }
-        @keyframes rkBannerShimmer { 0%{transform:translateX(-100%)} 60%{transform:translateX(100%)} 100%{transform:translateX(100%)} }
+        @keyframes rkFadeUp  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes rkShimmer { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
+        @keyframes rkSpin    { to{transform:rotate(360deg)} }
         .rk-root ::-webkit-scrollbar{width:8px} .rk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px} .rk-root ::-webkit-scrollbar-track{background:transparent}
       `}</style>
 
       {/* ── SIDEBAR ── */}
-      <aside style={{
-        width: 252, flexShrink: 0, height: '100%',
-        background: 'var(--sidebar-bg)', borderRight: '1px solid var(--border)',
-        display: 'flex', flexDirection: 'column', padding: '22px 16px 16px',
-        position: 'relative', zIndex: 5,
-      }}>
-        {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '4px 8px 22px' }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 9,
-            background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: 'var(--accent-glow)', flexShrink: 0,
-          }}>
-            <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="var(--accent-contrast)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 11V5l6-3 6 3v6l-6 3z"/><path d="M8 8l6-3M8 8v6M8 8L2 5"/></svg>
-          </div>
-          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 18, letterSpacing: '0.02em' }}>RACK</span>
-        </div>
-
-        {/* Nav */}
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {navItems.map(item => (
-            <NavItem key={item.id} icon={item.icon} label={item.label}
-              active={item.id === 'Resumes'}
-              onClick={() => navigate(item.id === 'Resumes' ? null : item.id)} />
-          ))}
-        </nav>
-
-        <div style={{ height: 1, background: 'var(--border)', margin: '18px 8px' }}/>
-
-        {/* Ask Rack */}
-        <button onClick={() => navigate('Home')}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 12, padding: 13,
-            borderRadius: 13, cursor: 'pointer',
-            border: '1px solid var(--border-bright)',
-            background: 'linear-gradient(135deg, var(--surface2), var(--surface))',
-            color: 'var(--text)', fontFamily: 'var(--font-sans)',
-            fontSize: 13.5, fontWeight: 600, textAlign: 'left', width: '100%',
-          }}>
-          <span style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="var(--accent-ink)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>
-          </span>
-          <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            Ask Rack
-            <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-dim)' }}>Refine, ask, auto-apply</span>
-          </span>
-        </button>
-
-        <div style={{ flex: 1 }}/>
-
-        {/* User card */}
-        <div style={{ border: '1px solid var(--border)', background: 'var(--surface)', borderRadius: 15, padding: 15, boxShadow: 'var(--card-shadow)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>{firstName || 'You'}</span>
-            <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', background: 'var(--chip-bg)', padding: '2px 7px', borderRadius: 6 }}>Free</span>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 6 }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-ink)' }}>{resumes.length}</span>
-            {' '}/ {cap} resume{cap !== 1 ? 's' : ''} used
-          </div>
-          {/* Usage bar */}
-          <div style={{ height: 3, background: 'var(--surface2)', borderRadius: 3, marginTop: 8, overflow: 'hidden' }}>
-            <div style={{
-              height: '100%', borderRadius: 3,
-              width: `${Math.round((resumes.length / cap) * 100)}%`,
-              background: atCap ? 'linear-gradient(90deg,#f87171,#fb923c)' : 'linear-gradient(90deg, var(--accent), var(--accent3))',
-              transition: 'width 0.6s ease',
-            }}/>
-          </div>
-        </div>
-      </aside>
+      <Sidebar
+        activeNav="Resumes"
+        onNavigate={(tab) => navigate(tab === 'Resumes' ? null : tab)}
+        userName={firstName}
+        userInitial={userInitial}
+        userStat={`${resumes.length} / ${cap} resume${cap !== 1 ? 's' : ''} used`}
+        onAskRack={() => navigate('Home')}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
 
       {/* ── MAIN ── */}
       <main style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
@@ -554,25 +405,9 @@ export default function Resumes({ onNavigate }) {
                   <>
                     <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--accent-ink)' }}>{resumes.length}</span>
                     {' '}version{resumes.length !== 1 ? 's' : ''} · {activeCount} active
-                    {allHaveTex && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#34d399', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.2)', padding: '1px 7px', borderRadius: 10 }}>autrack ✓</span>}
                   </>
                 )}
               </p>
-            </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              {/* Theme toggle */}
-              <button onClick={toggleTheme}
-                style={{ width: 40, height: 40, borderRadius: 11, cursor: 'pointer', border: '1px solid var(--border-bright)', background: 'var(--surface)', color: 'var(--text-mid)', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.18s' }}>
-                {theme === 'dark'
-                  ? <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1M12.5 12.5l-1.1-1.1M4.6 4.6L3.5 3.5"/></svg>
-                  : <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M13.5 9.2A5.6 5.6 0 0 1 6.8 2.5 5.6 5.6 0 1 0 13.5 9.2z"/></svg>
-                }
-              </button>
-              {/* Avatar */}
-              <div onClick={() => navigate('Account')}
-                style={{ width: 40, height: 40, borderRadius: 11, cursor: 'pointer', background: 'linear-gradient(135deg, var(--accent2), var(--accent3))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 14, color: '#fff' }}>
-                {userInitial || '?'}
-              </div>
             </div>
           </div>
 
@@ -593,28 +428,6 @@ export default function Resumes({ onNavigate }) {
             </div>
           )}
 
-          {/* autrack banner */}
-          {isAuthed && !loading && resumes.length > 0 && (
-            <div style={{
-              marginBottom: 24, padding: '11px 18px', borderRadius: 14,
-              background: 'rgba(232,255,107,0.04)', border: '1px solid rgba(232,255,107,0.12)',
-              display: 'flex', alignItems: 'center', gap: 10, position: 'relative', overflow: 'hidden',
-              animation: 'rkFadeUp 0.35s ease both',
-            }}>
-              <div style={{ position: 'absolute', inset: 0, borderRadius: 14, overflow: 'hidden', pointerEvents: 'none' }}>
-                <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, transparent, rgba(232,255,107,0.05), transparent)', animation: 'rkBannerShimmer 3s ease-in-out infinite' }}/>
-              </div>
-              <span style={{ fontSize: 10, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'rgba(232,255,107,0.7)', background: 'rgba(232,255,107,0.1)', border: '1px solid rgba(232,255,107,0.25)', padding: '2px 7px', borderRadius: 5, flexShrink: 0, position: 'relative' }}>TeX</span>
-              <span style={{ fontSize: 12.5, color: 'var(--text-mid)', lineHeight: 1.6, position: 'relative' }}>
-                Attach a <code style={{ fontSize: 11, background: 'var(--chip-bg)', padding: '1px 5px', borderRadius: 4, color: 'var(--accent-ink)' }}>.tex</code> file to each resume to activate{' '}
-                <span style={{ color: 'var(--accent-ink)', fontWeight: 600 }}>autrack</span> — RACK tailors your resume to every role, automatically.
-              </span>
-              {allHaveTex && (
-                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: 'rgba(52,211,153,0.1)', color: '#34d399', border: '1px solid rgba(52,211,153,0.2)', flexShrink: 0, position: 'relative' }}>ALL ACTIVE</span>
-              )}
-            </div>
-          )}
-
           {/* Card grid */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
             {loading
@@ -622,8 +435,6 @@ export default function Resumes({ onNavigate }) {
               : <>
                   {resumes.map((r, i) => (
                     <ResumeCard key={r.id} r={r} index={i} isAuthed={isAuthed}
-                      texUploading={texUploading}
-                      onTexClick={() => texInputRefs.current[r.id]?.click()}
                       onDownload={() => handleDownload(r)}
                       onView={() => handleView(r)}
                       onDelete={() => setDeleteConfirm(r.id)}
@@ -641,11 +452,6 @@ export default function Resumes({ onNavigate }) {
 
       {/* Hidden inputs */}
       <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx" style={{ display: 'none' }} onChange={handleFileChange}/>
-      {resumes.map(r => (
-        <input key={r.id} ref={el => { if (el) texInputRefs.current[r.id] = el }}
-          type="file" accept=".tex" style={{ display: 'none' }}
-          onChange={e => handleTexUpload(r.id, e.target.files[0])}/>
-      ))}
 
       {/* Delete confirm modal */}
       {deleteConfirm && (

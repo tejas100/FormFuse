@@ -34,13 +34,14 @@ import Account from './pages/Account'
 import Landing from './pages/Landing'
 import Onboarding from './pages/Onboarding'
 import Dashboard from './pages/Dashboard'
+import ApplicationBoard from './pages/ApplicationBoard'
 
 
 
 const PAGE_MAP = { Home, Resumes, Tracking, Account }
 
 // Tabs that require authentication
-const AUTH_REQUIRED_TABS = ['Tracking']
+const AUTH_REQUIRED_TABS = ['Tracking', 'TrackApps']
 
 // ── Inner app — has access to AuthContext ─────────────────────────────────────
 function AppInner() {
@@ -206,6 +207,19 @@ function AppInner() {
     )
   }
 
+  // ── Application board — job-application tracker, shares the sidebar shell ──
+  if (active === 'TrackApps' && !isGated) {
+    return (
+      <>
+        {overlay}
+        <ApplicationBoard onNavigate={(tab) => {
+          if (tab === 'Dashboard') { setShowDashboard(true) }
+          else { switchTab(tab) }
+        }} />
+      </>
+    )
+  }
+
   // ── Tracking — renders its own full-screen sidebar layout, no shell needed ──
   if (active === 'Tracking' && !isGated) {
     return (
@@ -224,6 +238,18 @@ function AppInner() {
       <>
         {overlay}
         <Resumes onNavigate={(tab) => {
+          if (tab === 'Dashboard') { setShowDashboard(true) }
+          else { switchTab(tab) }
+        }} />
+      </>
+    )
+  }
+
+  if (active === 'Account' && !isGated) {
+    return (
+      <>
+        {overlay}
+        <Account onNavigate={(tab) => {
           if (tab === 'Dashboard') { setShowDashboard(true) }
           else { switchTab(tab) }
         }} />
