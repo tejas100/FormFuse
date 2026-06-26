@@ -101,8 +101,6 @@ const I = {
   left:  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4L6 8l4 4" /></svg>,
   star:  <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.6l1.8 4.1 4.5.4-3.4 3 1 4.4L8 11.2 4.1 13.5l1-4.4-3.4-3 4.5-.4z" /></svg>,
   grip:  <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" opacity="0.9"><circle cx="5" cy="4" r="1.15" /><circle cx="11" cy="4" r="1.15" /><circle cx="5" cy="8" r="1.15" /><circle cx="11" cy="8" r="1.15" /><circle cx="5" cy="12" r="1.15" /><circle cx="11" cy="12" r="1.15" /></svg>,
-  sun:   <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="3.2" /><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1M12.5 12.5l-1.1-1.1M4.6 4.6L3.5 3.5" /></svg>,
-  moon:  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M13.5 9.2A5.6 5.6 0 0 1 6.8 2.5 5.6 5.6 0 1 0 13.5 9.2z" /></svg>,
 }
 
 /* ─────────────────────────── scribble note ─────────────────────────── */
@@ -236,7 +234,7 @@ function Column({ stage, index, jobs, colRef, isHover, hoverIndex, slotH, childr
 
 /* ─────────────────────────── board ─────────────────────────── */
 export default function ApplicationBoard({ onNavigate }) {
-  const { theme, toggleTheme } = useTheme()
+  const { theme } = useTheme()
   const { user } = useAuth()
   const [cols, setCols] = useState(SEED)
   const [drag, setDrag] = useState(null)        // { jobId, fromCol, w, h, offX, offY, job }
@@ -457,7 +455,6 @@ export default function ApplicationBoard({ onNavigate }) {
         userStat={`${total} application${total === 1 ? '' : 's'} on the wall`}
         badge={{ TrackApps: total }}
         theme={theme}
-        onToggleTheme={toggleTheme}
         onAskRack={() => handleNav('Home')}
       />
 
@@ -465,7 +462,6 @@ export default function ApplicationBoard({ onNavigate }) {
         {/* header */}
         <div className="rkkb-topbar">
           <div className="rkkb-brand">
-            <span className="rkkb-mark">{I.star}</span>
             <div>
               <h1>Application board</h1>
               <p>{total} roles on the wall · drag a card forward as you progress</p>
@@ -473,10 +469,6 @@ export default function ApplicationBoard({ onNavigate }) {
           </div>
           <div className="rkkb-actions">
             <button className="rkkb-add" onClick={addApplication}>{I.plus} Add application</button>
-            <button className="rkkb-toggle" onClick={toggleTheme}
-              title={theme === 'dark' ? 'Paper mode' : 'Chalkboard mode'}>
-              {theme === 'dark' ? I.sun : I.moon}
-            </button>
           </div>
         </div>
 
@@ -552,7 +544,7 @@ const BOARD_CSS = `
 }
 /* ===== end standalone tokens ===== */
 
-.rkkb-shell{ position:fixed; inset:0; display:flex; background:var(--sidebar-bg,#15191a); }
+.rkkb-shell{ position:fixed; inset:0; display:flex; --sidebar-bg:#15191a; }
 
 .rkkb{ position:relative; flex:1; min-width:0; min-height:0; height:100%;
   display:flex; flex-direction:column; background:var(--board);
@@ -562,8 +554,6 @@ const BOARD_CSS = `
 .rkkb-topbar{ display:flex; align-items:center; justify-content:space-between; gap:16px;
   padding:22px 28px 16px; flex-wrap:wrap; }
 .rkkb-brand{ display:flex; align-items:center; gap:13px; }
-.rkkb-mark{ width:38px; height:38px; border-radius:11px; flex-shrink:0; display:flex; align-items:center;
-  justify-content:center; background:var(--accent); color:var(--accent-ink); box-shadow:var(--accent-glow); }
 .rkkb-brand h1{ font-size:19px; font-weight:700; letter-spacing:-0.02em; margin:0; line-height:1.15; }
 .rkkb-brand p{ font-size:12.5px; color:var(--tx-dim); margin:2px 0 0; }
 .rkkb-actions{ display:flex; align-items:center; gap:10px; }
@@ -571,11 +561,6 @@ const BOARD_CSS = `
   font-family:var(--font-sans); font-size:12.5px; font-weight:650; color:var(--accent-ink);
   background:var(--accent-soft); border:1px solid var(--accent-line); transition:transform .12s, background .15s; }
 .rkkb-add:hover{ transform:translateY(-1px); }
-.rkkb-toggle{ width:38px; height:38px; border-radius:10px; cursor:pointer; display:flex; align-items:center;
-  justify-content:center; color:var(--tx-mid); background:var(--card-paper); border:1px solid var(--card-edge);
-  transition:color .15s, transform .12s; }
-.rkkb-toggle:hover{ color:var(--tx); transform:rotate(-12deg); }
-
 /* ── wall / board ── */
 .rkkb-wall{ flex:1; overflow:auto; padding:6px 28px 34px;
   background:
@@ -733,7 +718,6 @@ const BOARD_CSS = `
 @media (max-width: 767px){
   .rkkb-shell{ flex-direction:column; }
   .rkkb-topbar{ padding:16px 16px 12px; }
-  .rkkb-toggle{ display:none; }            /* sidebar mobile top bar already has a theme toggle */
   .rkkb-wall{ padding:6px 16px 92px; scroll-snap-type:x mandatory; }  /* bottom clears fixed bottom nav */
   .rkkb-col{ min-width:84vw; max-width:84vw; scroll-snap-align:start; }
 }
