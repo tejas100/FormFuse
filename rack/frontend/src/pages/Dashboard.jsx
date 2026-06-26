@@ -1418,7 +1418,7 @@ export default function Dashboard({ onNavigate }) {
         userName={firstName}
         userInitial={userInitial}
         badge={{ Tracking: allJobs.length || null }}
-        onAskRack={() => setAssistantOpen(true)}
+        onAskRack={() => navigate('Home')}
         theme={theme}
         onToggleTheme={toggleTheme}
       />

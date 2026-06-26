@@ -6,6 +6,7 @@ import RackCreature from '../components/RackCreature'
 import VoiceOnboarding from '../components/VoiceOnboarding'
 import ApplyAgentCard from '../components/ApplyAgentCard'
 import BatchApplyCard from '../components/BatchApplyCard'
+import Sidebar from '../components/Sidebar'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -259,7 +260,6 @@ const mobileCardStyles = `
     display: flex;
     flex-direction: column;
     padding: 24px 20px 16px;
-    padding-top: calc(var(--page-padding-top, 68px) + 16px);
     gap: 0;
     scroll-behavior: smooth;
     -webkit-overflow-scrolling: touch;
@@ -656,7 +656,7 @@ const mobileCardStyles = `
   }
 
   @media (max-width: 600px) {
-    .rack-chat-scroll { padding: 16px 12px 12px; padding-top: calc(var(--page-padding-top, 68px) + 12px); }
+    .rack-chat-scroll { padding: 16px 12px 12px; padding-top: 24px; }
     .rack-greeting-title { font-size: clamp(26px, 7.5vw, 38px); letter-spacing: -0.03em; }
     .rack-greeting-sub { font-size: 14px; }
     .rack-bubble-user { max-width: 85%; font-size: 13px; }
@@ -680,7 +680,7 @@ const mobileCardStyles = `
   }
 
   /* When steel panel is open: chat column is phone-width — mirror mobile rules */
-  .rack-chat-col.panel-open .rack-chat-scroll { padding: 16px 16px 12px 68px; padding-top: calc(80px + 12px); }
+  .rack-chat-col.panel-open .rack-chat-scroll { padding: 16px 16px 12px 68px; padding-top: 24px; }
   .rack-chat-col.panel-open .rack-greeting-title { font-size: clamp(26px, 7.5vw, 38px); letter-spacing: -0.03em; }
   .rack-chat-col.panel-open .rack-greeting-sub { font-size: 14px; }
   .rack-chat-col.panel-open .rack-bubble-user { max-width: 85%; font-size: 13px; }
@@ -1198,7 +1198,7 @@ function ValuePreviewCard({ results, onSignIn }) {
   )
 }
 
-export default function Home() {
+export default function Home({ onNavigate }) {
   const { user, signInWithGoogle } = useAuth()
   const isAuthed = !!user
 
@@ -3629,6 +3629,22 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
 
     {/* ══ Chat root — full-viewport flex row ══ */}
     <div className="rack-chat-root">
+
+    {/* ── Shared sidebar — same component as Dashboard/Tracking ── */}
+    {(() => {
+      const fullName  = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || ''
+      const firstName = (fullName.split('@')[0].split(' ')[0]) || ''
+      const initial   = (firstName[0] || 'U').toUpperCase()
+      return (
+        <Sidebar
+          activeNav="Home"
+          onNavigate={onNavigate}
+          userName={firstName}
+          userInitial={initial}
+          onAskRack={null}
+        />
+      )
+    })()}
 
     {/* ── Chat column — shrinks when steel panel is open ── */}
     <div className={`rack-chat-col${steelViewer ? ' panel-open' : ''}`}>

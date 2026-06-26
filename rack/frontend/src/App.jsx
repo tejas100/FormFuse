@@ -250,6 +250,21 @@ function AppInner() {
     )
   }
 
+  // ── Home (Ask Rack chat) — full-screen sidebar layout ──
+  if (active === 'Home') {
+    return (
+      <>
+        {overlay}
+        <Home
+          onNavigate={(tab) => {
+            if (tab === 'Dashboard') { setShowDashboard(true) }
+            else { switchTab(tab) }
+          }}
+        />
+      </>
+    )
+  }
+
   if (active === 'Resumes' && !isGated) {
     return (
       <>
