@@ -35,6 +35,7 @@ import Landing from './pages/Landing'
 import Onboarding from './pages/Onboarding'
 import Dashboard from './pages/Dashboard'
 import ApplicationBoard from './pages/ApplicationBoard'
+import RackMail from './pages/RackMail'
 
 
 
@@ -229,6 +230,22 @@ function AppInner() {
           if (tab === 'Dashboard') { setShowDashboard(true) }
           else { switchTab(tab) }
         }} />
+      </>
+    )
+  }
+
+  // ── Emails (RackMail) — full-screen sidebar layout, same pattern as Tracking ──
+  if (active === 'Emails') {
+    return (
+      <>
+        {overlay}
+        <RackMail
+          onNavigate={(tab) => {
+            if (tab === 'Dashboard') { setShowDashboard(true) }
+            else { switchTab(tab) }
+          }}
+          userName={user?.user_metadata?.full_name?.split(' ')[0] || 'You'}
+        />
       </>
     )
   }

@@ -42,7 +42,7 @@ export const DEFAULT_NAV = [
   { id: 'Tracking',  label: 'Browse all jobs', icon: ICONS.BrowseAll, group: 'main'    },
   { id: 'Resumes',   label: 'Resumes',         icon: ICONS.Resumes,   group: 'main'    },
   { id: 'TrackApps', label: 'Tracking',        icon: ICONS.Tracking,  group: 'tools'                          },
-  { id: 'Emails',    label: 'Emails',          icon: ICONS.Emails,    group: 'tools',  comingSoon: true        },
+  { id: 'Emails',    label: 'Emails',          icon: ICONS.Emails,    group: 'tools'                          },
   { id: 'Account',   label: 'Account',         icon: ICONS.Account,   group: 'account' },
 ]
 
