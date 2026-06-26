@@ -66,7 +66,7 @@ function NavItem({ icon, label, active, badge, onClick, collapsed, comingSoon, d
         fontSize: 13.5,
         fontWeight: active ? 600 : 450,
         border: active ? '1px solid var(--accent-line)' : '1px solid transparent',
-        background: active ? 'var(--accent-soft)' : hovered ? 'rgba(255,255,255,0.04)' : 'transparent',
+        background: active ? 'var(--accent-soft)' : hovered ? 'var(--surface2)' : 'transparent',
         color: active ? 'var(--text)' : dim || isDisabled ? 'var(--text-dim)' : hovered ? 'var(--text)' : 'var(--text-mid)',
         transition: 'background 0.15s, color 0.14s',
         userSelect: 'none', position: 'relative',
@@ -233,6 +233,20 @@ function UserCard({ name, stat, onUpgrade }) {
 
 // ── CSS ────────────────────────────────────────────────────────────────────────
 const SIDEBAR_CSS = `
+  /* Dark-mode default — without this the mobile drawer / top bar / bottom nav
+     render transparent (only the light theme defined --sidebar-bg before). */
+  :root { --sidebar-bg: #0e0e12; }
+
+  [data-theme="light"] {
+    --sidebar-bg: #EFEDE4;
+    --surface:    #FFFFFF;
+    --surface2:   #E8E6DC;
+    --border:     rgba(0,0,0,0.08);
+    --border-bright: rgba(0,0,0,0.14);
+    --accent-soft: rgba(95,118,17,0.08);
+    --accent-line: rgba(95,118,17,0.22);
+  }
+
   @keyframes rkBeacon   { 0%,100%{box-shadow:0 0 0 0 rgba(232,255,107,0.0)} 50%{box-shadow:0 0 0 5px rgba(232,255,107,0.16)} }
   @keyframes rkFadeIn   { from{opacity:0} to{opacity:1} }
   @keyframes rkSideIn   { from{transform:translateX(-100%)} to{transform:translateX(0)} }
@@ -281,7 +295,10 @@ const SIDEBAR_CSS = `
     cursor: pointer; display: flex; align-items: center; justify-content: center;
     color: var(--text-dim); z-index: 6;
     transition: background 0.15s, color 0.15s;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+  }
+  [data-theme="light"] .rk-collapse-toggle {
+    box-shadow: 0 2px 10px rgba(0,0,0,0.07);
   }
   .rk-collapse-toggle:hover { background: var(--surface2); color: var(--text); }
 
@@ -289,7 +306,7 @@ const SIDEBAR_CSS = `
   .rk-mobile-topbar {
     display: none;
     align-items: center; justify-content: space-between;
-    padding: 0 14px; height: 52px; flex-shrink: 0;
+    padding: 0 14px; height: 52px; flex-shrink: 0; position: relative;
     border-bottom: 1px solid var(--border);
     background: var(--sidebar-bg); z-index: 10;
   }
@@ -306,6 +323,9 @@ const SIDEBAR_CSS = `
     z-index: 50; box-shadow: 16px 0 48px rgba(0,0,0,0.45);
     animation: rkSideIn 0.28s cubic-bezier(0.22,1,0.36,1) both;
     overflow-y: auto;
+  }
+  [data-theme="light"] .rk-sidebar-mobile {
+    box-shadow: 16px 0 48px rgba(0,0,0,0.10);
   }
 
   /* ── Mobile bottom nav ── */
@@ -450,22 +470,27 @@ export default function Sidebar({
 
       {/* ── MOBILE TOP BAR ── */}
       <div className="rk-mobile-topbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button onClick={() => setMobileOpen(true)} style={{
-            width: 36, height: 36, borderRadius: 9, border: '1px solid var(--border-bright)',
-            background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            {ICONS.Hamburger}
-          </button>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {ICONS.Logo}
-            </div>
-            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 15, letterSpacing: '0.04em' }}>RACK</span>
+        <button onClick={() => setMobileOpen(true)} style={{
+          width: 36, height: 36, borderRadius: 9, border: '1px solid var(--border-bright)',
+          background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          {ICONS.Hamburger}
+        </button>
+
+        {/* Centered brand — absolutely positioned so it's truly centered
+            regardless of the differing widths of the left/right groups */}
+        <div style={{
+          position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+          display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none',
+        }}>
+          <div style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {ICONS.Logo}
           </div>
+          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 15, letterSpacing: '0.04em' }}>RACK</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {onToggleTheme && (
             <button onClick={onToggleTheme} style={{
               width: 34, height: 34, borderRadius: 9, cursor: 'pointer',

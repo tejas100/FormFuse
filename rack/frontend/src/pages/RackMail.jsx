@@ -14,8 +14,9 @@
  *   emails         Email[]  — override the demo data (see EMAILS shape below)
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import Sidebar from "../components/Sidebar";
+import { useTheme } from "../App";
 
 /* ────────────────────────────────────────────────────────────
    Theme tokens. Mirrors the Rack dashboard design system.
@@ -48,7 +49,7 @@ const THEME_CSS = `
   --card-shadow:0 1px 2px rgba(60,52,30,0.05), 0 4px 14px rgba(60,52,30,0.06);
   --header-bg:rgba(245,243,236,0.78);
   --scrollbar-thumb:rgba(0,0,0,0.13);
-  --sidebar-bg:#FBFAF4; --read-bg:#FBFAF4; --unread-bg:rgba(120,150,0,0.05);
+  --sidebar-bg:#EFEDE4; --read-bg:#FBFAF4; --unread-bg:rgba(120,150,0,0.05);
 }
 .rk-mail-root{ --font-mono:"Fira Code", ui-monospace, Menlo, monospace; --font-sans:"DM Sans", system-ui, sans-serif; --ease:cubic-bezier(0.4,0,0.2,1); }
 .rk-mail-root *{ box-sizing:border-box; }
@@ -218,7 +219,10 @@ export default function RackMail({
   emails = EMAILS,
   onNavigate,
 }) {
+  const { theme: globalTheme, toggleTheme } = useTheme();
   const [theme, setTheme] = useState(themeProp === "light" ? "light" : "dark");
+  // Stay in sync with the global app theme (toggle in header affects whole app)
+  useEffect(() => { setTheme(globalTheme); }, [globalTheme]);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeMin, setComposeMin] = useState(false);
   const [folder, setFolder] = useState("inbox");
@@ -293,7 +297,7 @@ export default function RackMail({
         userName={userName}
         userInitial={(userName || "U").charAt(0).toUpperCase()}
         theme={theme}
-        onToggleTheme={() => setTheme(t => t === "dark" ? "light" : "dark")}
+        onToggleTheme={toggleTheme}
       />
 
       {/* ════ FOLDER RAIL ════ */}

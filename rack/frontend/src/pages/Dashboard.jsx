@@ -293,34 +293,35 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, re
   )
 }
 
-// ── Job Detail Modal ────────────────────────────────────────────────────────────
+// ── Job Detail Panel — slide-in from right ──────────────────────────────────────
 
-function JobDetailModal({ job, onClose, onApply, appliedIds }) {
-  const jd       = job?.job_data || {}
-  const title    = job?.job_title  || jd.title || jd.job_title || 'Untitled'
-  const company  = job?.company    || jd.company || ''
-  const location = job?.location   || jd.location || ''
-  const score    = Math.round(job?.score ?? 0)
-  const posted   = job?.posted_at  || job?.matched_at
-  const skills   = job?.matched_skills || jd.skills || []
-  const source   = (job?.source || jd.source || 'greenhouse').toUpperCase()
-  const jobId    = job?.job_id || job?.id
-  const isApplied = appliedIds?.has(jobId)
-  const brand    = brandColor(company)
-  const initial  = (company || '?').charAt(0).toUpperCase()
+function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
+  const jd         = job?.job_data || {}
+  const title      = job?.job_title  || jd.title    || jd.job_title || 'Untitled'
+  const company    = job?.company    || jd.company   || ''
+  const location   = job?.location   || jd.location  || ''
+  const score      = Math.round(job?.score ?? 0)
+  const posted     = job?.posted_at  || job?.matched_at
+  const skills     = job?.matched_skills || jd.skills || []
+  const missing    = job?.missing_skills || []
+  const source     = (job?.source || jd.source || 'greenhouse').toUpperCase()
+  const jobId      = job?.job_id || job?.id
+  const isApplied  = appliedIds?.has(jobId)
+  const brand      = brandColor(company)
+  const initial    = (company || '?').charAt(0).toUpperCase()
   const { label: tierLabel, color: tierColor } = tierMeta(score)
 
-  // Raw description text — may contain newlines
   const description = jd.description || jd.full_description || jd.body || ''
-  const applyUrl   = jd.apply_url || jd.url || job?.apply_url || null
-  const salary     = jd.salary || jd.salary_range || null
-  const jobType    = jd.job_type || jd.employment_type || null
-  const experience = jd.years_exp != null ? `${jd.years_exp}+ years` : null
-  const education  = jd.education || null
-  const openings   = jd.openings ?? null
-  const department = jd.department || null
+  const applyUrl    = jd.apply_url   || jd.url || job?.apply_url || null
+  const salary      = jd.salary      || jd.salary_range || null
+  const jobType     = jd.job_type    || jd.employment_type || null
+  const workplace   = jd.workplace   || jd.work_type || null
+  const experience  = jd.years_exp != null ? `${jd.years_exp}+ years experience` : jd.experience || null
+  const education   = jd.education   || null
+  const openings    = jd.openings    ?? null
+  const department  = jd.department  || null
+  const [bookmarked, setBookmarked] = useState(false)
 
-  // Close on Escape
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', handler)
@@ -329,21 +330,16 @@ function JobDetailModal({ job, onClose, onApply, appliedIds }) {
 
   if (!job) return null
 
-  // Parse description into sections heuristically
+  // ── Parse description into sections ──────────────────────────────
   const parsedSections = (() => {
     if (!description) return []
-    // Split on common section headers (lines that look like headers)
     const lines = description.replace(/\r\n/g, '\n').split('\n')
     const sections = []
     let current = { heading: null, lines: [] }
     const headerRe = /^(#{1,3}\s+|[A-Z][A-Za-z\s&/,\-]{2,40}:?\s*)$/
     for (const raw of lines) {
       const line = raw.trim()
-      if (!line) {
-        if (current.lines.length) current.lines.push('')
-        continue
-      }
-      // Treat short ALL-CAPS or title-case standalone lines as section headers
+      if (!line) { if (current.lines.length) current.lines.push(''); continue }
       const isHeader = headerRe.test(line) && line.length < 60
       if (isHeader && current.lines.filter(l => l).length > 0) {
         sections.push({ ...current })
@@ -358,159 +354,213 @@ function JobDetailModal({ job, onClose, onApply, appliedIds }) {
     return sections.filter(s => s.lines.filter(l => l).length > 0 || s.heading)
   })()
 
+  // Meta pill list — only render what we have
+  const metaPills = [
+    salary    && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v1.5a2 2 0 0 1 0 3V11M6.5 6.5h2.2M6.5 9.5h2.2"/></svg>, label: salary },
+    experience && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="6" width="12" height="8" rx="1.5"/><path d="M5 6V4.5a3 3 0 0 1 6 0V6"/></svg>, label: experience },
+    jobType   && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>, label: jobType },
+    workplace && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 14V6l6-4 6 4v8M6 14v-4h4v4"/></svg>, label: workplace },
+    department && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 4h12M4 4V2h8v2M4 14V8M12 14V8M2 14h12"/></svg>, label: department },
+  ].filter(Boolean)
+
   return (
     <>
       {/* Backdrop */}
       <div onClick={onClose} style={{
-        position: 'fixed', inset: 0, background: 'rgba(4,4,6,0.62)',
-        zIndex: 60, animation: 'rkFadeIn 0.22s ease both',
-        backdropFilter: 'blur(4px)',
+        position: 'fixed', inset: 0, zIndex: 60,
+        background: 'rgba(4,4,8,0.48)',
+        backdropFilter: 'blur(3px)',
+        animation: 'rkFadeIn 0.2s ease both',
       }}/>
 
-      {/* Modal panel */}
+      {/* Slide-in panel */}
       <div style={{
-        position: 'fixed', top: '50%', left: '50%',
-        transform: 'translate(-50%, -50%)',
-        width: 'min(780px, 92vw)', maxHeight: '88vh',
-        background: 'var(--surface)', border: '1px solid var(--border-bright)',
-        borderRadius: 22, boxShadow: '0 32px 80px rgba(0,0,0,0.55)',
-        zIndex: 61, display: 'flex', flexDirection: 'column',
-        animation: 'rkScaleIn 0.32s cubic-bezier(0.22,1,0.36,1) both',
-        overflow: 'hidden',
+        position: 'fixed', top: 0, right: 0, bottom: 0,
+        width: 'min(520px, 92vw)',
+        background: 'var(--surface)',
+        borderLeft: '1px solid var(--border-bright)',
+        boxShadow: '-24px 0 80px rgba(0,0,0,0.45)',
+        zIndex: 61,
+        display: 'flex', flexDirection: 'column',
+        animation: 'rkSlideInRight 0.36s cubic-bezier(0.22,1,0.36,1) both',
+        overflowY: 'hidden',
       }}>
+
+        {/* ── Accent bar ── */}
+        <div style={{ height: 3, background: `linear-gradient(90deg, ${brand}, ${brand}88 60%, transparent 100%)`, flexShrink: 0 }}/>
+
         {/* ── Header ── */}
         <div style={{
-          padding: '22px 26px 18px',
+          padding: '20px 24px 18px', flexShrink: 0,
           borderBottom: '1px solid var(--border)',
-          flexShrink: 0,
+          background: 'linear-gradient(180deg, var(--surface) 60%, transparent 100%)',
         }}>
-          {/* Top row: logo + close */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+          {/* Top row: company logo + close */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{
-                width: 48, height: 48, borderRadius: 13, flexShrink: 0,
+                width: 44, height: 44, borderRadius: 12, flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontWeight: 700, fontSize: 20, color: '#fff',
-                background: brand, boxShadow: `0 6px 18px ${brand}55`,
+                fontWeight: 800, fontSize: 18, color: '#fff',
+                background: brand, boxShadow: `0 4px 16px ${brand}44`,
               }}>{initial}</div>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{company}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em' }}>{company}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
                   <span style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600,
+                    fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
                     letterSpacing: '0.1em', color: 'var(--text-dim)',
-                    background: 'var(--chip-bg)', padding: '2px 7px', borderRadius: 5,
+                    background: 'var(--chip-bg)', border: '1px solid var(--border)',
+                    padding: '1px 7px', borderRadius: 4,
                   }}>{source}</span>
-                  {department && (
-                    <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{department}</span>
+                  {posted && (
+                    <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>· posted {daysAgoLabel(posted)}</span>
                   )}
                 </div>
               </div>
             </div>
+
             <button onClick={onClose} style={{
-              width: 34, height: 34, borderRadius: 10, border: '1px solid var(--border-bright)',
+              width: 32, height: 32, borderRadius: 9, border: '1px solid var(--border-bright)',
               background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              flexShrink: 0, transition: 'color 0.15s, border-color 0.15s',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              transition: 'color 0.15s, border-color 0.15s, background 0.15s',
             }}
-              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--text-mid)' }}
-              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface2)'; e.currentTarget.style.color = 'var(--text)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-dim)' }}
             >
-              <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
             </button>
           </div>
 
           {/* Title */}
-          <h2 style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.25, letterSpacing: '-0.02em', margin: '0 0 14px', color: 'var(--text)' }}>
-            {title}
-          </h2>
+          <h2 style={{
+            fontSize: 20, fontWeight: 700, lineHeight: 1.2,
+            letterSpacing: '-0.025em', margin: '0 0 14px', color: 'var(--text)',
+          }}>{title}</h2>
 
-          {/* Meta grid */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px', marginBottom: 14 }}>
+          {/* Location + score row */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: location ? 14 : 0 }}>
             {location && (
               <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
                 <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
                 {location}
               </span>
             )}
-            {salary && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
-                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v1.5a2 2 0 0 1 0 3V11M6.5 6.5h2.2M6.5 9.5h2.2"/></svg>
-                {salary}
-              </span>
-            )}
-            {jobType && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
-                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>
-                {jobType}
-              </span>
-            )}
-            {experience && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
-                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="6" width="12" height="8" rx="1.5"/><path d="M5 6V4.5a3 3 0 0 1 6 0V6"/></svg>
-                {experience}
-              </span>
-            )}
-            {posted && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-dim)' }}>
-                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M11 1.5V4M5 1.5V4M2 7h12"/></svg>
-                Posted {daysAgoLabel(posted)}
-              </span>
-            )}
-          </div>
-
-          {/* Match score pill + tier */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <MatchRing score={score} size={52} strokeW={3.5} />
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
-                <span style={{ fontSize: 13.5, fontWeight: 600, color: tierColor }}>{tierLabel}</span>
-              </div>
-              {skills.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                  {skills.slice(0, 6).map((sk, i) => (
-                    <span key={i} style={{
-                      fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-mid)',
-                      background: 'var(--chip-bg)', border: '1px solid var(--chip-border)',
-                      padding: '2px 8px', borderRadius: 6,
-                    }}>{sk}</span>
-                  ))}
-                  {skills.length > 6 && (
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--text-dim)', padding: '2px 4px' }}>+{skills.length - 6}</span>
-                  )}
-                </div>
-              )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: tierColor }}>{tierLabel}</span>
+              <MatchRing score={score} size={42} strokeW={3} />
             </div>
           </div>
+
+          {/* Meta pills grid */}
+          {metaPills.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '7px 12px', marginTop: 4 }}>
+              {metaPills.map((p, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{
+                    width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                    background: 'var(--surface2)', border: '1px solid var(--border)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: 'var(--text-dim)',
+                  }}>{p.icon}</span>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-mid)', lineHeight: 1.3 }}>{p.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Education pills */}
+          {education && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 7 }}>Education</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {(Array.isArray(education) ? education : [education]).map((e, i) => (
+                  <span key={i} style={{
+                    fontSize: 12, padding: '4px 11px', borderRadius: 20,
+                    background: 'var(--surface2)', border: '1px solid var(--border)',
+                    color: 'var(--text-mid)',
+                  }}>{e}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Matched skills */}
+          {skills.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 7 }}>Matched skills</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                {skills.map((sk, i) => (
+                  <span key={i} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10.5,
+                    color: 'var(--accent-ink)', background: 'var(--accent-soft)',
+                    border: '1px solid var(--accent-line)',
+                    padding: '3px 9px', borderRadius: 6,
+                  }}>{sk}</span>
+                ))}
+                {missing.slice(0, 3).map((sk, i) => (
+                  <span key={`m${i}`} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10.5,
+                    color: 'var(--text-dim)', background: 'var(--chip-bg)',
+                    border: '1px solid var(--border)',
+                    padding: '3px 9px', borderRadius: 6, opacity: 0.6,
+                  }}>{sk}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Openings notice */}
+          {openings != null && openings > 1 && (
+            <div style={{
+              marginTop: 14, display: 'flex', alignItems: 'center', gap: 10,
+              padding: '10px 14px', borderRadius: 11,
+              background: 'var(--surface2)', border: '1px solid var(--border)',
+            }}>
+              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="var(--text-dim)" strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="6" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg>
+              <span style={{ fontSize: 12.5, color: 'var(--text-mid)' }}>
+                <strong style={{ color: 'var(--text)', fontWeight: 600 }}>{openings} openings</strong>
+                {' '}· same role, multiple locations
+              </span>
+              <span style={{
+                marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 10,
+                fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+                background: 'var(--chip-bg)', color: 'var(--text-dim)', border: '1px solid var(--border)',
+              }}>{openings}</span>
+            </div>
+          )}
         </div>
 
         {/* ── Scrollable body ── */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 26px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '22px 24px', scrollbarWidth: 'thin' }}>
           {parsedSections.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
               {parsedSections.map((section, si) => (
                 <div key={si}>
                   {section.heading && (
                     <h3 style={{
-                      fontSize: 13, fontWeight: 700, letterSpacing: '0.06em',
-                      textTransform: 'uppercase', color: 'var(--text-dim)',
-                      margin: '0 0 10px', paddingBottom: 7,
+                      fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
+                      color: 'var(--text-dim)', margin: '0 0 11px', paddingBottom: 8,
                       borderBottom: '1px solid var(--border)',
                     }}>{section.heading}</h3>
                   )}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                     {section.lines.map((line, li) => {
-                      if (!line.trim()) return <div key={li} style={{ height: 6 }}/>
-                      const isBullet = line.startsWith('- ') || line.startsWith('• ') || line.startsWith('* ')
+                      if (!line.trim()) return <div key={li} style={{ height: 5 }}/>
+                      const isBullet = /^[-•*]\s/.test(line)
                       const text = isBullet ? line.replace(/^[-•*]\s+/, '') : line
                       return isBullet ? (
                         <div key={li} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                          <span style={{ flexShrink: 0, marginTop: 6, width: 5, height: 5, borderRadius: '50%', background: 'var(--text-dim)' }}/>
-                          <span style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--text-mid)' }}>{text}</span>
+                          <span style={{
+                            flexShrink: 0, marginTop: 7, width: 4, height: 4, borderRadius: '50%',
+                            background: 'var(--accent-ink)', opacity: 0.55,
+                          }}/>
+                          <span style={{ fontSize: 13.5, lineHeight: 1.65, color: 'var(--text-mid)' }}>{text}</span>
                         </div>
                       ) : (
-                        <p key={li} style={{ margin: 0, fontSize: 14, lineHeight: 1.7, color: 'var(--text-mid)' }}>{text}</p>
+                        <p key={li} style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-mid)' }}>{text}</p>
                       )
                     })}
                   </div>
@@ -518,24 +568,24 @@ function JobDetailModal({ job, onClose, onApply, appliedIds }) {
               ))}
             </div>
           ) : description ? (
-            <p style={{ margin: 0, fontSize: 14, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>
+            <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>
               {description}
             </p>
           ) : (
-            <div style={{ textAlign: 'center', padding: '48px 24px', color: 'var(--text-dim)', fontSize: 13 }}>
+            <div style={{ textAlign: 'center', padding: '52px 24px', color: 'var(--text-dim)', fontSize: 13 }}>
               No description available for this role.
             </div>
           )}
         </div>
 
-        {/* ── Footer actions ── */}
+        {/* ── Sticky footer ── */}
         <div style={{
-          padding: '14px 26px 18px',
+          padding: '14px 24px 20px', flexShrink: 0,
           borderTop: '1px solid var(--border)',
-          flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+          background: 'var(--surface)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {applyUrl && (
               <a href={applyUrl} target="_blank" rel="noopener noreferrer" style={{
                 display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5,
@@ -551,48 +601,52 @@ function JobDetailModal({ job, onClose, onApply, appliedIds }) {
                 View original posting
               </a>
             )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button onClick={onClose} style={{
-              padding: '9px 18px', borderRadius: 10, cursor: 'pointer',
-              border: '1px solid var(--border-bright)', background: 'transparent',
-              color: 'var(--text-mid)', fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-              transition: 'color 0.15s',
+            <button onClick={() => setBookmarked(b => !b)} style={{
+              width: 36, height: 36, borderRadius: 9, flexShrink: 0,
+              border: `1px solid ${bookmarked ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+              background: bookmarked ? 'var(--accent-soft)' : 'transparent',
+              cursor: 'pointer', color: bookmarked ? 'var(--accent-ink)' : 'var(--text-dim)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 0.18s',
             }}>
-              Close
+              <svg width={14} height={14} viewBox="0 0 16 16" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3-6 3V3a1 1 0 0 1 1-1z"/></svg>
             </button>
-            {isApplied ? (
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 7,
-                padding: '9px 18px', borderRadius: 10,
-                background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
-                color: 'var(--accent-ink)', fontSize: 13, fontWeight: 600,
-              }}>
-                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
-                Queued to auto-apply
-              </div>
-            ) : (
-              <button onClick={() => { onApply(job); onClose() }} style={{
-                display: 'flex', alignItems: 'center', gap: 7,
-                padding: '9px 22px', borderRadius: 10, cursor: 'pointer',
-                border: 'none', background: 'var(--accent)',
-                color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
-                fontSize: 13.5, fontWeight: 600, boxShadow: 'var(--accent-glow)',
-                transition: 'background 0.18s',
-              }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
-              >
-                Apply
-                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
-              </button>
-            )}
           </div>
+
+          {isApplied ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 7, padding: '10px 18px',
+              borderRadius: 10, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
+              color: 'var(--accent-ink)', fontSize: 13, fontWeight: 600,
+            }}>
+              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
+              Queued to apply
+            </div>
+          ) : (
+            <button onClick={() => { onApply(job); onClose() }} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '10px 24px', borderRadius: 10, cursor: 'pointer',
+              border: 'none', background: 'var(--accent)',
+              color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
+              fontSize: 14, fontWeight: 700, boxShadow: 'var(--accent-glow)',
+              transition: 'background 0.18s, transform 0.12s',
+            }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-strong)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.transform = 'translateY(0)' }}
+            >
+              Apply
+              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
+            </button>
+          )}
         </div>
+
       </div>
     </>
   )
 }
+
+// alias — Dashboard uses JobDetailModal as the component name
+const JobDetailModal = JobDetailPanel
 
 function PassBtn({ onClick }) {
   const [hov, setHov] = useState(false)
@@ -1336,6 +1390,7 @@ export default function Dashboard({ onNavigate }) {
         @keyframes rkFadeIn  { from{opacity:0} to{opacity:1} }
         @keyframes rkScaleIn { from{opacity:0;transform:scale(.97)} to{opacity:1;transform:scale(1)} }
         @keyframes rkDrawer  { from{transform:translateX(102%)} to{transform:translateX(0)} }
+        @keyframes rkSlideInRight { from{opacity:0;transform:translateX(100%)} to{opacity:1;transform:translateX(0)} }
         @keyframes rkSpin    { to{transform:rotate(360deg)} }
         @keyframes rkPulse   { 0%,100%{opacity:.35} 50%{opacity:.9} }
         @keyframes rkShimmer { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
@@ -1390,8 +1445,7 @@ export default function Dashboard({ onNavigate }) {
           .rk-search-input { height: 44px !important; font-size: 13.5px !important; border-radius: 12px !important; padding: 0 12px 0 38px !important; }
           .rk-search-wrap { margin-bottom: 10px !important; }
           .rk-search-kbd { display: none !important; }
-          .rk-filter-bar { flex-wrap: nowrap !important; overflow-x: auto !important; margin-bottom: 16px !important; gap: 6px !important; -ms-overflow-style: none; scrollbar-width: none; }
-          .rk-filter-bar::-webkit-scrollbar { display: none; }
+          .rk-filter-bar { flex-wrap: wrap !important; margin-bottom: 16px !important; gap: 6px !important; }
           .rk-section-header { flex-direction: column !important; align-items: flex-start !important; gap: 10px !important; margin-bottom: 14px !important; }
           .rk-section-header-actions { width: 100% !important; justify-content: space-between !important; }
           .rk-job-grid { grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
@@ -1456,7 +1510,7 @@ export default function Dashboard({ onNavigate }) {
             </div>
             <div className="rk-header-actions" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <ThemeToggle theme={theme} onToggle={toggleTheme} />
-              <UserAvatar initial={userInitial} onClick={() => navigate('Account')} />
+              <UserAvatar initial={userInitial} avatarUrl={user?.user_metadata?.avatar_url} onClick={() => navigate('Account')} />
             </div>
           </div>
 
@@ -1629,19 +1683,29 @@ function ThemeToggle({ theme, onToggle }) {
   )
 }
 
-function UserAvatar({ initial, onClick }) {
+function UserAvatar({ initial, avatarUrl, onClick }) {
   const [hov, setHov] = useState(false)
+  const [imgError, setImgError] = useState(false)
+  const showImg = avatarUrl && !imgError
   return (
     <div onClick={onClick}
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
       style={{
         width: 40, height: 40, borderRadius: 11, cursor: 'pointer',
-        background: 'linear-gradient(135deg, var(--accent2), var(--accent3))',
+        background: showImg ? 'transparent' : 'linear-gradient(135deg, var(--accent2), var(--accent3))',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontWeight: 600, fontSize: 14, color: '#fff',
         opacity: hov ? 0.85 : 1, transition: 'opacity 0.18s',
+        overflow: 'hidden', flexShrink: 0,
       }}>
-      {initial}
+      {showImg ? (
+        <img
+          src={avatarUrl}
+          alt={initial}
+          onError={() => setImgError(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+      ) : initial}
     </div>
   )
 }

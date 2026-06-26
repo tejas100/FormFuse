@@ -2763,7 +2763,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       {!loading && paginated.length > 0 && (
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(5, 1fr)',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))',
           gap: 14,
           marginBottom: 8,
         }}>
@@ -3960,10 +3960,21 @@ export default function Tracking({ onNavigate }) {
         .trk-root ::-webkit-scrollbar{width:8px;height:8px}
         .trk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px}
         .trk-root ::-webkit-scrollbar-track{background:transparent}
+
+        /* ── Main content padding (base = desktop) ── */
+        .trk-main-content { padding: 30px 32px 60px; }
+
+        /* ── Tablet: 768–1199px ── */
+        @media (max-width: 1199px) {
+          .trk-main-content { padding: 24px 22px 60px !important; }
+        }
+
         @media (max-width: 767px) {
           [data-trk-root] { flex-direction: column !important; }
           .trk-root { flex: 1 !important; min-height: 0 !important; height: auto !important; }
           .trk-main-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+          .trk-header-actions { display: none !important; }
+          .trk-page-title { font-size: 21px !important; }
         }
       `}</style>
 
@@ -4006,7 +4017,7 @@ export default function Tracking({ onNavigate }) {
         <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
         <div style={{ position: 'absolute', top: 120, right: -140, width: 480, height: 480, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-2), transparent 70%)', pointerEvents: 'none', zIndex: 0 }}/>
 
-        <div style={{ position: 'relative', zIndex: 1, padding: '30px 32px 60px' }}>
+        <div className="trk-main-content" style={{ position: 'relative', zIndex: 1 }}>
 
           {/* ── Page header — dynamic per active tab ── */}
           {(() => {
@@ -4021,10 +4032,10 @@ export default function Tracking({ onNavigate }) {
             return (
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, marginBottom: 28 }}>
                 <div>
-                  <h1 style={{ fontSize: 25, fontWeight: 600, letterSpacing: '-0.01em', margin: '0 0 5px' }}>{meta.label}</h1>
+                  <h1 className="trk-page-title" style={{ fontSize: 25, fontWeight: 600, letterSpacing: '-0.01em', margin: '0 0 5px' }}>{meta.label}</h1>
                   <p style={{ fontSize: 14, color: 'var(--text-mid)', margin: 0 }}>{meta.sub}</p>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="trk-header-actions" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <button onClick={toggleTheme} title="Toggle theme"
                     style={{
                       width: 40, height: 40, borderRadius: 11, cursor: 'pointer',

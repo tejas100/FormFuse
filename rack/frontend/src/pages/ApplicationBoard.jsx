@@ -544,7 +544,9 @@ const BOARD_CSS = `
 }
 /* ===== end standalone tokens ===== */
 
-.rkkb-shell{ position:fixed; inset:0; display:flex; --sidebar-bg:#15191a; }
+.rkkb-shell{ position:fixed; inset:0; display:flex; }
+.rkkb-shell:has(.rkkb[data-theme="dark"])  { --sidebar-bg:#0c0c0f; }
+.rkkb-shell:has(.rkkb[data-theme="light"]) { --sidebar-bg:#EFEDE4; }
 
 .rkkb{ position:relative; flex:1; min-width:0; min-height:0; height:100%;
   display:flex; flex-direction:column; background:var(--board);

@@ -70,7 +70,7 @@ function ChipInput({ items, onUpdate, presets, placeholder, accent = 'var(--acce
 /* ── FieldRow — label + right-aligned control ─────────────────────────────── */
 function FieldRow({ label, sub, children, last }) {
   return (
-    <div style={{
+    <div className="rk-acct-fieldrow" style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       gap: 16, padding: '14px 0',
       borderBottom: last ? 'none' : '1px solid var(--border)',
@@ -80,7 +80,7 @@ function FieldRow({ label, sub, children, last }) {
         <div style={{ fontSize: 13.5, fontWeight: 550, color: 'var(--text)', letterSpacing: '-0.01em' }}>{label}</div>
         {sub && <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2, lineHeight: 1.4 }}>{sub}</div>}
       </div>
-      <div style={{ flexShrink: 0 }}>{children}</div>
+      <div className="rk-acct-fieldctrl" style={{ flexShrink: 0 }}>{children}</div>
     </div>
   )
 }
@@ -104,6 +104,7 @@ function SettingsCard({ title, children, action }) {
 function StyledInput({ value, onChange, placeholder, type = 'text', width, align = 'left' }) {
   return (
     <input type={type} value={value || ''} onChange={onChange} placeholder={placeholder}
+      className="rk-acct-input"
       style={{
         width: width || '100%', padding: '8px 13px', borderRadius: 9, boxSizing: 'border-box',
         border: '1px solid var(--border)', background: 'var(--surface2)',
@@ -187,10 +188,11 @@ function SignInPage({ onSignIn, navigate, theme, toggleTheme }) {
   const displayName = ''
   const userInitial = ''
   return (
-    <div data-theme={theme} style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-sans)', position: 'fixed', inset: 0, zIndex: 1 }}>
-      <style>{`@keyframes rkSpin{to{transform:rotate(360deg)}} @keyframes rkFadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}`}</style>
+    <div className="rk-acct-root" data-theme={theme} style={{ display: 'flex', height: '100dvh', width: '100%', overflow: 'hidden', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-sans)', position: 'fixed', inset: 0, zIndex: 1 }}>
+      <style>{`@keyframes rkSpin{to{transform:rotate(360deg)}} @keyframes rkFadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+        @media (max-width: 767px){ .rk-acct-root{ flex-direction: column !important; } .rk-acct-main{ flex:1 !important; min-height:0 !important; height:auto !important; } }`}</style>
       <Sidebar activeNav="Account" onNavigate={navigate} userName="" userInitial="" theme={theme} onToggleTheme={toggleTheme} />
-      <main style={{ flex: 1, height: '100%', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 24px' }}>
+      <main className="rk-acct-main" style={{ flex: 1, height: '100%', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 24px' }}>
         <div style={{ width: '100%', maxWidth: 400, animation: 'rkFadeUp 0.4s ease both' }}>
           <div style={{ textAlign: 'center', marginBottom: 36 }}>
             <div style={{ width: 52, height: 52, borderRadius: 14, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
@@ -330,7 +332,7 @@ function AccountDashboard({ user, onSignOut, navigate, theme, toggleTheme }) {
   ]
 
   return (
-    <div className="rk-acct-root" data-theme={theme} style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-sans)', position: 'fixed', inset: 0, zIndex: 1 }}>
+    <div className="rk-acct-root" data-theme={theme} style={{ display: 'flex', height: '100dvh', width: '100%', overflow: 'hidden', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-sans)', position: 'fixed', inset: 0, zIndex: 1 }}>
       <style>{`
         @keyframes rkFadeUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
         @keyframes rkSpin   { to{transform:rotate(360deg)} }
@@ -347,7 +349,29 @@ function AccountDashboard({ user, onSignOut, navigate, theme, toggleTheme }) {
         .rk-settings-tab.active svg { color:var(--accent-ink); }
         .rk-field-input { width:100%; padding:8px 13px; border-radius:9px; border:1px solid var(--border); background:var(--surface2); color:var(--text); font-family:var(--font-sans); font-size:13px; outline:none; box-sizing:border-box; transition:border-color 0.15s; }
         .rk-field-input:focus { border-color:var(--accent-line); }
-        @media(max-width:900px) { .rk-acct-cols { flex-direction:column !important; } .rk-acct-settings-nav { display:none !important; } }
+
+        .rk-acct-main { overflow-x: hidden; }
+        .rk-acct-content { padding: 30px 32px 60px; }
+        @media (max-width: 1199px) {
+          .rk-acct-content { padding: 24px 24px 60px; }
+        }
+        /* Tablet/mobile: stack columns; turn the settings nav into a horizontal
+           scroller instead of hiding it (so sections stay switchable). */
+        @media (max-width: 900px) {
+          .rk-acct-cols { flex-direction: column !important; align-items: stretch !important; }
+          .rk-acct-settings-nav { width: 100% !important; position: static !important; }
+          .rk-acct-settings-nav > div { display: flex !important; flex-direction: row !important; overflow-x: auto !important; gap: 6px; scrollbar-width: none; }
+          .rk-acct-settings-nav > div::-webkit-scrollbar { display: none; }
+          .rk-settings-tab { white-space: nowrap; flex-shrink: 0; }
+        }
+        @media (max-width: 767px) {
+          .rk-acct-root { flex-direction: column !important; }
+          .rk-acct-main { flex: 1 !important; min-height: 0 !important; height: auto !important; }
+          .rk-acct-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+          .rk-acct-fieldrow { flex-direction: column !important; align-items: stretch !important; gap: 8px !important; }
+          .rk-acct-fieldctrl { width: 100% !important; }
+          .rk-acct-input { width: 100% !important; text-align: left !important; }
+        }
       `}</style>
 
       {/* ── Logout overlay ── */}
@@ -387,12 +411,12 @@ function AccountDashboard({ user, onSignOut, navigate, theme, toggleTheme }) {
       />
 
       {/* ── Main ── */}
-      <main style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
+      <main className="rk-acct-main" style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
         {/* Ambient glows */}
         <div style={{ position: 'absolute', top: -120, left: -60, width: 480, height: 480, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
         <div style={{ position: 'absolute', bottom: 80, right: -100, width: 380, height: 380, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-2), transparent 70%)', pointerEvents: 'none', zIndex: 0 }}/>
 
-        <div style={{ position: 'relative', zIndex: 1, maxWidth: 1100, margin: '0 auto', padding: '30px 32px 60px' }}>
+        <div className="rk-acct-content" style={{ position: 'relative', zIndex: 1, maxWidth: 1100, margin: '0 auto' }}>
 
           {/* ── Page header ── */}
           <div style={{ marginBottom: 32, animation: 'rkFadeUp 0.35s ease both' }}>

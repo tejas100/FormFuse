@@ -365,7 +365,7 @@ export default function Resumes({ onNavigate }) {
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="rk-root" data-theme={theme}
-      style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden',
+      style={{ display: 'flex', height: '100dvh', width: '100%', overflow: 'hidden',
         background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-sans)',
         position: 'fixed', inset: 0, zIndex: 1 }}>
 
@@ -374,6 +374,17 @@ export default function Resumes({ onNavigate }) {
         @keyframes rkShimmer { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
         @keyframes rkSpin    { to{transform:rotate(360deg)} }
         .rk-root ::-webkit-scrollbar{width:8px} .rk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px} .rk-root ::-webkit-scrollbar-track{background:transparent}
+
+        .rk-res-main { overflow-x: hidden; }
+        .rk-res-content { padding: 30px 40px 60px; }
+        @media (max-width: 1199px) {
+          .rk-res-content { padding: 24px 24px 60px; }
+        }
+        @media (max-width: 767px) {
+          .rk-root { flex-direction: column !important; }
+          .rk-res-main { flex: 1 !important; min-height: 0 !important; height: auto !important; }
+          .rk-res-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+        }
       `}</style>
 
       {/* ── SIDEBAR ── */}
@@ -389,12 +400,12 @@ export default function Resumes({ onNavigate }) {
       />
 
       {/* ── MAIN ── */}
-      <main style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
+      <main className="rk-res-main" style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
         {/* Ambient glows */}
         <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
         <div style={{ position: 'absolute', top: 200, right: -140, width: 400, height: 400, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-2), transparent 70%)', pointerEvents: 'none', zIndex: 0 }}/>
 
-        <div style={{ position: 'relative', zIndex: 1, padding: '30px 40px 60px' }}>
+        <div className="rk-res-content" style={{ position: 'relative', zIndex: 1 }}>
 
           {/* Page header */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, marginBottom: 28 }}>
@@ -416,7 +427,7 @@ export default function Resumes({ onNavigate }) {
             <div style={{
               marginBottom: 20, padding: '12px 18px', borderRadius: 14,
               background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)',
-              display: 'flex', alignItems: 'center', gap: 10, animation: 'rkFadeUp 0.3s ease both',
+              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', animation: 'rkFadeUp 0.3s ease both',
             }}>
               <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 2L1.5 13h13z"/><path d="M8 6v4M8 11.5v.5"/></svg>
               <span style={{ fontSize: 13, color: 'rgba(251,191,36,0.85)', flex: 1 }}>
@@ -429,7 +440,7 @@ export default function Resumes({ onNavigate }) {
           )}
 
           {/* Card grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
             {loading
               ? [0,1,2].map(i => <SkeletonCard key={i}/>)
               : <>
@@ -457,7 +468,7 @@ export default function Resumes({ onNavigate }) {
       {deleteConfirm && (
         <div style={{ position: 'fixed', inset: 0, background: 'var(--modal-overlay)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}
           onClick={e => e.target === e.currentTarget && setDeleteConfirm(null)}>
-          <div style={{ background: 'var(--bg)', border: '1px solid var(--border-bright)', borderRadius: 20, padding: '28px 32px', width: 340, animation: 'rkFadeUp 0.25s ease both', boxShadow: 'var(--modal-shadow)' }}>
+          <div style={{ background: 'var(--bg)', border: '1px solid var(--border-bright)', borderRadius: 20, padding: '28px 32px', width: 340, maxWidth: '90vw', animation: 'rkFadeUp 0.25s ease both', boxShadow: 'var(--modal-shadow)' }}>
             <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Delete resume?</div>
             <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 22, lineHeight: 1.6 }}>
               This will permanently remove the resume and its embeddings. This cannot be undone.
