@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
 import { useTheme } from '../App'
@@ -363,7 +364,7 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
     department && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 4h12M4 4V2h8v2M4 14V8M12 14V8M2 14h12"/></svg>, label: department },
   ].filter(Boolean)
 
-  return (
+  return createPortal(
     <>
       {/* Backdrop */}
       <div onClick={onClose} style={{
@@ -373,8 +374,8 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
         animation: 'rkFadeIn 0.2s ease both',
       }}/>
 
-      {/* Slide-in panel */}
-      <div style={{
+      {/* Slide-in panel — desktop: right drawer | mobile: bottom sheet */}
+      <div className="rk-detail-panel" style={{
         position: 'fixed', top: 0, right: 0, bottom: 0,
         width: 'min(520px, 92vw)',
         background: 'var(--surface)',
@@ -385,6 +386,11 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
         animation: 'rkSlideInRight 0.36s cubic-bezier(0.22,1,0.36,1) both',
         overflowY: 'hidden',
       }}>
+
+        {/* ── Mobile drag handle (hidden on desktop) ── */}
+        <div className="rk-detail-handle" style={{ display: 'none', justifyContent: 'center', padding: '10px 0 4px', flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 4, background: 'var(--border-bright)' }}/>
+        </div>
 
         {/* ── Accent bar ── */}
         <div style={{ height: 3, background: `linear-gradient(90deg, ${brand}, ${brand}88 60%, transparent 100%)`, flexShrink: 0 }}/>
@@ -641,7 +647,8 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
         </div>
 
       </div>
-    </>
+    </>,
+    document.body
   )
 }
 
@@ -1119,6 +1126,133 @@ function DropdownOption({ label, selected, onClick }) {
   )
 }
 
+
+// ── Mobile filter button + bottom sheet ────────────────────────────────────────
+
+const DROPDOWN_FILTERS_LIST = DROPDOWN_FILTERS   // reuse existing constant
+const FILTER_OPTIONS_MAP    = FILTER_OPTIONS     // reuse existing constant
+
+function MobileFilterBtn({ activeFilters, onClick }) {
+  const activeCount = Object.values(activeFilters).filter(v => v && v !== 'all').length
+  return (
+    <button
+      className="rk-mobile-filter-btn"
+      onClick={onClick}
+      style={{
+        display: 'none',   // overridden to flex by mobile media query
+        alignItems: 'center', gap: 8,
+        padding: '9px 16px', borderRadius: 10, cursor: 'pointer',
+        fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 600,
+        border: `1px solid ${activeCount > 0 ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+        background: activeCount > 0 ? 'var(--accent-soft)' : 'var(--surface)',
+        color: activeCount > 0 ? 'var(--text)' : 'var(--text-mid)',
+        transition: 'background 0.15s, border-color 0.15s, color 0.12s',
+        marginBottom: 14, width: '100%', justifyContent: 'center',
+      }}>
+      <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2 4h12M4 8h8M6 12h4"/>
+      </svg>
+      Filters
+      {activeCount > 0 && (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: 19, height: 19, borderRadius: '50%',
+          background: 'var(--accent)', color: 'var(--accent-contrast)',
+          fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700,
+        }}>{activeCount}</span>
+      )}
+    </button>
+  )
+}
+
+function MobileFilterSheet({ open, onClose, activeFilters, onFilterChange, onClearAll }) {
+  const hasAnyActive = Object.values(activeFilters).some(v => v && v !== 'all')
+  if (!open) return null
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+        zIndex: 200, backdropFilter: 'blur(2px)',
+        animation: 'rkFadeIn 0.22s ease both',
+      }}/>
+      {/* Sheet */}
+      <div style={{
+        position: 'fixed', left: 0, right: 0, bottom: 0,
+        background: 'var(--surface)', borderRadius: '20px 20px 0 0',
+        borderTop: '1px solid var(--border-bright)',
+        zIndex: 201, maxHeight: '88dvh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 -12px 48px rgba(0,0,0,0.4)',
+        animation: 'rkMobileSheet 0.34s cubic-bezier(0.22,1,0.36,1) both',
+        paddingBottom: 'calc(56px + env(safe-area-inset-bottom, 0px))',
+      }}>
+        {/* Handle */}
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px' }}>
+          <div style={{ width: 36, height: 4, borderRadius: 4, background: 'var(--border-bright)' }}/>
+        </div>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 20px 14px', flexShrink: 0 }}>
+          <span style={{ fontSize: 16, fontWeight: 600 }}>Filters</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {hasAnyActive && (
+              <button onClick={onClearAll} style={{
+                padding: '6px 12px', borderRadius: 8, cursor: 'pointer',
+                fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500,
+                background: 'transparent', color: 'var(--danger)', border: '1px solid transparent',
+              }}>Clear all</button>
+            )}
+            <button onClick={onClose} style={{
+              width: 32, height: 32, borderRadius: 9, border: '1px solid var(--border)',
+              background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+          </div>
+        </div>
+        {/* Filter sections */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 20px 20px' }}>
+          {DROPDOWN_FILTERS_LIST.map(f => {
+            const currentVal = activeFilters[f.id] || 'all'
+            const options    = FILTER_OPTIONS_MAP[f.id] || []
+            return (
+              <div key={f.id} style={{ marginBottom: 22 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 9 }}>
+                  {f.label}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+                  {options.map(opt => {
+                    const selected = currentVal === opt.id
+                    return (
+                      <button key={opt.id} onClick={() => onFilterChange(f.id, opt.id)} style={{
+                        padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
+                        fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: selected ? 600 : 400,
+                        border: `1px solid ${selected ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+                        background: selected ? 'var(--accent-soft)' : 'var(--surface2)',
+                        color: selected ? 'var(--text)' : 'var(--text-mid)',
+                        transition: 'background 0.13s, border-color 0.13s',
+                      }}>{opt.label}</button>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        {/* Done */}
+        <div style={{ padding: '12px 20px 16px', flexShrink: 0, borderTop: '1px solid var(--border)' }}>
+          <button onClick={onClose} style={{
+            width: '100%', padding: '14px', borderRadius: 12, cursor: 'pointer',
+            border: 'none', background: 'var(--accent)',
+            color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
+            fontSize: 15, fontWeight: 700, boxShadow: 'var(--accent-glow)',
+          }}>Done</button>
+        </div>
+      </div>
+    </>
+  )
+}
+
 // ── Main Dashboard ─────────────────────────────────────────────────────────────
 
 export default function Dashboard({ onNavigate }) {
@@ -1141,6 +1275,7 @@ export default function Dashboard({ onNavigate }) {
   const [assistantOpen, setAssistantOpen]   = useState(false)
   const [searchQuery, setSearchQuery]       = useState('')
   const [activeFilters, setActiveFilters]   = useState({})   // { date: 'all', location: 'remote', … }
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false)
   const [appsTab, setAppsTab]               = useState('all')
   const [appsData, setAppsData]             = useState([])
   const [selectedJob, setSelectedJob]       = useState(null)
@@ -1322,7 +1457,7 @@ export default function Dashboard({ onNavigate }) {
     return jobs
   })()
 
-  const DASHBOARD_JOB_CAP = 6    // dashboard shows top 6; "Browse all" → Tracking
+  const DASHBOARD_JOB_CAP = 5    // dashboard shows top 5; "Browse all" → Tracking
 
   const freshCount = allJobs.filter(j => {
     const d = new Date(j.matched_at || j.posted_at || 0)
@@ -1394,6 +1529,7 @@ export default function Dashboard({ onNavigate }) {
         @keyframes rkSpin    { to{transform:rotate(360deg)} }
         @keyframes rkPulse   { 0%,100%{opacity:.35} 50%{opacity:.9} }
         @keyframes rkShimmer { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
+        @keyframes rkMobileSheet { from{transform:translateY(100%)} to{transform:translateY(0)} }
 
         .rk-root ::-webkit-scrollbar{width:6px;height:6px}
         .rk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px}
@@ -1401,7 +1537,7 @@ export default function Dashboard({ onNavigate }) {
         .rk-job-card:hover { transform: translateY(-3px) !important; border-color: var(--border-bright) !important; box-shadow: var(--card-hover-shadow) !important; }
 
         /* ── Job grid — desktop default ── */
-        .rk-job-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }
+        .rk-job-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
 
         /* ── Main content padding ── */
         .rk-main-content { padding: 30px 32px 60px; position: relative; }
@@ -1445,7 +1581,11 @@ export default function Dashboard({ onNavigate }) {
           .rk-search-input { height: 44px !important; font-size: 13.5px !important; border-radius: 12px !important; padding: 0 12px 0 38px !important; }
           .rk-search-wrap { margin-bottom: 10px !important; }
           .rk-search-kbd { display: none !important; }
-          .rk-filter-bar { flex-wrap: wrap !important; margin-bottom: 16px !important; gap: 6px !important; }
+          .rk-filter-bar { display: none !important; }
+          .rk-mobile-filter-btn { display: flex !important; }
+          /* ── Compact cards on mobile ── */
+          .rk-job-card { padding: 10px 10px 9px !important; gap: 7px !important; border-radius: 12px !important; }
+          .rk-job-card h3 { font-size: 11.5px !important; min-height: 28px !important; }
           .rk-section-header { flex-direction: column !important; align-items: flex-start !important; gap: 10px !important; margin-bottom: 14px !important; }
           .rk-section-header-actions { width: 100% !important; justify-content: space-between !important; }
           .rk-job-grid { grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
@@ -1457,8 +1597,28 @@ export default function Dashboard({ onNavigate }) {
         }
 
         @media (max-width: 420px) {
-          .rk-job-grid { grid-template-columns: 1fr !important; }
+          .rk-job-grid { grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
           .rk-main-content { padding: 14px 12px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+        }
+
+        /* ── Mobile: detail panel → bottom sheet ── */
+        @media (max-width: 767px) {
+          @keyframes rkSlideUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
+          .rk-detail-handle { display: flex !important; }
+          .rk-detail-panel {
+            top: auto !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            width: 100% !important;
+            max-height: 92dvh !important;
+            border-left: none !important;
+            border-top: 1px solid var(--border-bright) !important;
+            border-radius: 20px 20px 0 0 !important;
+            box-shadow: 0 -16px 60px rgba(0,0,0,0.55) !important;
+            animation: rkSlideUp 0.38s cubic-bezier(0.22,1,0.36,1) both !important;
+            padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+          }
         }
       `}</style>
 
@@ -1535,11 +1695,22 @@ export default function Dashboard({ onNavigate }) {
             }}>⌘K</kbd>
           </div>
 
-          {/* Filter bar */}
+          {/* Filter bar — desktop: 7 chips | mobile: single button → sheet */}
           <FilterBar
             activeFilters={activeFilters}
             onFilterChange={(filterId, val) => setActiveFilters(prev => ({ ...prev, [filterId]: val }))}
             onClearAll={() => setActiveFilters({})}
+          />
+          <MobileFilterBtn
+            activeFilters={activeFilters}
+            onClick={() => setFilterSheetOpen(true)}
+          />
+          <MobileFilterSheet
+            open={filterSheetOpen}
+            onClose={() => setFilterSheetOpen(false)}
+            activeFilters={activeFilters}
+            onFilterChange={(filterId, val) => setActiveFilters(prev => ({ ...prev, [filterId]: val }))}
+            onClearAll={() => { setActiveFilters({}); }}
           />
 
           {/* Section header */}

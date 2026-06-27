@@ -731,6 +731,25 @@ async def _run_auto_pipeline_inner(
     # ── Validate profile ──────────────────────────────────────────────
     target_roles = profile.get("target_roles", [])
     if not target_roles:
+        # No target roles set yet — but the user may have instant-match results
+        # from the onboarding pgvector pipeline (llm_scored=False rows).
+        # Return those so the Dashboard isn't empty on first load.
+        if db is not None:
+            existing = await _load_results_from_db(user_id, db)
+            if existing:
+                logger.info(
+                    f"[AutoMatch] user={user_id} No target_roles — "
+                    f"serving {len(existing)} instant-match rows from DB"
+                )
+                return {
+                    "matches": existing[:DISPLAY_CAP],
+                    "stats": {
+                        "from_cache": True,
+                        "instant_match": True,
+                        "message": "Showing instant matches. Set target roles in Account to enable full scoring.",
+                    },
+                    "from_cache": True,
+                }
         return {
             "matches": [],
             "stats": {

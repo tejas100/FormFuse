@@ -1245,3 +1245,77 @@ Call exactly ONE routing tool now."""
             return ChatResponse(tool="route_to_apply", intent="APPLY", apply_jobs=[])
 
         return ChatResponse(tool="answer_career_question", intent="CAREER_QUESTION", reply=reply)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/match/onboarding — Instant match trigger (fire-and-forget)
+#
+# Called by Onboarding.jsx right after resume upload fires.
+# Runs run_instant_match() as a FastAPI BackgroundTask so this endpoint
+# returns { status: "queued" } immediately (< 50ms).
+#
+# The actual pgvector search runs in the background (~5–15s).
+# Dashboard fetches auto_match_results on mount — results will be ready.
+#
+# Auth: required (authenticated users only — instant match needs DB resumes).
+# ══════════════════════════════════════════════════════════════════════════════
+
+from fastapi import BackgroundTasks
+from fastapi.security import HTTPBearer as _OBBearer, HTTPAuthorizationCredentials as _OBCreds
+from typing import Optional as _Opt
+
+_ob_bearer = _OBBearer(auto_error=False)
+
+import logging as _ob_log
+_onboarding_log = _ob_log.getLogger(__name__)
+
+
+async def _run_instant_match_bg(user_id: str) -> None:
+    """
+    BackgroundTask wrapper: opens its own DB session and calls run_instant_match.
+    Isolated from the request session so the response can return before this finishes.
+    """
+    from db.database import AsyncSessionLocal
+    from services.instant_match import run_instant_match
+
+    _onboarding_log.info(f"[OnboardingMatch] Background task started for user={user_id}")
+    try:
+        async with AsyncSessionLocal() as bg_db:
+            result = await run_instant_match(user_id=user_id, db=bg_db)
+        _onboarding_log.info(f"[OnboardingMatch] Complete for user={user_id}: {result}")
+    except Exception as e:
+        _onboarding_log.error(f"[OnboardingMatch] Failed for user={user_id}: {e}", exc_info=True)
+
+
+@router.post("/onboarding")
+async def trigger_onboarding_match(
+    background_tasks: BackgroundTasks,
+    credentials: _Opt[_OBCreds] = Depends(_ob_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Kick off instant match for a newly onboarded user.
+
+    Returns immediately with { status: "queued" }.
+    The actual pgvector search runs as a background task.
+
+    Frontend (Onboarding.jsx) calls this right after resume upload fires.
+    Dashboard picks up the results when it mounts — they'll be ready.
+    """
+    from routers.auth import get_current_user as _get_current_user
+
+    # Require a valid JWT — instant match only works for authenticated users
+    # (needs resume_embedding from the DB resumes table).
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    try:
+        current_user = await _get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
+    user_id = str(current_user.id)
+    background_tasks.add_task(_run_instant_match_bg, user_id)
+
+    _onboarding_log.info(f"[OnboardingMatch] Queued for user={user_id}")
+    return {"status": "queued", "user_id": user_id}

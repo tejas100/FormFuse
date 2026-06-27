@@ -136,6 +136,9 @@ class Resume(Base):
     )
     full_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Added Migration B (2026-06-27): averaged chunk embedding for instant match
+    resume_embedding: Mapped[list | None] = mapped_column(Vector(1536), nullable=True)
+
     user: Mapped["User"] = relationship("User", back_populates="resumes")
     chunks: Mapped[list["ResumeChunk"]] = relationship(
         "ResumeChunk", back_populates="resume", cascade="all, delete-orphan"
@@ -212,6 +215,12 @@ class AutoMatchResult(Base):
     )
     applied:    Mapped[bool]               = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     applied_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    # Added Migration C (2026-06-27): False = instant pgvector match, True = LLM confirmed
+    llm_scored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+
+    # Added Migration D (2026-06-27): which resume produced the best score for this job
+    recommended_resume_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "job_id", name="uq_auto_match_user_job"),

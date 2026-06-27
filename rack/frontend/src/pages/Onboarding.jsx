@@ -1578,7 +1578,19 @@ export default function Onboarding({ user, onComplete }) {
   const handleUploadContinue = () => {
     // Kick off uploads in the background — don't await.
     // Terminal animation starts immediately; user advances to step 1 right away.
-    uploadResumes(uploadedFiles)
+    // After uploads settle, also trigger instant match (fire-and-forget).
+    uploadResumes(uploadedFiles).then(async () => {
+      try {
+        const headers = await getAuthHeaders()
+        await fetch(`${API_BASE}/api/match/onboarding`, {
+          method: 'POST',
+          headers,
+        })
+      } catch (err) {
+        // Non-fatal — scheduler will cover it on next run
+        console.warn('[Onboarding] instant match trigger failed:', err)
+      }
+    })
     setStep(1)
   }
 

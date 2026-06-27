@@ -255,6 +255,50 @@ async def upload_resume(
 
     await db.commit()
 
+    # ── Compute and store resume_embedding ───────────────────────────────
+    # Average all chunk embeddings into one vector → stored on the Resume row.
+    # Used by instant_match.py (onboarding pipeline) for fast pgvector search.
+    # Done after commit so the resume row exists before we UPDATE it.
+    try:
+        chunk_embs = [
+            chunk["embedding"]
+            for chunk in chunks
+            if chunk.get("embedding") and len(chunk["embedding"]) == 1536
+        ]
+        if chunk_embs:
+            import httpx as _httpx_re
+            import json as _json_re
+
+            # Average across all chunk embeddings (element-wise mean)
+            dim = len(chunk_embs[0])
+            avg_emb = [
+                sum(chunk_embs[c][d] for c in range(len(chunk_embs))) / len(chunk_embs)
+                for d in range(dim)
+            ]
+            emb_literal = "[" + ",".join(str(x) for x in avg_emb) + "]"
+
+            from sqlalchemy import text as _sa_text
+            await db.execute(
+                _sa_text(
+                    "UPDATE resumes SET resume_embedding = CAST(:emb AS vector) "
+                    "WHERE id = :rid"
+                ),
+                {"emb": emb_literal, "rid": resume_id},
+            )
+            await db.commit()
+            logger.info(
+                f"[resumes] resume_embedding stored for resume {resume_id} "
+                f"({len(chunk_embs)} chunks averaged)"
+            )
+        else:
+            logger.warning(
+                f"[resumes] No valid 1536-dim chunk embeddings for resume {resume_id} "
+                f"— resume_embedding left NULL"
+            )
+    except Exception as _emb_err:
+        # Non-fatal — resume is already saved; embedding can be added later
+        logger.warning(f"[resumes] resume_embedding write failed for {resume_id}: {_emb_err}")
+
     logger.info(
         f"Resume '{file.filename}' uploaded for user {current_user.id} "
         f"({len(chunks)} chunks, storage: {storage_path})"
@@ -521,4 +565,103 @@ async def upload_tex(
         "status": "success",
         "message": "LaTeX source attached. autrack is now active for this resume.",
         "has_tex": True,
+    }
+
+
+# ── Optimize resume against a job description ─────────────────────────────────
+
+@router.post("/{resume_id}/optimize")
+async def optimize_resume(
+    resume_id: str,
+    body: dict,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Generate surgical keyword edits for a resume targeted at a specific job.
+
+    Body: { "job_id": "greenhouse_12345", "missing_skills": ["Kubernetes", "Terraform"] }
+
+    Flow:
+      1. Fetch Resume row → get full_text
+      2. Fetch description_text from job_pool via raw psycopg2 (job_pool is NOT ORM)
+      3. Call resume_optimizer.generate_resume_edits()
+      4. Return structured diff: { edits, summary, keyword_gaps, keywords_already_present }
+
+    Edits are NOT persisted — frontend renders them for user review/acceptance.
+    """
+    import psycopg2
+    from services.resume_optimizer import generate_resume_edits
+
+    # ── Validate resume_id ────────────────────────────────────────────────────
+    try:
+        rid = uuid.UUID(resume_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid resume ID.")
+
+    job_id = body.get("job_id")
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required.")
+
+    missing_skills = body.get("missing_skills", [])
+
+    # ── Fetch resume ──────────────────────────────────────────────────────────
+    resume_result = await db.execute(
+        select(Resume).where(Resume.id == rid, Resume.user_id == current_user.id)
+    )
+    resume = resume_result.scalar_one_or_none()
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found.")
+
+    if not resume.full_text or not resume.full_text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This resume has no stored text. "
+                "Delete it and re-upload to enable optimization."
+            ),
+        )
+
+    # ── Fetch JD from job_pool (raw psycopg2 — job_pool is NEVER accessed via ORM) ──
+    DATABASE_URL_DIRECT = os.getenv("DATABASE_URL_DIRECT")
+    jd_description_text = ""
+    if DATABASE_URL_DIRECT:
+        try:
+            # Strip SQLAlchemy driver prefix before passing to psycopg2
+            dsn = DATABASE_URL_DIRECT.replace("postgresql+psycopg2://", "postgresql://")
+            conn = psycopg2.connect(dsn)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT description_text FROM job_pool WHERE job_id = %s LIMIT 1",
+                        (job_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        jd_description_text = row[0] or ""
+            finally:
+                conn.close()
+        except Exception as e:
+            # Non-fatal — optimizer still runs on missing_skills alone
+            logger.warning(f"[optimize] job_pool fetch failed for job_id={job_id}: {e}")
+    else:
+        logger.warning("[optimize] DATABASE_URL_DIRECT not set — skipping JD fetch")
+
+    logger.info(
+        f"[optimize] user={current_user.id} resume={rid} job={job_id} "
+        f"jd_chars={len(jd_description_text)} missing={missing_skills}"
+    )
+
+    # ── Call optimizer service ────────────────────────────────────────────────
+    result_data = await generate_resume_edits(
+        resume_full_text=resume.full_text,
+        jd_description_text=jd_description_text,
+        missing_skills=missing_skills,
+    )
+
+    return {
+        "status": "success",
+        "resume_id": str(rid),
+        "job_id": job_id,
+        **result_data,
     }

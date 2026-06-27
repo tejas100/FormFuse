@@ -124,50 +124,19 @@ async def auto_refresh(
     user_role = getattr(current_user, "role", "free") or "free"
     user_id   = str(current_user.id)
 
-    # Free users never trigger the pipeline — return their slot view instantly
+    # Free users: return all auto_match_results directly.
+    # Daily slot drip system (8 jobs/day) has been removed — show all matches immediately.
     if user_role not in ("admin", "pro"):
-        from models.orm import AutoMatchResult, DailySlotLog
+        from models.orm import AutoMatchResult
         import uuid as _uuid
-        from datetime import date
-
         user_uuid = _uuid.UUID(user_id)
-        today = date.today()
-
-        slots_stmt = (
-            select(DailySlotLog)
-            .where(DailySlotLog.user_id == user_uuid)
-            .order_by(DailySlotLog.slot_date.desc(), DailySlotLog.served_at.desc())
-        )
-        slots_result = await db.execute(slots_stmt)
-        slots = slots_result.scalars().all()
-
-        served_job_ids = [s.job_id for s in slots]
-        matches = []
-        if served_job_ids:
-            from sqlalchemy import select as sa_select
-            jobs_stmt = (
-                sa_select(AutoMatchResult)
-                .where(AutoMatchResult.user_id == user_uuid)
-                .where(AutoMatchResult.job_id.in_(served_job_ids))
-            )
-            jobs_result = await db.execute(jobs_stmt)
-            job_rows = {r.job_id: r for r in jobs_result.scalars().all()}
-            for slot in slots:
-                row = job_rows.get(slot.job_id)
-                if row:
-                    job = dict(row.job_data or {})
-                    job["score"]       = slot.score
-                    job["rank_reason"] = slot.rank_reason
-                    job["is_new"]      = (slot.slot_date == today)
-                    job["applied"]     = row.applied or False
-                    job["applied_at"]  = row.applied_at.isoformat() if row.applied_at else None
-                    matches.append(job)
-
+        all_results = await _load_results_from_db(user_id=user_id, db=db, limit=DISPLAY_CAP)
+        logger.info(f"[auto_refresh] Free user {user_id}: serving {len(all_results)} matches")
         return {
-            "matches": matches,
-            "stats":   {"from_cache": True, "is_slot_view": True},
-            "from_cache": True,
-            "is_slot_view": True,
+            "matches":      all_results,
+            "stats":        {"from_cache": True, "is_slot_view": False},
+            "from_cache":   True,
+            "is_slot_view": False,
         }
 
     # Admin/Pro — run scoring pipeline against cached pool only.
@@ -228,51 +197,11 @@ async def auto_matches(
         )
         return results
 
-    # Free users: return cumulative served jobs from daily_slot_log
-    from models.orm import AutoMatchResult, DailySlotLog
+    # Free users: return all auto_match_results (instant-match + scheduled pipeline).
+    # The daily_slot_log drip system has been removed — show everything immediately.
     import uuid as _uuid
-    from datetime import date
-
-    user_uuid = _uuid.UUID(user_id)
-    today = date.today()
-
-    # All slots ever served for this user, newest batch first
-    slots_stmt = (
-        select(DailySlotLog)
-        .where(DailySlotLog.user_id == user_uuid)
-        .order_by(DailySlotLog.slot_date.desc(), DailySlotLog.served_at.desc())
-    )
-    slots_result = await db.execute(slots_stmt)
-    slots = slots_result.scalars().all()
-
-    if not slots:
-        return {"matches": [], "total": 0, "is_slot_view": True}
-
-    # Fetch full job_data for each served slot
-    served_job_ids = [s.job_id for s in slots]
-    jobs_stmt = (
-        select(AutoMatchResult)
-        .where(AutoMatchResult.user_id == user_uuid)
-        .where(AutoMatchResult.job_id.in_(served_job_ids))
-    )
-    jobs_result = await db.execute(jobs_stmt)
-    job_rows = {r.job_id: r for r in jobs_result.scalars().all()}
-
-    matches = []
-    for slot in slots:
-        row = job_rows.get(slot.job_id)
-        if not row:
-            continue
-        job = dict(row.job_data or {})
-        job["score"]       = slot.score
-        job["rank_reason"] = slot.rank_reason
-        job["is_new"]      = (slot.slot_date == today)
-        job["served_at"]   = slot.served_at.isoformat() if slot.served_at else None
-        job["applied"]     = row.applied or False
-        job["applied_at"]  = row.applied_at.isoformat() if row.applied_at else None
-        matches.append(job)
-
-    return {"matches": matches, "total": len(matches), "is_slot_view": True}
+    all_results = await _load_results_from_db(user_id=user_id, db=db, limit=limit)
+    return {"matches": all_results, "total": len(all_results), "is_slot_view": False}
 
 
 @router.get("/auto/meta")

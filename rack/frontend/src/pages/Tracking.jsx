@@ -1684,6 +1684,7 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, 
 
   return (
     <div
+      className="trk-job-card"
       onClick={() => onViewDetail && onViewDetail(match)}
       style={{
         borderRadius: 16,
@@ -1864,18 +1865,26 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
         backdropFilter: 'blur(4px)',
       }}/>
 
-      {/* Panel */}
-      <div style={{
-        position: 'fixed', top: '50%', left: '50%',
-        transform: 'translate(-50%, -50%)',
-        width: 'min(760px, 92vw)', maxHeight: '88vh',
-        background: 'var(--surface)', border: '1px solid var(--border-bright)',
-        borderRadius: 22, boxShadow: '0 32px 80px rgba(0,0,0,0.55)',
+      {/* Panel — bottom sheet on all screen sizes, matching Dashboard */}
+      <div className="trk-detail-panel" style={{
+        position: 'fixed', left: 0, right: 0, bottom: 0,
+        width: '100%', maxWidth: 'min(760px, 100vw)',
+        margin: '0 auto',
+        maxHeight: '92dvh',
+        background: 'var(--surface)',
+        border: '1px solid var(--border-bright)',
+        borderRadius: '22px 22px 0 0',
+        boxShadow: '0 -16px 60px rgba(0,0,0,0.55)',
         zIndex: 9001, display: 'flex', flexDirection: 'column',
-        animation: 'rkScaleIn 0.32s cubic-bezier(0.22,1,0.36,1) both',
+        animation: 'trkSlideUp 0.38s cubic-bezier(0.22,1,0.36,1) both',
         overflow: 'hidden',
         fontFamily: "'DM Sans', sans-serif",
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
       }}>
+        {/* Drag handle */}
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px', flexShrink: 0 }}>
+          <div style={{ width: 36, height: 4, borderRadius: 4, background: 'var(--border-bright)' }}/>
+        </div>
         {/* ── Header ── */}
         <div style={{ padding: '22px 26px 18px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
           {/* Company row + close */}
@@ -2126,7 +2135,7 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
 
 
 
-const PAGE_SIZE = 10; // 5-col grid — multiple of 5
+const PAGE_SIZE = 10; // 2 rows × 5 cols per page
 
 function AutoMatchesTab({ profile, isPowerUser }) {
   const [matches, setMatches]           = useState([]);
@@ -2222,21 +2231,17 @@ function AutoMatchesTab({ profile, isPowerUser }) {
     if (hasRun.current) return;
     hasRun.current = true;
 
-    if (!hasProfile) {
-      // Profile loaded but no roles set — nothing to fetch, stop initializing
-      setInitializing(false);
-      return;
-    }
-
     (async () => {
       await loadMeta();
 
       // First load matches (role-aware)
+      let isSlot = false;
       try {
         const headers = await getAuthHeaders();
         const mr = await fetch(`${API}/auto/matches`, { headers });
         if (mr.ok) {
           const md = await mr.json();
+          isSlot = !!md.is_slot_view;
           if (md.is_slot_view) {
             setIsSlotView(true);
             setMatches(md.matches || []);
@@ -2251,33 +2256,34 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       // Done initializing — show content now regardless of match count
       setInitializing(false);
 
-      // For free users: trigger daily slot generation (picks today's batch if not yet done)
-      // For admin/pro: fetch daily slots for the banner only
-      try {
-        const headers = await getAuthHeaders();
-        const sr = await fetch(`${API}/daily-slots`, { headers });
-        if (sr.ok) {
-          const sd = await sr.json();
-          setDailySlots(sd.slots || []);
-          setSlotsIsFresh(sd.is_fresh || false);
+      // Daily slots + background refresh only for slot-view users (admin/pro with scheduler).
+      // Instant-match users (new onboarding) already have their data — skip these calls.
+      if (isSlot) {
+        try {
+          const headers = await getAuthHeaders();
+          const sr = await fetch(`${API}/daily-slots`, { headers });
+          if (sr.ok) {
+            const sd = await sr.json();
+            setDailySlots(sd.slots || []);
+            setSlotsIsFresh(sd.is_fresh || false);
 
-          // For free users: if fresh slots were just generated, reload matches to include them
-          if (sd.is_fresh && sd.slots.length > 0) {
-            const headers2 = await getAuthHeaders();
-            const mr2 = await fetch(`${API}/auto/matches`, { headers: headers2 });
-            if (mr2.ok) {
-              const md2 = await mr2.json();
-              if (md2.is_slot_view) {
-                setMatches(md2.matches || []);
-                setNewJobIds(new Set((md2.matches || []).filter(m => m.is_new).map(m => m.job_id)));
+            if (sd.is_fresh && sd.slots.length > 0) {
+              const headers2 = await getAuthHeaders();
+              const mr2 = await fetch(`${API}/auto/matches`, { headers: headers2 });
+              if (mr2.ok) {
+                const md2 = await mr2.json();
+                if (md2.is_slot_view) {
+                  setMatches(md2.matches || []);
+                  setNewJobIds(new Set((md2.matches || []).filter(m => m.is_new).map(m => m.job_id)));
+                }
               }
             }
           }
-        }
-      } catch {}
+        } catch {}
 
-      // Silently run pipeline refresh in background (force=false uses cache)
-      handleRefresh(false);
+        // Silently run pipeline refresh in background (force=false uses cache)
+        handleRefresh(false);
+      }
     })();
   }, [profile]);
 
@@ -2368,23 +2374,6 @@ function AutoMatchesTab({ profile, isPowerUser }) {
         <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
           We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
         </div>
-      </div>
-    );
-  }
-
-  // Profile not set — only shown after initializing completes (so no flash)
-  if (!hasProfile) {
-    return (
-      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
-        <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 16 }}>◇ setup needed</div>
-        <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>Set your target roles first</div>
-        <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
-          Auto Matches uses your target roles from your Account profile to automatically find and score the best job postings.
-        </div>
-        <a href="#" onClick={e => { e.preventDefault(); document.querySelector('[data-tab="account"]')?.click(); }}
-          style={{ display: "inline-block", marginTop: 20, padding: "9px 22px", borderRadius: 8, background: "var(--text)", color: "var(--bg)", fontFamily: "var(--font-display)", fontWeight: 500, fontSize: 12, textDecoration: "none", letterSpacing: "0.02em" }}>
-          go to account →
-        </a>
       </div>
     );
   }
@@ -2488,8 +2477,8 @@ function AutoMatchesTab({ profile, isPowerUser }) {
         </div>
       </div>
 
-      {/* ── Daily Slots Banner ─────────────────────────────────────── */}
-      {dailySlots.length > 0 && slotsIsFresh && (
+      {/* ── Daily Slots Banner — only for slot-view users (admin/pro with scheduled pipeline) ── */}
+      {isSlotView && dailySlots.length > 0 && slotsIsFresh && (
         <div style={{ marginBottom: 20, animation: "fadeUp 0.4s ease both" }}>
           <div style={{
             display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
@@ -2761,9 +2750,9 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       )}
 
       {!loading && paginated.length > 0 && (
-        <div style={{
+        <div className="trk-job-grid" style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))',
+          gridTemplateColumns: 'repeat(5, 1fr)',
           gap: 14,
           marginBottom: 8,
         }}>
@@ -3955,6 +3944,7 @@ export default function Tracking({ onNavigate }) {
         @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
         @keyframes rkFadeIn { from{opacity:0} to{opacity:1} }
+        @keyframes trkSlideUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
         @keyframes rkScaleIn { from{opacity:0;transform:scale(.97)} to{opacity:1;transform:scale(1)} }
         @keyframes rkBeacon { 0%,100%{box-shadow:0 0 0 0 rgba(232,255,107,0.0)} 50%{box-shadow:0 0 0 5px rgba(232,255,107,0.16)} }
         .trk-root ::-webkit-scrollbar{width:8px;height:8px}
@@ -3975,6 +3965,20 @@ export default function Tracking({ onNavigate }) {
           .trk-main-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
           .trk-header-actions { display: none !important; }
           .trk-page-title { font-size: 21px !important; }
+
+          /* ── Compact job cards on mobile ── */
+          .trk-job-card {
+            padding: 10px 10px 9px !important;
+            gap: 7px !important;
+            border-radius: 12px !important;
+          }
+
+          /* ── Job grid: 2 columns on mobile ── */
+          .trk-job-grid {
+            grid-template-columns: 1fr 1fr !important;
+            gap: 8px !important;
+          }
+
         }
       `}</style>
 
