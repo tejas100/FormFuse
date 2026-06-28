@@ -405,6 +405,7 @@ function AccountDashboard({ user, onSignOut, navigate, theme, toggleTheme }) {
         onNavigate={(tab) => navigate(tab === 'Account' ? null : tab)}
         userName={firstName}
         userInitial={userInitial}
+        userAvatarUrl={avatarUrl}
         onAskRack={() => navigate('Home')}
         theme={theme}
         onToggleTheme={toggleTheme}

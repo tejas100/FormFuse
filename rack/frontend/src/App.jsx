@@ -592,12 +592,49 @@ function AppInner() {
           <div className="mobile-header-dot" />
           Rack
         </div>
-        <div style={{ width: 54 }} />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', width: 54 }}>
+          {user && (
+            <MobileUserAvatar
+              avatarUrl={user?.user_metadata?.avatar_url}
+              initial={(user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || 'U').charAt(0).toUpperCase()}
+              onClick={() => switchTab('Account')}
+            />
+          )}
+        </div>
       </div>
 
       {showWelcome && <WelcomeSlideshow onDismiss={dismissWelcome} />}
     </div>
     </>
+  )
+}
+
+// ── Mobile top-bar user avatar ────────────────────────────────────────────────
+function MobileUserAvatar({ avatarUrl, initial, onClick }) {
+  const [imgError, setImgError] = useState(false)
+  const showImg = avatarUrl && !imgError
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        width: 36, height: 36, borderRadius: 10, cursor: 'pointer',
+        background: showImg ? 'transparent' : 'linear-gradient(135deg, #7c3aed, #34d399)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontWeight: 700, fontSize: 14, color: '#fff',
+        overflow: 'hidden', flexShrink: 0,
+        WebkitTapHighlightColor: 'transparent',
+        transition: 'opacity 0.18s',
+      }}
+    >
+      {showImg ? (
+        <img
+          src={avatarUrl}
+          alt={initial}
+          onError={() => setImgError(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+      ) : initial}
+    </div>
   )
 }
 

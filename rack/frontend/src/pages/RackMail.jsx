@@ -36,6 +36,7 @@ const THEME_CSS = `
   --header-bg:rgba(11,11,13,0.72);
   --scrollbar-thumb:rgba(255,255,255,0.12);
   --sidebar-bg:#0e0e10; --read-bg:#101013; --unread-bg:rgba(232,255,107,0.035);
+  --mobile-bar-bg:rgba(11,11,13,0.96);
 }
 .rk-mail-root[data-theme="light"]{
   --bg:#F5F3EC; --surface:#FFFFFF; --surface2:#F1EEE5; --surface3:#E7E3D8;
@@ -50,6 +51,7 @@ const THEME_CSS = `
   --header-bg:rgba(245,243,236,0.78);
   --scrollbar-thumb:rgba(0,0,0,0.13);
   --sidebar-bg:#EFEDE4; --read-bg:#FBFAF4; --unread-bg:rgba(120,150,0,0.05);
+  --mobile-bar-bg:rgba(245,243,236,0.96);
 }
 .rk-mail-root{ --font-mono:"Fira Code", ui-monospace, Menlo, monospace; --font-sans:"DM Sans", system-ui, sans-serif; --ease:cubic-bezier(0.4,0,0.2,1); }
 .rk-mail-root *{ box-sizing:border-box; }
@@ -62,6 +64,182 @@ const THEME_CSS = `
 .rk-mail-icobtn:hover{ background:var(--surface2) !important; color:var(--text) !important; }
 .rk-mail-slot:hover{ border-color:var(--info) !important; background:var(--surface2) !important; }
 .rk-mail-accentbtn:hover{ background:var(--accent-strong) !important; }
+
+/* ─── Mobile responsive layout ─── */
+/* Mobile top bar */
+.rk-mob-topbar{
+  display:none;
+  align-items:center;
+  gap:10px;
+  padding:0 16px;
+  height:56px;
+  flex:none;
+  background:var(--mobile-bar-bg);
+  backdrop-filter:blur(20px) saturate(140%);
+  -webkit-backdrop-filter:blur(20px) saturate(140%);
+  border-bottom:1px solid var(--border);
+  position:sticky;
+  top:0;
+  z-index:10;
+}
+.rk-mob-back{
+  width:36px; height:36px; border-radius:10px; border:1px solid var(--border-bright);
+  background:var(--surface); cursor:pointer; color:var(--text-mid);
+  display:flex; align-items:center; justify-content:center; flex:none;
+}
+.rk-mob-back:hover{ background:var(--surface2) !important; color:var(--text) !important; }
+.rk-mob-compose{
+  width:36px; height:36px; border-radius:10px; border:none;
+  background:var(--accent); cursor:pointer; color:var(--accent-contrast);
+  display:flex; align-items:center; justify-content:center; flex:none;
+}
+/* Mobile bottom nav bar */
+.rk-mob-bottomnav{
+  display:none;
+  align-items:stretch;
+  height:calc(56px + env(safe-area-inset-bottom, 0px));
+  padding-bottom:env(safe-area-inset-bottom, 0px);
+  flex:none;
+  background:var(--mobile-bar-bg);
+  backdrop-filter:blur(20px) saturate(140%);
+  -webkit-backdrop-filter:blur(20px) saturate(140%);
+  border-top:1px solid var(--border);
+  position:sticky;
+  bottom:0;
+  z-index:10;
+}
+.rk-mob-navbtn{
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:4px; border:none; background:transparent; cursor:pointer;
+  font-family:var(--font-sans); font-size:10px; font-weight:500;
+  color:var(--text-dim); padding:0;
+}
+.rk-mob-navbtn.active{ color:var(--accent-ink); }
+.rk-mob-navbtn.active svg{ stroke:var(--accent-ink); }
+
+@media (max-width: 768px){
+  /* Hide the shared Rack sidebar entirely on mobile */
+  .rk-mail-root > aside,
+  .rk-mail-root > div:first-child:not(.rk-mail-layout){ display:none !important; }
+
+  /* Main layout container */
+  .rk-mail-layout{ flex-direction:column !important; }
+
+  /* Show mobile bars */
+  .rk-mob-topbar{ display:flex; }
+  .rk-mob-bottomnav{ display:flex; }
+
+  /* All three panels become full-width */
+  .rk-mail-folder-rail{
+    width:100% !important;
+    height:auto !important;
+    flex:1 !important;
+    border-right:none !important;
+    overflow-y:auto;
+    padding:16px !important;
+  }
+  .rk-mail-list-panel{
+    width:100% !important;
+    height:auto !important;
+    flex:1 !important;
+    border-right:none !important;
+    overflow-y:auto;
+  }
+  .rk-mail-reading-pane{
+    width:100% !important;
+    height:auto !important;
+    flex:1 !important;
+    overflow-y:auto;
+  }
+
+  /* Three-panel row adapts to full-height column slot */
+  .rk-mail-layout > div:first-child > div:nth-child(2){
+    flex:1;
+    overflow:hidden;
+    min-height:0;
+  }
+
+  /* Hide list panel header (search+title) on mobile — top bar handles this */
+  .rk-list-header{ display:none !important; }
+
+  /* Show mobile search + filter controls */
+  .rk-mob-list-controls{ display:flex !important; }
+
+  /* Hide reading pane sticky toolbar on mobile — top bar handles navigation */
+  .rk-reading-toolbar{ display:none !important; }
+
+  /* List scroll area: padding for bottom nav */
+  .rk-mail-list-panel > div:last-child{
+    padding-bottom:8px !important;
+  }
+
+  /* Email cards: slightly more touch-friendly */
+  .rk-mail-row{ padding:14px 10px !important; }
+
+  /* Reading pane: padding for bottom nav */
+  .rk-email-body{
+    padding:20px 18px 80px !important;
+    max-width:100% !important;
+  }
+  .rk-email-body h1{ font-size:19px !important; }
+
+  /* Application snapshot grid: stack on mobile */
+  .rk-snapshot-grid{
+    grid-template-columns:1fr !important;
+    gap:12px !important;
+  }
+
+  /* Compose window: full-screen on mobile */
+@keyframes rk-compose-in{
+  from{ transform:translateY(100%); opacity:0; }
+  to{   transform:translateY(0);    opacity:1; }
+}
+@keyframes rk-compose-in-desktop{
+  from{ transform:translateY(32px); opacity:0; }
+  to{   transform:translateY(0);    opacity:1; }
+}
+.rk-compose-window{
+  animation: rk-compose-in-desktop 0.28s cubic-bezier(0.32,0.72,0,1) both;
+}
+
+  .rk-compose-window{
+    right:0 !important; left:0 !important;
+    width:100% !important;
+    max-width:100% !important;
+    border-radius:20px 20px 0 0 !important;
+    animation: rk-compose-in 0.36s cubic-bezier(0.32,0.72,0,1) both !important;
+  }
+
+  /* Reply dock edge-to-edge */
+  .rk-reply-dock{ border-radius:0 !important; border-left:none !important; border-right:none !important; }
+
+  /* Offer stats wrap tighter */
+  .rk-offer-stats{ gap:16px !important; }
+
+  /* Hide desktop search bar shortcut key */
+  .rk-search-shortcut{ display:none !important; }
+}
+
+/* Panel visibility on mobile — controlled by data-panel on rk-mail-layout */
+@media (max-width: 768px){
+  .rk-mail-layout[data-panel="folders"] .rk-mail-list-panel,
+  .rk-mail-layout[data-panel="folders"] .rk-mail-reading-pane{ display:none !important; }
+  .rk-mail-layout[data-panel="folders"] .rk-mail-folder-rail{ display:flex !important; }
+
+  .rk-mail-layout[data-panel="list"] .rk-mail-folder-rail,
+  .rk-mail-layout[data-panel="list"] .rk-mail-reading-pane{ display:none !important; }
+  .rk-mail-layout[data-panel="list"] .rk-mail-list-panel{ display:flex !important; }
+
+  .rk-mail-layout[data-panel="reading"] .rk-mail-folder-rail,
+  .rk-mail-layout[data-panel="reading"] .rk-mail-list-panel{ display:none !important; }
+  .rk-mail-layout[data-panel="reading"] .rk-mail-reading-pane{ display:block !important; }
+}
+
+/* Tablet: hide folder rail, give list less width */
+@media (min-width: 769px) and (max-width: 1100px){
+  .rk-mail-folder-rail{ display:none !important; }
+  .rk-mail-list-panel{ width:300px !important; }
+}
 `;
 
 /* ────────────────────────────────────────────────────────────
@@ -233,9 +411,29 @@ export default function RackMail({
     const s = {}; emails.forEach((e) => { if (e.starred) s[e.id] = true; }); return s;
   });
 
+  // Mobile panel navigation: 'folders' | 'list' | 'reading'
+  const [mobilePanel, setMobilePanel] = useState("list");
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth <= 768);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const handler = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    setIsMobile(mq.matches);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
   const isUnread = (e) => e.unread && !read[e.id];
-  const openEmail = (id) => { setOpenId(id); setRead((r) => ({ ...r, [id]: true })); };
+  const openEmail = (id) => {
+    setOpenId(id);
+    setRead((r) => ({ ...r, [id]: true }));
+    if (isMobile) setMobilePanel("reading");
+  };
   const toggleStar = (id) => setStars((s) => ({ ...s, [id]: !s[id] }));
+  const selectFolder = (folderId) => {
+    setFolder(folderId);
+    setTab("all");
+    if (isMobile) setMobilePanel("list");
+  };
 
   const decorated = useMemo(
     () => emails.map((e) => ({ e, lm: labelMeta(e.kind), unread: isUnread(e), starred: !!stars[e.id] })),
@@ -287,22 +485,73 @@ export default function RackMail({
     <div className="rk-mail-root" data-theme={theme}
          style={{ display:"flex", height:"100vh", width:"100%", overflow:"hidden",
                   background:"var(--bg)", color:"var(--text)", fontFamily:"var(--font-sans)",
-                  letterSpacing:"-0.005em", position:"fixed", inset:0 }}>
+                  letterSpacing:"-0.005em", position:"fixed", inset:0, zIndex:200 }}>
       <style>{THEME_CSS}</style>
 
-      {/* ════ RACK SHARED SIDEBAR ════ */}
-      <Sidebar
-        activeNav="Emails"
-        onNavigate={onNavigate}
-        userName={userName}
-        userInitial={(userName || "U").charAt(0).toUpperCase()}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-      />
+      {/* ════ RACK SHARED SIDEBAR — desktop only ════ */}
+      {!isMobile && (
+        <Sidebar
+          activeNav="Emails"
+          onNavigate={onNavigate}
+          userName={userName}
+          userInitial={(userName || "U").charAt(0).toUpperCase()}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+        />
+      )}
+
+      {/* ════ MAIL LAYOUT (folder rail + list + reading) ════ */}
+      <div className="rk-mail-layout" data-panel={mobilePanel}
+           style={{ display:"flex", flex:1, height:"100%", overflow:"hidden", minWidth:0 }}>
+
+        {/* Column wrapper: mobile top bar + panels row + mobile bottom nav */}
+        <div style={{ display:"flex", flexDirection:"column", flex:1, minWidth:0, height:"100%", overflow:"hidden" }}>
+
+        {/* ── Mobile top bar ── */}
+        <div className="rk-mob-topbar">
+          {/* Back always exits to Dashboard from folders or list; reading goes back to list */}
+          {(mobilePanel === "folders" || mobilePanel === "list") && (
+            <button className="rk-mob-back" onClick={() => onNavigate?.("Dashboard")} title="Back to Dashboard">
+              <Svg size={16} sw={1.8}><path d="M10 4l-4 4 4 4" /></Svg>
+            </button>
+          )}
+          {mobilePanel === "reading" && (
+            <button className="rk-mob-back" onClick={() => setMobilePanel("list")} title="Back to inbox">
+              <Svg size={16} sw={1.8}><path d="M10 4l-4 4 4 4" /></Svg>
+            </button>
+          )}
+
+          <div style={{ flex:1, display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ width:24, height:24, borderRadius:7, background:"var(--accent)", display:"flex", alignItems:"center", justifyContent:"center", color:"var(--accent-contrast)", flex:"none" }}>
+              <Svg size={13} sw={1.7}><rect x="2" y="3" width="12" height="10" rx="1.8" /><path d="M2.6 4l5.4 4 5.4-4" /></Svg>
+            </div>
+            <span style={{ fontSize:14, fontWeight:600 }}>
+              {mobilePanel === "folders" ? "Rack Mail" : mobilePanel === "list" ? folderTitle : (oe?.company ?? "Rack Mail")}
+            </span>
+            {mobilePanel === "list" && counts.unread > 0 && (
+              <span style={{ fontFamily:mono, fontSize:10, fontWeight:600, color:"var(--accent-ink)", background:"var(--accent-soft)", border:"1px solid var(--accent-line)", padding:"1px 6px", borderRadius:5 }}>{counts.unread}</span>
+            )}
+          </div>
+
+          {mobilePanel !== "reading" && (
+            <button className="rk-mob-compose" onClick={() => { setComposeOpen(true); setComposeMin(false); }} title="Compose">
+              <Svg size={15} sw={2}><path d="M8 3v10M3 8h10" /></Svg>
+            </button>
+          )}
+          {mobilePanel === "reading" && oe && (
+            <button onClick={() => toggleStar(oe.id)} title="Star"
+                    style={{ width:36, height:36, borderRadius:10, border:`1px solid ${starOn ? "var(--accent-line)" : "var(--border-bright)"}`, background:starOn ? "var(--accent-soft)" : "var(--surface)", cursor:"pointer", color:starOn ? "var(--accent-ink)" : "var(--text-mid)", display:"flex", alignItems:"center", justifyContent:"center", flex:"none" }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill={starOn ? "var(--accent)" : "none"} stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"><path d="M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4 4.2 13.4l.7-4.3-3.1-3 4.3-.6z" /></svg>
+            </button>
+          )}
+        </div>
+
+        {/* ── Three-panel content area (row) ── */}
+        <div style={{ display:"flex", flex:1, overflow:"hidden", minWidth:0 }}>
 
       {/* ════ FOLDER RAIL ════ */}
-      <div style={{ width:222, flex:"none", height:"100%", background:"var(--sidebar-bg)", borderRight:"1px solid var(--border)", display:"flex", flexDirection:"column", padding:"20px 14px" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"0 6px 18px" }}>
+      <div className="rk-mail-folder-rail" style={{ width:222, flex:"none", height:"100%", background:"var(--sidebar-bg)", borderRight:"1px solid var(--border)", display:"flex", flexDirection:"column", padding:"20px 14px" }}>
+        <div className="rk-folder-header" style={{ display:"flex", alignItems:"center", gap:10, padding:"0 6px 18px" }}>
           <div style={{ width:30, height:30, borderRadius:9, background:"var(--accent)", display:"flex", alignItems:"center", justifyContent:"center", flex:"none", color:"var(--accent-contrast)" }}>
             <Svg sw={1.7}><rect x="2" y="3" width="12" height="10" rx="1.8" /><path d="M2.6 4l5.4 4 5.4-4" /></Svg>
           </div>
@@ -312,7 +561,7 @@ export default function RackMail({
           </div>
         </div>
 
-        <button className="rk-mail-accentbtn" onClick={() => { setComposeOpen(true); setComposeMin(false); }} style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:9, padding:11, borderRadius:12, cursor:"pointer", border:"none", background:"var(--accent)", color:"var(--accent-contrast)", fontFamily:"var(--font-sans)", fontSize:13.5, fontWeight:600, marginBottom:18 }}>
+        <button className="rk-mail-accentbtn rk-folder-compose" onClick={() => { setComposeOpen(true); setComposeMin(false); }} style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:9, padding:11, borderRadius:12, cursor:"pointer", border:"none", background:"var(--accent)", color:"var(--accent-contrast)", fontFamily:"var(--font-sans)", fontSize:13.5, fontWeight:600, marginBottom:18 }}>
           <Svg size={15} sw={2}><path d="M8 3v10M3 8h10" /></Svg>
           Compose
         </button>
@@ -322,7 +571,7 @@ export default function RackMail({
             const active = folder === f.id;
             const showCount = !(f.hideZero && f.count === 0) && f.count > 0;
             return (
-              <button key={f.id} className="rk-mail-nav" onClick={() => { setFolder(f.id); setTab("all"); }}
+              <button key={f.id} className="rk-mail-nav" onClick={() => selectFolder(f.id)}
                       style={{ display:"flex", alignItems:"center", gap:11, padding:"9px 11px", borderRadius:9, cursor:"pointer", fontFamily:"var(--font-sans)", fontSize:13.5, fontWeight:active ? 600 : 500, textAlign:"left", width:"100%", background:active ? "var(--accent-soft)" : "transparent", color:active ? "var(--text)" : "var(--text-mid)", border:`1px solid ${active ? "var(--accent-line)" : "transparent"}` }}>
                 <span style={{ width:17, height:17, display:"flex", flex:"none", color:active ? "var(--accent-ink)" : "var(--text-mid)" }}>{FOLDER_ICONS[f.id]}</span>
                 {f.label}
@@ -359,12 +608,29 @@ export default function RackMail({
       </div>
 
       {/* ════ MAIL LIST ════ */}
-      <div style={{ width:404, flex:"none", height:"100%", borderRight:"1px solid var(--border)", display:"flex", flexDirection:"column", background:"var(--bg)" }}>
-        <div style={{ padding:"18px 18px 0", flex:"none" }}>
+      <div className="rk-mail-list-panel" style={{ width:404, flex:"none", height:"100%", borderRight:"1px solid var(--border)", display:"flex", flexDirection:"column", background:"var(--bg)" }}>
+
+        {/* Mobile-only compact search + filter row */}
+        <div className="rk-mob-list-controls" style={{ display:"none", padding:"10px 14px 10px", flex:"none", gap:8, flexDirection:"column" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, padding:"0 12px", height:40, borderRadius:10, border:"1px solid var(--border-bright)", background:"var(--surface)" }}>
+            <span style={{ color:"var(--text-dim)", display:"flex", flex:"none" }}><Svg size={15}><circle cx="7" cy="7" r="5" /><path d="M11 11l3.5 3.5" /></Svg></span>
+            <input placeholder="Search mail" style={{ flex:1, border:"none", outline:"none", background:"transparent", fontFamily:"var(--font-sans)", fontSize:14, color:"var(--text)" }} />
+          </div>
+          <div style={{ display:"flex", gap:6 }}>
+            {[{ id:"all", label:"All" }, { id:"unread", label:"Unread" }].map((t) => {
+              const active = tab === t.id;
+              return (
+                <button key={t.id} onClick={() => setTab(t.id)} style={{ padding:"5px 14px", borderRadius:8, cursor:"pointer", fontFamily:"var(--font-sans)", fontSize:12.5, fontWeight:600, background:active ? "var(--accent-soft)" : "var(--surface)", color:active ? "var(--text)" : "var(--text-mid)", border:`1px solid ${active ? "var(--accent-line)" : "var(--border-bright)"}` }}>{t.label}</button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rk-list-header" style={{ padding:"18px 18px 0", flex:"none" }}>
           <div style={{ display:"flex", alignItems:"center", gap:12, padding:"0 14px", height:44, borderRadius:12, border:"1px solid var(--border-bright)", background:"var(--surface)" }}>
             <span style={{ color:"var(--text-dim)", display:"flex" }}><Svg><circle cx="7" cy="7" r="5" /><path d="M11 11l3.5 3.5" /></Svg></span>
             <input placeholder="Search mail" style={{ flex:1, border:"none", outline:"none", background:"transparent", fontFamily:"var(--font-sans)", fontSize:13.5, color:"var(--text)" }} />
-            <kbd style={{ fontFamily:mono, fontSize:10.5, color:"var(--text-dim)", border:"1px solid var(--border)", borderRadius:6, padding:"2px 6px", background:"var(--chip-bg)" }}>/</kbd>
+            <kbd className="rk-search-shortcut" style={{ fontFamily:mono, fontSize:10.5, color:"var(--text-dim)", border:"1px solid var(--border)", borderRadius:6, padding:"2px 6px", background:"var(--chip-bg)" }}>/</kbd>
           </div>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"16px 4px 12px" }}>
             <div style={{ display:"flex", alignItems:"baseline", gap:9 }}>
@@ -382,7 +648,7 @@ export default function RackMail({
           </div>
         </div>
 
-        <div style={{ flex:1, overflowY:"auto", padding:"0 12px 16px" }}>
+        <div style={{ flex:1, overflowY:"auto", padding:"6px 12px 16px" }}>
           {visible.map(({ e, lm, unread }) => {
             const selected = openId === e.id;
             return (
@@ -416,15 +682,15 @@ export default function RackMail({
       </div>
 
       {/* ════ READING PANE ════ */}
-      <main style={{ flex:1, height:"100%", overflowY:"auto", background:"var(--read-bg)", minWidth:0 }}>
+      <main className="rk-mail-reading-pane" style={{ flex:1, height:"100%", overflowY:"auto", background:"var(--read-bg)", minWidth:0 }}>
         {oe ? (
           <div style={{ minHeight:"100%", display:"flex", flexDirection:"column" }}>
-            <div style={{ position:"sticky", top:0, zIndex:4, background:"var(--header-bg)", backdropFilter:"blur(20px) saturate(140%)", WebkitBackdropFilter:"blur(20px) saturate(140%)", borderBottom:"1px solid var(--border)", padding:"13px 26px", display:"flex", alignItems:"center", gap:8 }}>
+            <div className="rk-reading-toolbar" style={{ position:"sticky", top:0, zIndex:4, background:"var(--header-bg)", backdropFilter:"blur(20px) saturate(140%)", WebkitBackdropFilter:"blur(20px) saturate(140%)", borderBottom:"1px solid var(--border)", padding:"13px 26px", display:"flex", alignItems:"center", gap:8 }}>
               <ToolBtn title="Archive"><Svg size={15}><rect x="2" y="4.5" width="12" height="9" rx="1.5" /><path d="M2 4.5L3.2 2h9.6L14 4.5M6.5 8h3" /></Svg></ToolBtn>
               <ToolBtn title="Delete" danger><Svg size={15}><path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.7 8a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9l.7-8" /></Svg></ToolBtn>
               <ToolBtn title="Mark unread"><Svg size={15}><rect x="2" y="3" width="12" height="10" rx="1.8" /><path d="M2.6 4l5.4 4 5.4-4" /></Svg></ToolBtn>
               <ToolBtn title="Snooze"><Svg size={15}><circle cx="8" cy="8.5" r="5.4" /><path d="M8 5.6v3l2 1.2M5.4 1.6l-2.4 2M10.6 1.6l2.4 2" /></Svg></ToolBtn>
-              <div style={{ flex:1 }} />
+              <div className="rk-tool-spacer" style={{ flex:1 }} />
               <button onClick={() => toggleStar(oe.id)} title="Star"
                       style={{ width:36, height:36, borderRadius:10, border:`1px solid ${starOn ? "var(--accent-line)" : "var(--border-bright)"}`, background:starOn ? "var(--accent-soft)" : "var(--surface)", cursor:"pointer", color:starOn ? "var(--accent-ink)" : "var(--text-mid)", display:"flex", alignItems:"center", justifyContent:"center" }}>
                 <svg width="16" height="16" viewBox="0 0 16 16" fill={starOn ? "var(--accent)" : "none"} stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"><path d="M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4 4.2 13.4l.7-4.3-3.1-3 4.3-.6z" /></svg>
@@ -435,7 +701,7 @@ export default function RackMail({
               </button>
             </div>
 
-            <div style={{ maxWidth:760, width:"100%", margin:"0 auto", padding:"30px 40px 60px" }}>
+            <div className="rk-email-body" style={{ maxWidth:760, width:"100%", margin:"0 auto", padding:"30px 40px 60px" }}>
               <div style={{ display:"flex", alignItems:"flex-start", gap:14, marginBottom:22 }}>
                 <h1 style={{ flex:1, fontSize:24, fontWeight:600, lineHeight:1.3, letterSpacing:"-0.02em", margin:0 }}>{oe.subject}</h1>
                 <span style={{ flex:"none", marginTop:4, display:"inline-flex", alignItems:"center", gap:6, fontSize:11.5, fontWeight:600, color:olm.color, background:olm.bg, padding:"5px 12px", borderRadius:8, border:`1px solid ${olm.border}` }}>
@@ -446,7 +712,7 @@ export default function RackMail({
               <div style={{ display:"flex", alignItems:"center", gap:14, paddingBottom:22, borderBottom:"1px solid var(--hairline)", marginBottom:26 }}>
                 <div style={{ width:46, height:46, borderRadius:13, flex:"none", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700, fontSize:18, color:"#fff", background:oe.brand }}>{oe.mono}</div>
                 <div style={{ minWidth:0, flex:1 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
                     <span style={{ fontSize:14.5, fontWeight:600 }}>{oe.fromName}</span>
                     <span style={{ fontFamily:mono, fontSize:11.5, color:"var(--text-dim)" }}>{oe.fromEmail}</span>
                   </div>
@@ -458,7 +724,7 @@ export default function RackMail({
               {/* snapshot */}
               <div style={{ border:"1px solid var(--border)", background:"var(--surface)", borderRadius:16, padding:"20px 22px", marginBottom:26, boxShadow:"var(--card-shadow)" }}>
                 <div style={{ fontFamily:mono, fontSize:10, fontWeight:600, letterSpacing:"0.12em", color:"var(--text-dim)", marginBottom:14 }}>APPLICATION SNAPSHOT</div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"16px 24px" }}>
+                <div className="rk-snapshot-grid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"16px 24px" }}>
                   <Field label="Role" value={oe.role} />
                   <Field label="Location" value={oe.location} />
                   <Field label="Applied via Rack" value={oe.appliedDate} />
@@ -499,7 +765,7 @@ export default function RackMail({
                 {oe.kind === "offer" && (
                   <div style={{ border:"1px solid var(--accent-line)", background:"var(--accent-soft)", borderRadius:14, padding:20, margin:"6px 0 20px" }}>
                     <div style={{ fontFamily:mono, fontSize:10, fontWeight:600, letterSpacing:"0.12em", color:"var(--accent-ink)", marginBottom:12 }}>OFFER SUMMARY</div>
-                    <div style={{ display:"flex", gap:28, flexWrap:"wrap" }}>
+                    <div className="rk-offer-stats" style={{ display:"flex", gap:28, flexWrap:"wrap" }}>
                       {(oe.offerStats || []).map((o, i) => (
                         <div key={i}>
                           <div style={{ fontFamily:mono, fontSize:22, fontWeight:600, color:"var(--text)", letterSpacing:"-0.02em" }}>{o.value}</div>
@@ -515,7 +781,7 @@ export default function RackMail({
               </div>
 
               {/* reply dock */}
-              <div style={{ marginTop:34, border:"1px solid var(--border-bright)", background:"var(--surface)", borderRadius:16, overflow:"hidden", boxShadow:"var(--card-shadow)" }}>
+              <div className="rk-reply-dock" style={{ marginTop:34, border:"1px solid var(--border-bright)", background:"var(--surface)", borderRadius:16, overflow:"hidden", boxShadow:"var(--card-shadow)" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8, padding:"14px 18px", borderBottom:"1px solid var(--hairline)" }}>
                   <span style={{ width:24, height:24, borderRadius:7, background:"var(--accent-soft)", border:"1px solid var(--accent-line)", display:"flex", alignItems:"center", justifyContent:"center", flex:"none", color:"var(--accent-ink)" }}>
                     <Svg size={13}><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" /></Svg>
@@ -539,7 +805,7 @@ export default function RackMail({
 
       {/* ════ COMPOSE WINDOW ════ */}
       {composeOpen && (
-        <div style={{ position:"fixed", right:28, bottom:0, width:552, maxWidth:"calc(100vw - 56px)", background:"var(--surface)", border:"1px solid var(--border-bright)", borderBottom:"none", borderRadius:"14px 14px 0 0", boxShadow:"0 -2px 12px rgba(0,0,0,0.18), 0 24px 60px rgba(0,0,0,0.40)", zIndex:50, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        <div className="rk-compose-window" style={{ position:"fixed", right:28, bottom:0, width:552, maxWidth:"calc(100vw - 56px)", background:"var(--surface)", border:"1px solid var(--border-bright)", borderBottom:"none", borderRadius:"14px 14px 0 0", boxShadow:"0 -2px 12px rgba(0,0,0,0.18), 0 24px 60px rgba(0,0,0,0.40)", zIndex:50, display:"flex", flexDirection:"column", overflow:"hidden" }}>
           <div onClick={() => setComposeMin((m) => !m)} style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px", background:"var(--sidebar-bg)", borderBottom:"1px solid var(--hairline)", cursor:"pointer" }}>
             <span style={{ width:8, height:8, borderRadius:"50%", background:"var(--accent)", flex:"none" }} />
             <span style={{ fontSize:13.5, fontWeight:600 }}>New message</span>
@@ -596,6 +862,27 @@ export default function RackMail({
           )}
         </div>
       )}
+
+        </div>{/* end three-panel content area */}
+
+        {/* ── Mobile bottom nav bar ── */}
+        <nav className="rk-mob-bottomnav">
+          {[
+            { id:"inbox",      label:"Inbox",      icon:<Svg size={20} sw={1.5}><rect x="2" y="3" width="12" height="10" rx="1.8" /><path d="M2.6 4l5.4 4 5.4-4" /></Svg> },
+            { id:"starred",    label:"Starred",    icon:<Svg size={20} sw={1.4}><path d="M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4 4.2 13.4l.7-4.3-3.1-3 4.3-.6z" /></Svg> },
+            { id:"interviews", label:"Interviews", icon:<Svg size={20} sw={1.4}><circle cx="8" cy="8" r="6.3" /><path d="M5.2 8.2l1.9 1.9L11 6.2" /></Svg> },
+            { id:"archive",    label:"Archive",    icon:<Svg size={20} sw={1.4}><rect x="2" y="4.5" width="12" height="9" rx="1.5" /><path d="M2 4.5L3.2 2h9.6L14 4.5M6.5 8h3" /></Svg> },
+          ].map((f) => (
+            <button key={f.id} className={`rk-mob-navbtn${folder === f.id ? " active" : ""}`}
+                    onClick={() => { selectFolder(f.id); if (mobilePanel === "reading") setMobilePanel("list"); }}>
+              {f.icon}
+              <span>{f.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        </div>{/* end column wrapper */}
+      </div>{/* end rk-mail-layout */}
     </div>
   );
 }

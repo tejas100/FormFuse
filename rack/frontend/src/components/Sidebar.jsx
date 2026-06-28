@@ -368,6 +368,7 @@ export default function Sidebar({
   onNavigate,
   userName = '',
   userInitial = '',
+  userAvatarUrl = null,
   badge = {},
   extraNav = null,
   extraNavLabel = 'VIEWS',
@@ -378,6 +379,7 @@ export default function Sidebar({
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [avatarImgError, setAvatarImgError] = useState(false)
 
   const nav = (id) => {
     setMobileOpen(false)
@@ -503,11 +505,21 @@ export default function Sidebar({
           {userInitial && (
             <div onClick={() => nav('Account')} style={{
               width: 34, height: 34, borderRadius: 9, cursor: 'pointer',
-              background: 'linear-gradient(135deg, var(--accent2,#7c5cff), var(--accent3,#34d399))',
+              background: userAvatarUrl && !avatarImgError
+                ? 'transparent'
+                : 'linear-gradient(135deg, var(--accent2,#7c5cff), var(--accent3,#34d399))',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontWeight: 700, fontSize: 13, color: '#fff',
+              overflow: 'hidden', flexShrink: 0,
             }}>
-              {userInitial}
+              {userAvatarUrl && !avatarImgError ? (
+                <img
+                  src={userAvatarUrl}
+                  alt={userInitial}
+                  onError={() => setAvatarImgError(true)}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                />
+              ) : userInitial}
             </div>
           )}
         </div>

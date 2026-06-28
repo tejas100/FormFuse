@@ -11,6 +11,92 @@ const RESUMES_API = `${API_BASE}/api/resumes`;
 const PROFILE_API = `${API_BASE}/api/account`;
 
 /* ── helpers ───────────────────────────────────────────────────── */
+
+// ── CompanyLogo — shows Clearbit logo, falls back to colored initial ──────────
+const DOMAIN_MAP = {
+  'databricks': 'databricks.com', 'scaleai': 'scale.com', 'stackav': 'stackav.com',
+  'datadog': 'datadoghq.com', 'anthropic': 'anthropic.com', 'openai': 'openai.com',
+  'stripe': 'stripe.com', 'coinbase': 'coinbase.com', 'robinhood': 'robinhood.com',
+  'figma': 'figma.com', 'vercel': 'vercel.com', 'cloudflare': 'cloudflare.com',
+  'twilio': 'twilio.com', 'dataiku': 'dataiku.com', 'mongodb': 'mongodb.com',
+  'elastic': 'elastic.co', 'amplitude': 'amplitude.com', 'mixpanel': 'mixpanel.com',
+  'fivetran': 'fivetran.com', 'cockroachlabs': 'cockroachlabs.com',
+  'launchdarkly': 'launchdarkly.com', 'temporal': 'temporal.io',
+  'descript': 'descript.com', 'airtable': 'airtable.com', 'mercury': 'mercury.com',
+  'brex': 'brex.com', 'chime': 'chime.com', 'marqeta': 'marqeta.com',
+  'togetherai': 'together.ai', 'assemblyai': 'assemblyai.com', 'runwayml': 'runwayml.com',
+  'mistral': 'mistral.ai', 'cohere': 'cohere.com', 'huggingface': 'huggingface.co',
+  'nvidia': 'nvidia.com', 'google': 'google.com', 'apple': 'apple.com',
+  'meta': 'meta.com', 'microsoft': 'microsoft.com', 'amazon': 'amazon.com',
+  'netflix': 'netflix.com', 'airbnb': 'airbnb.com', 'uber': 'uber.com',
+  'lyft': 'lyft.com', 'slack': 'slack.com', 'notion': 'notion.so',
+  'linear': 'linear.app', 'intercom': 'intercom.com', 'hubspot': 'hubspot.com',
+  'salesforce': 'salesforce.com', 'servicenow': 'servicenow.com',
+  'workday': 'workday.com', 'snowflake': 'snowflake.com', 'palantir': 'palantir.com',
+  'asana': 'asana.com', 'clickup': 'clickup.com', 'github': 'github.com',
+  'gitlab': 'gitlab.com', 'atlassian': 'atlassian.com', 'splunk': 'splunk.com',
+  'pagerduty': 'pagerduty.com', 'new relic': 'newrelic.com', 'newrelic': 'newrelic.com',
+  'okta': 'okta.com', 'crowdstrike': 'crowdstrike.com', 'zscaler': 'zscaler.com',
+  'cohere': 'cohere.com', 'adept': 'adept.ai', 'stability': 'stability.ai',
+  'replit': 'replit.com', 'cursor': 'cursor.sh', 'codeium': 'codeium.com',
+  'inflection': 'inflection.ai', 'imbue': 'imbue.com', 'anyscale': 'anyscale.com',
+  'modal': 'modal.com', 'replicate': 'replicate.com', 'weights & biases': 'wandb.ai',
+  'wandb': 'wandb.ai', 'hugging face': 'huggingface.co', 'lambda': 'lambdalabs.com',
+  'lambdalabs': 'lambdalabs.com',
+};
+function _companyDomain(company) {
+  if (!company) return null;
+  const key = company.toLowerCase().trim();
+  if (DOMAIN_MAP[key]) return DOMAIN_MAP[key];
+  // Generic slug: strip Inc/LLC/Corp suffixes, replace spaces with nothing
+  const slug = key.replace(/\s*(inc\.?|llc\.?|corp\.?|ltd\.?|co\.?)$/i, '').replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
+  return slug ? `${slug}.com` : null;
+}
+function _brandColor(company) {
+  const palette = ['#635bff','#e0930f','#5b6472','#7c5cff','#7c3aed','#1597c4','#e0492a','#1f6feb','#059669','#dc2626','#0ea5e9','#8b5cf6','#f59e0b','#10b981','#3b82f6'];
+  let hash = 0;
+  for (let i = 0; i < (company || '').length; i++) hash = (hash * 31 + company.charCodeAt(i)) & 0xffffffff;
+  return palette[Math.abs(hash) % palette.length];
+}
+function CompanyLogo({ company, size = 30, radius = 8, fontSize = 12 }) {
+  const [imgSrc, setImgSrc] = useState(null);
+  const [failed, setFailed] = useState(false);
+  const brand   = _brandColor(company);
+  const initial = (company || '?').charAt(0).toUpperCase();
+  const domain  = _companyDomain(company);
+
+  useEffect(() => {
+    if (!domain) { setFailed(true); return; }
+    setFailed(false);
+    setImgSrc(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`);
+  }, [domain]);
+
+  const containerStyle = {
+    width: size, height: size, borderRadius: radius, flexShrink: 0,
+    overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: failed || !imgSrc ? brand : 'var(--surface)',
+    boxShadow: failed || !imgSrc ? `0 3px 8px ${brand}4d` : '0 0 0 1px var(--border)',
+  };
+
+  if (imgSrc && !failed) {
+    return (
+      <div style={containerStyle}>
+        <img
+          src={imgSrc}
+          alt={company}
+          onLoad={(e) => { if (e.target.naturalWidth <= 16) { setFailed(true); setImgSrc(null); } }}
+          onError={() => { setFailed(true); setImgSrc(null); }}
+          style={{ width: '72%', height: '72%', objectFit: 'contain', display: 'block' }}
+        />
+      </div>
+    );
+  }
+  return (
+    <div style={{ ...containerStyle, fontWeight: 700, fontSize, color: '#fff' }}>
+      {initial}
+    </div>
+  );
+}
 function scoreColor(s) {
   if (s >= 70) return "var(--accent3)";
   if (s >= 50) return "var(--accent)";
@@ -183,6 +269,7 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
   const sc = scoreColor(displayScore);
   const pct = Math.min(displayScore, 100);
   const [downloading, setDownloading] = useState(false);
+  const jobUrl = match.job_url || match.url || null;
 
   const handleDownload = async (e) => {
     e.stopPropagation();
@@ -301,9 +388,9 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
                 {isSaved ? "★" : "☆"}
               </button>
             )}
-            {!expanded && match.job_url && onApply && !isApplied && (
+            {!expanded && jobUrl && onApply && !isApplied && (
               <a
-                href={match.job_url}
+                href={jobUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => { e.stopPropagation(); if (onApply) onApply(); }}
@@ -561,9 +648,9 @@ function MatchCard({ match, index, expanded, onToggle, isAuto, isApplied, onAppl
 
             {/* ── Action row ───────────────────────────────────── */}
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              {match.job_url && (
+              {jobUrl && (
                 <a
-                  href={match.job_url} target="_blank" rel="noopener noreferrer"
+                  href={jobUrl} target="_blank" rel="noopener noreferrer"
                   onClick={(e) => { e.stopPropagation(); if (onApply) onApply(); }}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 6,
@@ -1120,6 +1207,7 @@ function Paginator({ page, totalPages, onPage }) {
     border: "1px solid var(--border)", background: "transparent",
     cursor: "pointer", transition: "all 0.15s", ...mono,
     display: "flex", alignItems: "center", justifyContent: "center", padding: "0 8px",
+    color: "var(--text)",
   };
 
   return (
@@ -1127,12 +1215,12 @@ function Paginator({ page, totalPages, onPage }) {
       <button
         onClick={() => onPage(Math.max(1, page - 1))}
         disabled={page === 1}
-        style={{ ...btnBase, color: page === 1 ? "var(--text-dim)" : "var(--text)", opacity: page === 1 ? 0.35 : 1 }}
+        style={{ ...btnBase, opacity: page === 1 ? 0.3 : 1 }}
       >← prev</button>
 
       {pages.map((p, i) =>
         p === "..." ? (
-          <span key={`ellipsis-${i}`} style={{ ...mono, fontSize: 12, color: "var(--text-dim)", padding: "0 2px" }}>…</span>
+          <span key={`ellipsis-${i}`} style={{ ...mono, fontSize: 12, color: "var(--text)", opacity: 0.4, padding: "0 2px" }}>…</span>
         ) : (
           <button
             key={p}
@@ -1141,7 +1229,8 @@ function Paginator({ page, totalPages, onPage }) {
               ...btnBase,
               border: `1px solid ${p === page ? "var(--accent)" : "var(--border)"}`,
               background: p === page ? "rgba(232,255,107,0.1)" : "transparent",
-              color: p === page ? "var(--accent)" : "var(--text-dim)",
+              color: p === page ? "var(--accent)" : "var(--text)",
+              opacity: p === page ? 1 : 0.55,
               fontWeight: p === page ? 700 : 400,
             }}
           >{p}</button>
@@ -1151,7 +1240,7 @@ function Paginator({ page, totalPages, onPage }) {
       <button
         onClick={() => onPage(Math.min(totalPages, page + 1))}
         disabled={page === totalPages}
-        style={{ ...btnBase, color: page === totalPages ? "var(--text-dim)" : "var(--text)", opacity: page === totalPages ? 0.35 : 1 }}
+        style={{ ...btnBase, opacity: page === totalPages ? 0.3 : 1 }}
       >next →</button>
     </div>
   );
@@ -1675,6 +1764,7 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, 
   const posted   = match.posted_at || match.matched_at;
   const skills   = match.matched_skills || [];
   const source   = (match.source || 'greenhouse').toUpperCase();
+  const jobUrl   = match.job_url || match.url || null;
   const brand    = trkBrandColor(company);
   const initial  = (company || '?').charAt(0).toUpperCase();
   const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
@@ -1714,12 +1804,7 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, 
       {/* Top: company + ring */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <div style={{
-            width: 30, height: 30, borderRadius: 8, flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontWeight: 700, fontSize: 12, color: '#fff',
-            background: brand, boxShadow: `0 3px 8px ${brand}4d`,
-          }}>{initial}</div>
+          <CompanyLogo company={company} size={30} radius={8} fontSize={12} />
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text)' }}>
               {company || '—'}
@@ -1808,9 +1893,9 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, 
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
             {tierLabel}
           </span>
-          {match.job_url && onApply && (
+          {jobUrl && onApply && (
             <a
-              href={match.job_url} target="_blank" rel="noopener noreferrer"
+              href={jobUrl} target="_blank" rel="noopener noreferrer"
               onClick={(e) => { e.stopPropagation(); onApply(); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
@@ -1849,6 +1934,7 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
   const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
   const tierColor = score >= 85 ? 'var(--accent3)' : score >= 70 ? 'var(--accent-ink)' : score >= 55 ? '#f5a623' : 'var(--danger)';
   const reasoning = match.llm_reasoning || match.llm_analysis || '';
+  const jobUrl    = match.job_url || match.url || null;
 
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
@@ -1890,12 +1976,7 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
           {/* Company row + close */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 14 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
-              <div style={{
-                width: 46, height: 46, borderRadius: 12, flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontWeight: 700, fontSize: 18, color: '#fff',
-                background: brand, boxShadow: `0 6px 18px ${brand}55`,
-              }}>{initial}</div>
+              <CompanyLogo company={company} size={46} radius={12} fontSize={18} />
               <div>
                 <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>{company}</div>
                 <span style={{
@@ -2072,8 +2153,8 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
           flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         }}>
           <div>
-            {match.job_url && (
-              <a href={match.job_url} target="_blank" rel="noopener noreferrer" style={{
+            {jobUrl && (
+              <a href={jobUrl} target="_blank" rel="noopener noreferrer" style={{
                 display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
                 color: 'var(--text-dim)', textDecoration: 'none',
                 padding: '7px 12px', borderRadius: 8,
@@ -2105,9 +2186,9 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
                 Applied
               </div>
             ) : (
-              match.job_url && (
+              jobUrl && (
                 <a
-                  href={match.job_url} target="_blank" rel="noopener noreferrer"
+                  href={jobUrl} target="_blank" rel="noopener noreferrer"
                   onClick={() => { onApply?.(); onClose(); }}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 7,
@@ -2361,19 +2442,19 @@ function AutoMatchesTab({ profile, isPowerUser }) {
     color: "var(--text)", fontFamily: "var(--font-body)", fontSize: 12, outline: "none",
   };
 
-  // While we're still waiting for the first data fetch, show a single
-  // clean loading state. This prevents the flash sequence:
-  // "set target roles" → "finding matches" → jobs → loading animation.
+  // While we're still waiting for the first data fetch, show a skeleton grid
+  // so the layout doesn't jump when data arrives.
   if (initializing) {
     return (
-      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
-        <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
-        <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
-          finding your matches
-        </div>
-        <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
-          We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
-        </div>
+      <div className="trk-job-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }}>
+        {Array.from({ length: 10 }).map((_, i) => (
+          <div key={i} style={{
+            background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14,
+            padding: "18px 16px", minHeight: 160,
+            animation: `pulse 1.4s ease-in-out ${(i * 0.07).toFixed(2)}s infinite`,
+            opacity: 0.5,
+          }} />
+        ))}
       </div>
     );
   }
@@ -2737,12 +2818,10 @@ function AutoMatchesTab({ profile, isPowerUser }) {
             </>
           ) : (
             <>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>
-                finding your matches
-              </div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-dim)", marginBottom: 16, opacity: 0.6 }}>[ no matches ]</div>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 500, marginBottom: 8, letterSpacing: "-0.01em" }}>No matches yet</div>
               <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
-                We're scanning top tech companies and scoring the best roles for your resumes. Your first picks will appear here soon — check back shortly.
+                Your matched jobs will appear here. Check back shortly or update your preferences in Account.
               </div>
             </>
           )}
@@ -2789,9 +2868,9 @@ function AutoMatchesTab({ profile, isPowerUser }) {
 
       {!loading && <Paginator page={page} totalPages={totalPages} onPage={p => { setPage(p); setExpandedId(null); }} />}
       {!loading && sorted.length > 0 && (
-        <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace" }}>
+        <div style={{ textAlign: "center", marginTop: 10, fontSize: 10, color: "var(--text)", opacity: 0.45, fontFamily: "'JetBrains Mono',monospace" }}>
           showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} of {sorted.length} matches
-          {filterBy !== "all" && <span style={{ color: "#34d399", marginLeft: 6 }}>· filtered</span>}
+          {filterBy !== "all" && <span style={{ color: "#34d399", opacity: 1, marginLeft: 6 }}>· filtered</span>}
         </div>
       )}
     </div>
@@ -3886,6 +3965,7 @@ export default function Tracking({ onNavigate }) {
   const displayName = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'there'
   const firstName = displayName.split(' ')[0]
   const userInitial = firstName.charAt(0).toUpperCase()
+  const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture || null
 
   // Load profile + role + cached counts for tab badges
   useEffect(() => {
@@ -3991,6 +4071,7 @@ export default function Tracking({ onNavigate }) {
         }}
         userName={firstName}
         userInitial={userInitial}
+        userAvatarUrl={avatarUrl}
         badge={{ Tracking: autoMatches.length || null }}
         onAskRack={() => navigate('Home')}
         extraNavLabel="VIEWS"
@@ -4058,11 +4139,15 @@ export default function Tracking({ onNavigate }) {
                   <div onClick={() => navigate('Account')}
                     style={{
                       width: 40, height: 40, borderRadius: 11, cursor: 'pointer',
-                      background: 'linear-gradient(135deg, var(--accent2), var(--accent3))',
+                      background: avatarUrl ? 'transparent' : 'linear-gradient(135deg, var(--accent2), var(--accent3))',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       fontWeight: 600, fontSize: 14, color: '#fff',
+                      overflow: 'hidden', flexShrink: 0,
                     }}>
-                    {userInitial}
+                    {avatarUrl
+                      ? <img src={avatarUrl} alt={firstName} referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 11 }} />
+                      : userInitial
+                    }
                   </div>
                 </div>
               </div>
@@ -4077,13 +4162,7 @@ export default function Tracking({ onNavigate }) {
             <AutoMatchesTab profile={profile} isPowerUser={isPowerUser} />
           )}
           {activeTab === "auto" && userRole === null && (
-            <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: "48px 24px", textAlign: "center", animation: "fadeUp 0.35s ease both" }}>
-              <div style={{ fontFamily: "'Fira Code', monospace", fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--accent)", opacity: 0.7, marginBottom: 16 }}>● scanning</div>
-              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, letterSpacing: "-0.01em" }}>Finding your matches</div>
-              <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
-                We're scanning top tech companies and scoring the best roles for your resumes. Check back shortly.
-              </div>
-            </div>
+            <AutoMatchesTab profile={profile} isPowerUser={false} />
           )}
           {activeTab === "applied" && userRole !== null && (
             <AppliedJobsTab />

@@ -36,6 +36,83 @@ function brandColor(company) {
   return palette[Math.abs(hash) % palette.length]
 }
 
+// ── CompanyLogo — Clearbit logo with colored-initial fallback ─────────────────
+const _DOMAIN_MAP = {
+  'databricks': 'databricks.com', 'scaleai': 'scale.com', 'stackav': 'stackav.com',
+  'datadog': 'datadoghq.com', 'anthropic': 'anthropic.com', 'openai': 'openai.com',
+  'stripe': 'stripe.com', 'coinbase': 'coinbase.com', 'robinhood': 'robinhood.com',
+  'figma': 'figma.com', 'vercel': 'vercel.com', 'cloudflare': 'cloudflare.com',
+  'twilio': 'twilio.com', 'dataiku': 'dataiku.com', 'mongodb': 'mongodb.com',
+  'elastic': 'elastic.co', 'amplitude': 'amplitude.com', 'mixpanel': 'mixpanel.com',
+  'fivetran': 'fivetran.com', 'cockroachlabs': 'cockroachlabs.com',
+  'launchdarkly': 'launchdarkly.com', 'temporal': 'temporal.io',
+  'descript': 'descript.com', 'airtable': 'airtable.com', 'mercury': 'mercury.com',
+  'brex': 'brex.com', 'chime': 'chime.com', 'marqeta': 'marqeta.com',
+  'togetherai': 'together.ai', 'assemblyai': 'assemblyai.com', 'runwayml': 'runwayml.com',
+  'mistral': 'mistral.ai', 'cohere': 'cohere.com', 'huggingface': 'huggingface.co',
+  'nvidia': 'nvidia.com', 'google': 'google.com', 'apple': 'apple.com',
+  'meta': 'meta.com', 'microsoft': 'microsoft.com', 'amazon': 'amazon.com',
+  'netflix': 'netflix.com', 'airbnb': 'airbnb.com', 'uber': 'uber.com',
+  'lyft': 'lyft.com', 'slack': 'slack.com', 'notion': 'notion.so',
+  'linear': 'linear.app', 'intercom': 'intercom.com', 'hubspot': 'hubspot.com',
+  'salesforce': 'salesforce.com', 'servicenow': 'servicenow.com',
+  'workday': 'workday.com', 'snowflake': 'snowflake.com', 'palantir': 'palantir.com',
+  'asana': 'asana.com', 'clickup': 'clickup.com', 'github': 'github.com',
+  'gitlab': 'gitlab.com', 'atlassian': 'atlassian.com', 'splunk': 'splunk.com',
+  'pagerduty': 'pagerduty.com', 'newrelic': 'newrelic.com', 'new relic': 'newrelic.com',
+  'okta': 'okta.com', 'crowdstrike': 'crowdstrike.com', 'zscaler': 'zscaler.com',
+  'adept': 'adept.ai', 'stability': 'stability.ai', 'replit': 'replit.com',
+  'codeium': 'codeium.com', 'anyscale': 'anyscale.com', 'modal': 'modal.com',
+  'replicate': 'replicate.com', 'wandb': 'wandb.ai', 'weights & biases': 'wandb.ai',
+  'lambdalabs': 'lambdalabs.com', 'lambda': 'lambdalabs.com',
+  'hugging face': 'huggingface.co', 'together ai': 'together.ai',
+}
+function _companyDomain_dash(company) {
+  if (!company) return null
+  const key = company.toLowerCase().trim()
+  if (_DOMAIN_MAP[key]) return _DOMAIN_MAP[key]
+  const slug = key.replace(/\s*(inc\.?|llc\.?|corp\.?|ltd\.?|co\.?)$/i, '').replace(/\s+/g, '').replace(/[^a-z0-9]/g, '')
+  return slug ? `${slug}.com` : null
+}
+function CompanyLogo({ company, size = 32, radius = 9, fontSize = 13 }) {
+  const [imgSrc, setImgSrc] = useState(null)
+  const [failed, setFailed] = useState(false)
+  const brand   = brandColor(company || '')
+  const initial = (company || '?').charAt(0).toUpperCase()
+  const domain  = _companyDomain_dash(company)
+
+  useEffect(() => {
+    if (!domain) { setFailed(true); return }
+    setFailed(false)
+    setImgSrc(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`)
+  }, [domain])
+
+  const containerStyle = {
+    width: size, height: size, borderRadius: radius, flexShrink: 0,
+    overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: failed || !imgSrc ? brand : 'var(--surface)',
+    boxShadow: failed || !imgSrc ? `0 3px 8px ${brand}4d` : '0 0 0 1px var(--border)',
+  }
+
+  if (imgSrc && !failed) {
+    return (
+      <div style={containerStyle}>
+        <img
+          src={imgSrc} alt={company}
+          onLoad={(e) => { if (e.target.naturalWidth <= 16) { setFailed(true); setImgSrc(null) } }}
+          onError={() => { setFailed(true); setImgSrc(null) }}
+          style={{ width: '72%', height: '72%', objectFit: 'contain', display: 'block' }}
+        />
+      </div>
+    )
+  }
+  return (
+    <div style={{ ...containerStyle, fontWeight: 700, fontSize, color: '#fff' }}>
+      {initial}
+    </div>
+  )
+}
+
 function statusMeta(status) {
   switch (status) {
     case 'submitted':         return { label: 'Submitted',      color: 'var(--accent3)',  bg: 'rgba(52,211,153,0.12)' }
@@ -175,12 +252,7 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, re
       {/* Top row — logo + score ring side by side */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 9, flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontWeight: 700, fontSize: 13, color: '#fff',
-            background: brand, boxShadow: `0 3px 8px ${brand}4d`,
-          }}>{initial}</div>
+          <CompanyLogo company={company} size={32} radius={9} fontSize={13} />
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text)' }}>
               {company || '—'}
@@ -251,12 +323,12 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, re
           Queued
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, color: tierColor }}>
+        <div className="rk-card-footer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+          <span className="rk-card-tier" style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, color: tierColor, flexShrink: 0 }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
             {tierLabel}
           </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div className="rk-card-footer-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button
               onClick={e => { e.stopPropagation(); onPass(jobId) }}
               title="Pass"
@@ -404,12 +476,7 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
           {/* Top row: company logo + close */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{
-                width: 44, height: 44, borderRadius: 12, flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontWeight: 800, fontSize: 18, color: '#fff',
-                background: brand, boxShadow: `0 4px 16px ${brand}44`,
-              }}>{initial}</div>
+              <CompanyLogo company={company} size={44} radius={12} fontSize={18} />
               <div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em' }}>{company}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
@@ -1596,9 +1663,21 @@ export default function Dashboard({ onNavigate }) {
           .rk-app-row-grid { grid-template-columns: 1fr auto !important; }
         }
 
+        /* ── Small mobile (≤ 420px, e.g. iPhone SE): card footer stacks ── */
         @media (max-width: 420px) {
           .rk-job-grid { grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
           .rk-main-content { padding: 14px 12px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+          .rk-card-footer { flex-direction: column !important; align-items: stretch !important; gap: 6px !important; }
+          .rk-card-footer-actions { justify-content: flex-end !important; }
+          .rk-card-tier { font-size: 10px !important; }
+        }
+
+        /* ── iPhone SE (≤ 375px): extra tightening ── */
+        @media (max-width: 375px) {
+          .rk-main-content { padding: 12px 10px calc(56px + env(safe-area-inset-bottom,0px) + 12px) !important; }
+          .rk-job-grid { gap: 7px !important; }
+          .rk-job-card { padding: 9px 9px 8px !important; gap: 6px !important; }
+          .rk-job-card h3 { font-size: 10.5px !important; min-height: 24px !important; }
         }
 
         /* ── Mobile: detail panel → bottom sheet ── */
@@ -1631,6 +1710,7 @@ export default function Dashboard({ onNavigate }) {
         }}
         userName={firstName}
         userInitial={userInitial}
+        userAvatarUrl={user?.user_metadata?.avatar_url}
         badge={{ Tracking: allJobs.length || null }}
         onAskRack={() => navigate('Home')}
         theme={theme}
@@ -1837,7 +1917,7 @@ export default function Dashboard({ onNavigate }) {
 function ThemeToggle({ theme, onToggle }) {
   const [hov, setHov] = useState(false)
   return (
-    <button onClick={onToggle} title="Toggle theme"
+    <button onClick={onToggle} title="Toggle theme" className="rk-theme-toggle"
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
       style={{
         width: 40, height: 40, borderRadius: 11, cursor: 'pointer',
@@ -2126,11 +2206,7 @@ function AppRow({ app, last }) {
         transition: 'background 0.18s',
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
-        <div style={{
-          width: 32, height: 32, borderRadius: 9, flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontWeight: 700, fontSize: 13, color: '#fff', background: brand,
-        }}>{initial}</div>
+        <CompanyLogo company={app.company || ''} size={32} radius={9} fontSize={13} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
           <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{app.company}</div>

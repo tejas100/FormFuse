@@ -361,6 +361,7 @@ export default function Resumes({ onNavigate }) {
   const displayName = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'there'
   const firstName   = displayName.split(' ')[0]
   const userInitial = firstName.charAt(0).toUpperCase()
+  const avatarUrl   = user?.user_metadata?.avatar_url || null
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -393,6 +394,7 @@ export default function Resumes({ onNavigate }) {
         onNavigate={(tab) => navigate(tab === 'Resumes' ? null : tab)}
         userName={firstName}
         userInitial={userInitial}
+        userAvatarUrl={avatarUrl}
         userStat={`${resumes.length} / ${cap} resume${cap !== 1 ? 's' : ''} used`}
         onAskRack={() => navigate('Home')}
         theme={theme}
