@@ -1754,7 +1754,7 @@ function trkBrandColor(company) {
   return palette[Math.abs(hash) % palette.length];
 }
 
-function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, onViewDetail }) {
+function TrkJobCard({ match, index, isApplied, isPending, isSaved, isNew, onApply, onSave, onViewDetail }) {
   const [hovered, setHovered] = useState(false);
 
   const score    = Math.round(match.llm_score ?? match.score ?? 0);
@@ -1766,7 +1766,6 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, 
   const source   = (match.source || 'greenhouse').toUpperCase();
   const jobUrl   = match.job_url || match.url || null;
   const brand    = trkBrandColor(company);
-  const initial  = (company || '?').charAt(0).toUpperCase();
   const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
   const tierColor = score >= 85 ? 'var(--accent3)' : score >= 70 ? 'var(--accent-ink)' : score >= 55 ? '#f5a623' : 'var(--danger)';
   const shownSkills = skills.slice(0, 2);
@@ -1775,23 +1774,61 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, 
   return (
     <div
       className="trk-job-card"
-      onClick={() => onViewDetail && onViewDetail(match)}
+      onClick={() => !isPending && onViewDetail && onViewDetail(match)}
       style={{
         borderRadius: 16,
-        border: isNew ? '1px solid rgba(232,255,107,0.3)' : '1px solid var(--border)',
+        border: isPending ? '1px solid rgba(34,197,94,0.5)' : isNew ? '1px solid rgba(232,255,107,0.3)' : '1px solid var(--border)',
         background: 'var(--surface)',
-        boxShadow: hovered ? 'var(--card-hover-shadow)' : 'var(--card-shadow)',
+        boxShadow: hovered && !isPending ? 'var(--card-hover-shadow)' : 'var(--card-shadow)',
         padding: '14px 14px 12px',
         display: 'flex', flexDirection: 'column', gap: 9,
-        position: 'relative', cursor: 'pointer', minWidth: 0,
+        position: 'relative', overflow: 'hidden', cursor: isPending ? 'default' : 'pointer', minWidth: 0,
         opacity: 0,
         animation: `fadeUp 0.4s ease ${Math.min(index * 0.04, 0.3)}s forwards`,
-        transition: 'border-color 0.2s, box-shadow 0.22s, transform 0.2s',
-        transform: hovered ? 'translateY(-3px)' : 'none',
+        transition: 'border-color 0.4s, box-shadow 0.22s, transform 0.2s',
+        transform: hovered && !isPending ? 'translateY(-3px)' : 'none',
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      {/* ── "Application started" overlay — shows during pending phase ── */}
+      {isPending && (
+        <div style={{
+          position: 'absolute', inset: 0, borderRadius: 15,
+          background: 'linear-gradient(135deg, #16a34a 0%, #15803d 50%, #14532d 100%)',
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 10,
+          zIndex: 3,
+          animation: 'trkAppOverlayIn 0.4s cubic-bezier(0.22,1,0.36,1) both',
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: '50%',
+            background: 'rgba(255,255,255,0.15)',
+            border: '2px solid rgba(255,255,255,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'trkCheckCircleIn 0.36s cubic-bezier(0.34,1.56,0.64,1) 0.15s both',
+          }}>
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none"
+              stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              style={{ animation: 'trkCheckDraw 0.45s ease 0.3s both', strokeDasharray: 30, strokeDashoffset: 30 }}>
+              <polyline points="4 12.5 9.5 18 20 7"/>
+            </svg>
+          </div>
+          <div style={{ textAlign: 'center', animation: 'rkFadeUp 0.35s ease 0.45s both' }}>
+            <div style={{ color: 'white', fontSize: 13.5, fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.2 }}>Application started</div>
+            <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: 11, marginTop: 4, letterSpacing: '0.02em' }}>Agent is applying…</div>
+          </div>
+          <div style={{ display: 'flex', gap: 5, animation: 'rkFadeIn 0.3s ease 0.7s both' }}>
+            {[0,1,2].map(i => (
+              <div key={i} style={{
+                width: 5, height: 5, borderRadius: '50%',
+                background: 'rgba(255,255,255,0.6)',
+                animation: `trkDotPulse 1.1s ease-in-out ${0.7 + i * 0.18}s infinite`,
+              }}/>
+            ))}
+          </div>
+        </div>
+      )}
       {/* New stripe */}
       {isNew && (
         <div style={{
@@ -1894,28 +1931,156 @@ function TrkJobCard({ match, index, isApplied, isSaved, isNew, onApply, onSave, 
             {tierLabel}
           </span>
           {jobUrl && onApply && (
-            <a
-              href={jobUrl} target="_blank" rel="noopener noreferrer"
+            <button
               onClick={(e) => { e.stopPropagation(); onApply(); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
                 padding: '0 10px', height: 28, borderRadius: 7,
                 border: 'none', background: 'var(--accent)',
                 color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
-                fontSize: 11.5, fontWeight: 600,
-                boxShadow: 'var(--accent-glow)', textDecoration: 'none',
+                fontSize: 11.5, fontWeight: 600, cursor: 'pointer',
+                boxShadow: 'var(--accent-glow)',
                 transition: 'background 0.18s', flexShrink: 0,
               }}
               onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
               onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
             >
-              apply ↗
-            </a>
+              apply →
+            </button>
           )}
         </div>
       )}
     </div>
   );
+}
+
+// ── All Applications Strip (Tracking) ────────────────────────────────────────
+
+const TRK_APP_TAB_DEFS = [
+  { id: 'all',       label: 'All' },
+  { id: 'submitted', label: 'Submitted' },
+  { id: 'inflight',  label: 'In flight' },
+  { id: 'needsyou',  label: 'Needs you' },
+  { id: 'failed',    label: 'Failed' },
+  { id: 'skipped',   label: 'Skipped' },
+]
+
+function trkStatusMeta(status) {
+  switch (status) {
+    case 'submitted':   return { label: 'Submitted',  color: 'var(--accent3)',    bg: 'rgba(52,211,153,0.12)' }
+    case 'inflight':    return { label: 'In flight',  color: '#60a5fa',           bg: 'rgba(96,165,250,0.12)' }
+    case 'needsyou':   return { label: 'Needs you',  color: '#f5a623',           bg: 'rgba(245,166,35,0.12)' }
+    case 'failed':      return { label: 'Failed',     color: 'var(--danger)',     bg: 'rgba(248,113,113,0.12)' }
+    case 'skipped':     return { label: 'Skipped',    color: 'var(--text-dim)',   bg: 'var(--chip-bg)' }
+    default:            return { label: status?.replace(/_/g, ' ') || '—', color: 'var(--text-dim)', bg: 'var(--chip-bg)' }
+  }
+}
+
+function TrkAllApplicationsStrip({ appsData, activeTab, onTabChange, newAppRowIds }) {
+  const [searchCo, setSearchCo] = useState('')
+  const [hov, setHov] = useState(null)
+
+  const filtered = activeTab === 'all' ? appsData : appsData.filter(a => a.status === activeTab)
+  const displayed = searchCo.trim()
+    ? filtered.filter(a => (a.company || '').toLowerCase().includes(searchCo.toLowerCase()) || (a.job_title || '').toLowerCase().includes(searchCo.toLowerCase()))
+    : filtered
+
+  return (
+    <div style={{ marginTop: 48 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, color: 'var(--text)' }}>All applications</h2>
+      </div>
+
+      <div style={{ border: '1px solid var(--border)', background: 'var(--surface)', borderRadius: 16, boxShadow: 'var(--card-shadow)', overflow: 'hidden' }}>
+        {/* Tabs + search */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '13px 16px', borderBottom: '1px solid var(--border)', overflowX: 'auto', flexWrap: 'nowrap' }}>
+          {TRK_APP_TAB_DEFS.map(t => {
+            const count = t.id === 'all' ? appsData.length : appsData.filter(a => a.status === t.id).length
+            const active = activeTab === t.id
+            return (
+              <button key={t.id} onClick={() => onTabChange(t.id)} style={{
+                display: 'flex', alignItems: 'center', gap: 7, padding: '6px 12px',
+                borderRadius: 9, cursor: 'pointer', fontFamily: 'var(--font-sans)',
+                fontSize: 12.5, fontWeight: 600, flexShrink: 0,
+                border: `1px solid ${active ? 'var(--accent-line)' : 'var(--border)'}`,
+                background: active ? 'var(--accent-soft)' : 'transparent',
+                color: active ? 'var(--text)' : 'var(--text-mid)',
+                transition: 'background 0.18s, color 0.15s, border-color 0.18s',
+              }}>
+                {t.label}
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, background: 'var(--chip-bg)', padding: '1px 6px', borderRadius: 20, color: 'var(--text-dim)' }}>
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+          {/* Company search */}
+          <div style={{ marginLeft: 'auto', position: 'relative', flexShrink: 0 }}>
+            <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"
+              style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)', pointerEvents: 'none' }}>
+              <circle cx="6.5" cy="6.5" r="4.5"/><path d="M10.5 10.5l2.5 2.5"/>
+            </svg>
+            <input value={searchCo} onChange={e => setSearchCo(e.target.value)} placeholder="Search company..."
+              style={{
+                height: 34, paddingLeft: 30, paddingRight: 12, borderRadius: 9,
+                border: '1px solid var(--border-bright)', background: 'var(--surface2)',
+                fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--text)',
+                outline: 'none', width: 160,
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Table header */}
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1fr 0.8fr', gap: 14, padding: '11px 18px', borderBottom: '1px solid var(--border)' }}>
+          {['Company / Role', 'Resume', 'Cover Letter', 'Status', 'Applied'].map((h, i) => (
+            <span key={h} style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', color: 'var(--text-dim)', textTransform: 'uppercase', textAlign: i === 4 ? 'right' : 'left' }}>{h}</span>
+          ))}
+        </div>
+
+        {/* Rows */}
+        {displayed.length === 0 ? (
+          <div style={{ padding: '34px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
+            {appsData.length === 0
+              ? 'No applications yet. Click apply on a job card above to get started.'
+              : 'No applications match this filter.'}
+          </div>
+        ) : displayed.map((a, i) => {
+          const st = trkStatusMeta(a.status)
+          const isNew = newAppRowIds?.has(a.job_id)
+          const isLast = i === displayed.length - 1
+          const isHov = hov === i
+          return (
+            <div key={a.job_id || i}
+              onMouseEnter={() => setHov(i)} onMouseLeave={() => setHov(null)}
+              style={{
+                display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1fr 0.8fr', gap: 14,
+                padding: '14px 18px', borderBottom: isLast ? 'none' : '1px solid var(--border)',
+                alignItems: 'center',
+                background: isNew ? 'rgba(34,197,94,0.05)' : isHov ? 'var(--surface2)' : 'transparent',
+                transition: 'background 0.5s ease',
+                animation: isNew ? 'trkRowSlideIn 0.5s cubic-bezier(0.22,1,0.36,1) both' : undefined,
+              }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
+                <CompanyLogo company={a.company || ''} size={32} radius={9} fontSize={13} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text)' }}>{a.job_title || '—'}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>{a.company}</div>
+                </div>
+              </div>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-mid)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.resume_name || '—'}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-dim)' }}>{a.cover_letter ? '✓' : '—'}</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 600, color: st.color, background: st.bg, padding: '4px 10px', borderRadius: 20, whiteSpace: 'nowrap', justifySelf: 'start' }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: st.color, flexShrink: 0 }}/>
+                {st.label}
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--text-dim)', textAlign: 'right' }}>{timeAgo(a.updated_at) || 'just now'}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 // ── Job Detail Modal ─────────────────────────────────────────────────────────
@@ -1930,17 +2095,48 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
   const missing   = match.missing_skills || [];
   const source    = (match.source || 'greenhouse').toUpperCase();
   const brand     = trkBrandColor(company);
-  const initial   = (company || '?').charAt(0).toUpperCase();
   const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
   const tierColor = score >= 85 ? 'var(--accent3)' : score >= 70 ? 'var(--accent-ink)' : score >= 55 ? '#f5a623' : 'var(--danger)';
   const reasoning = match.llm_reasoning || match.llm_analysis || '';
   const jobUrl    = match.job_url || match.url || null;
+  const jobId     = match.job_id || null;
+
+  // ── Fetch full job details from job_pool ──
+  const [fullJob, setFullJob]   = useState(null);
+  const [fetching, setFetching] = useState(true);
+
+  useEffect(() => {
+    if (!jobId) { setFetching(false); return; }
+    setFetching(true);
+    getAuthHeaders().then(headers =>
+      fetch(`${API_BASE}/api/match/job/${jobId}`, { headers })
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+    ).then(data => {
+      setFullJob(data);
+      setFetching(false);
+    });
+  }, [jobId]);
 
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
+
+  // ── Description — decode entities + detect HTML ──
+  const rawDescription = fullJob?.description_text || '';
+  const decodedDescription = (() => {
+    if (!rawDescription) return '';
+    if (/<[a-z][\s\S]*?>/i.test(rawDescription)) return rawDescription;
+    if (typeof document !== 'undefined' && /&lt;|&amp;|&gt;|&#/.test(rawDescription)) {
+      const txt = document.createElement('textarea');
+      txt.innerHTML = rawDescription;
+      return txt.value;
+    }
+    return rawDescription;
+  })();
+  const descIsHtml = decodedDescription ? /<[a-z][\s\S]*?>/i.test(decodedDescription) : false;
 
   return createPortal(
     <>
@@ -1951,64 +2147,68 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
         backdropFilter: 'blur(4px)',
       }}/>
 
-      {/* Panel — bottom sheet on all screen sizes, matching Dashboard */}
+      {/* ── Right slide-in panel (desktop) / bottom sheet (mobile) ── */}
       <div className="trk-detail-panel" style={{
-        position: 'fixed', left: 0, right: 0, bottom: 0,
-        width: '100%', maxWidth: 'min(760px, 100vw)',
-        margin: '0 auto',
-        maxHeight: '92dvh',
+        position: 'fixed', top: 0, right: 0, bottom: 0,
+        width: 'min(540px, 94vw)',
         background: 'var(--surface)',
-        border: '1px solid var(--border-bright)',
-        borderRadius: '22px 22px 0 0',
-        boxShadow: '0 -16px 60px rgba(0,0,0,0.55)',
+        borderLeft: '1px solid var(--border-bright)',
+        boxShadow: '-24px 0 80px rgba(0,0,0,0.5)',
         zIndex: 9001, display: 'flex', flexDirection: 'column',
-        animation: 'trkSlideUp 0.38s cubic-bezier(0.22,1,0.36,1) both',
+        animation: 'trkSlideInRight 0.36s cubic-bezier(0.22,1,0.36,1) both',
         overflow: 'hidden',
         fontFamily: "'DM Sans', sans-serif",
-        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
       }}>
-        {/* Drag handle */}
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px', flexShrink: 0 }}>
+
+        {/* Mobile drag handle — hidden on desktop */}
+        <div className="trk-detail-handle" style={{ display: 'none', justifyContent: 'center', padding: '10px 0 4px', flexShrink: 0 }}>
           <div style={{ width: 36, height: 4, borderRadius: 4, background: 'var(--border-bright)' }}/>
         </div>
+
+        {/* Brand accent bar */}
+        <div style={{ height: 3, background: `linear-gradient(90deg, ${brand}, ${brand}66 55%, transparent 100%)`, flexShrink: 0 }}/>
+
         {/* ── Header ── */}
-        <div style={{ padding: '22px 26px 18px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-          {/* Company row + close */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 14 }}>
+        <div style={{ padding: '22px 26px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+
+          {/* Company row + actions */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 18 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
               <CompanyLogo company={company} size={46} radius={12} fontSize={18} />
               <div>
-                <div style={{ fontSize: 14.5, fontWeight: 700, color: 'var(--text)' }}>{company}</div>
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600,
-                  letterSpacing: '0.1em', color: 'var(--text-dim)',
-                  background: 'var(--chip-bg)', padding: '2px 7px', borderRadius: 5,
-                  display: 'inline-block', marginTop: 3,
-                }}>{source}</span>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em', lineHeight: 1.2 }}>{company}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 4 }}>
+                  <span style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
+                    letterSpacing: '0.1em', textTransform: 'uppercase',
+                    color: 'var(--text-dim)', background: 'var(--chip-bg)',
+                    border: '1px solid var(--border)', padding: '2px 7px', borderRadius: 4,
+                  }}>{source}</span>
+                  {posted && <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>· posted {timeAgo(posted)}</span>}
+                </div>
               </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
               {onSave && (
-                <button onClick={onSave} title={isSaved ? 'Saved' : 'Save'}
-                  style={{
-                    width: 34, height: 34, borderRadius: 10,
-                    border: `1px solid ${isSaved ? 'var(--accent-line)' : 'var(--border-bright)'}`,
-                    background: isSaved ? 'var(--accent-soft)' : 'transparent',
-                    cursor: 'pointer', color: isSaved ? 'var(--accent)' : 'var(--text-dim)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 16, transition: 'all 0.15s',
-                  }}>
+                <button onClick={onSave} title={isSaved ? 'Saved' : 'Save'} style={{
+                  width: 32, height: 32, borderRadius: 9,
+                  border: `1px solid ${isSaved ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+                  background: isSaved ? 'var(--accent-soft)' : 'transparent',
+                  cursor: 'pointer', color: isSaved ? 'var(--accent)' : 'var(--text-dim)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 15, transition: 'all 0.15s',
+                }}>
                   {isSaved ? '★' : '☆'}
                 </button>
               )}
               <button onClick={onClose} style={{
-                width: 34, height: 34, borderRadius: 10, border: '1px solid var(--border-bright)',
-                background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
+                width: 32, height: 32, borderRadius: 9, border: '1px solid var(--border-bright)',
+                background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)', flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'color 0.15s, border-color 0.15s',
+                transition: 'background 0.15s, color 0.15s',
               }}
-                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--text-mid)'; }}
-                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)'; }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface2)'; e.currentTarget.style.color = 'var(--text)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-dim)'; }}
               >
                 <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
               </button>
@@ -2016,73 +2216,86 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
           </div>
 
           {/* Title */}
-          <h2 style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.25, letterSpacing: '-0.02em', margin: '0 0 14px', color: 'var(--text)' }}>
+          <h2 style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.25, letterSpacing: '-0.025em', margin: '0 0 16px', color: 'var(--text)' }}>
             {title}
           </h2>
 
-          {/* Meta row */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px 18px', marginBottom: 14 }}>
-            {location && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: 'var(--text-mid)' }}>
-                <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
-                {location}
-              </span>
-            )}
-            {posted && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: 'var(--text-dim)' }}>
-                <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M11 1.5V4M5 1.5V4M2 7h12"/></svg>
-                Posted {timeAgo(posted)}
-              </span>
+          {/* Score + tier + location */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: location ? 14 : 0 }}>
+            <TrkMatchRing score={score} size={44} strokeW={3.5} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: tierColor, lineHeight: 1 }}>{tierLabel}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2 }}>{score}% match score</div>
+            </div>
+            {(skills.length > 0 || missing.length > 0) && (
+              <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', maxWidth: 200 }}>
+                {skills.slice(0, 4).map((s, i) => (
+                  <span key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent3)', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.2)', padding: '2px 8px', borderRadius: 5, whiteSpace: 'nowrap' }}>✓ {s}</span>
+                ))}
+                {missing.slice(0, 2).map((s, i) => (
+                  <span key={`m${i}`} style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', background: 'var(--chip-bg)', border: '1px solid var(--border)', padding: '2px 8px', borderRadius: 5, whiteSpace: 'nowrap', opacity: 0.65 }}>✗ {s}</span>
+                ))}
+              </div>
             )}
           </div>
 
-          {/* Score + tier + skills */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <TrkMatchRing score={score} size={52} strokeW={3.5} />
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
-                <span style={{ fontSize: 13, fontWeight: 600, color: tierColor }}>{tierLabel}</span>
-              </div>
-              {(skills.length > 0 || missing.length > 0) && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                  {skills.slice(0, 5).map((s, i) => (
-                    <span key={i} style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'rgba(52,211,153,0.1)', color: 'var(--accent3)', border: '1px solid rgba(52,211,153,0.2)' }}>✓ {s}</span>
-                  ))}
-                  {missing.slice(0, 3).map((s, i) => (
-                    <span key={i} style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 20, background: 'rgba(248,113,113,0.08)', color: 'var(--danger)', border: '1px solid rgba(248,113,113,0.18)' }}>✗ {s}</span>
-                  ))}
-                  {skills.length > 5 && <span style={{ fontSize: 10, color: 'var(--text-dim)', padding: '2px 4px' }}>+{skills.length - 5} more</span>}
-                </div>
+          {/* Location + date meta */}
+          {(location || posted) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', padding: '12px 14px', background: 'var(--surface2)', borderRadius: 10, border: '1px solid var(--border)' }}>
+              {location && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-mid)' }}>
+                  <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
+                  {location}
+                </span>
+              )}
+              {posted && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-dim)' }}>
+                  <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M11 1.5V4M5 1.5V4M2 7h12"/></svg>
+                  Posted {timeAgo(posted)}
+                </span>
               )}
             </div>
-          </div>
+          )}
         </div>
 
         {/* ── Scrollable body ── */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '22px 26px' }}>
-          {/* AI reasoning */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '22px 26px 8px', scrollbarWidth: 'thin' }}>
+
+          {/* ── Job Description ── */}
+          {fetching && !decodedDescription ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 6, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>Description</div>
+              {[90, 75, 100, 60, 85, 70, 95, 55].map((w, i) => (
+                <div key={i} style={{ height: 13, borderRadius: 6, background: 'var(--border)', width: `${w}%`, animation: `trkPulse 1.4s ease ${i * 0.07}s infinite` }}/>
+              ))}
+            </div>
+          ) : decodedDescription ? (
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 14, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
+                Description
+              </div>
+              {descIsHtml ? (
+                <div className="trk-jd-html" dangerouslySetInnerHTML={{ __html: decodedDescription }} />
+              ) : (
+                <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>{decodedDescription}</p>
+              )}
+            </div>
+          ) : null}
+
+          {/* ── RACK Analysis ── */}
           {reasoning && (
             <div style={{ marginBottom: 24 }}>
-              <h3 style={{
-                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                color: 'var(--text-dim)', margin: '0 0 10px',
-                paddingBottom: 7, borderBottom: '1px solid var(--border)',
-              }}>RACK Analysis</h3>
+              <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)', margin: '0 0 10px', paddingBottom: 7, borderBottom: '1px solid var(--border)' }}>RACK Analysis</h3>
               <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-mid)', fontStyle: 'italic' }}>
                 "{reasoning}"
               </p>
             </div>
           )}
 
-          {/* LLM component scores */}
+          {/* ── Score Breakdown ── */}
           {(match.llm_scores || match.component_scores) && (
             <div style={{ marginBottom: 24 }}>
-              <h3 style={{
-                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                color: 'var(--text-dim)', margin: '0 0 10px',
-                paddingBottom: 7, borderBottom: '1px solid var(--border)',
-              }}>Score Breakdown</h3>
+              <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)', margin: '0 0 10px', paddingBottom: 7, borderBottom: '1px solid var(--border)' }}>Score Breakdown</h3>
               {Object.entries(match.llm_scores || match.component_scores || {}).map(([key, val]) => {
                 const display = typeof val === 'object' ? (val.score || val.weighted || 0) : val;
                 const pct = Math.min(Math.round(typeof display === 'number' && display <= 1 ? display * 100 : display), 100);
@@ -2100,14 +2313,10 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
             </div>
           )}
 
-          {/* All matched/missing skills */}
+          {/* ── Skills Match ── */}
           {(skills.length > 0 || missing.length > 0) && (
             <div style={{ marginBottom: 24 }}>
-              <h3 style={{
-                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                color: 'var(--text-dim)', margin: '0 0 10px',
-                paddingBottom: 7, borderBottom: '1px solid var(--border)',
-              }}>Skills Match</h3>
+              <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)', margin: '0 0 10px', paddingBottom: 7, borderBottom: '1px solid var(--border)' }}>Skills Match</h3>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {skills.map((s, i) => (
                   <span key={i} style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(52,211,153,0.1)', color: 'var(--accent3)', border: '1px solid rgba(52,211,153,0.2)' }}>✓ {s}</span>
@@ -2119,28 +2328,22 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
             </div>
           )}
 
-          {/* Best resume */}
+          {/* ── Best Matching Resume ── */}
           {match.resume_name && (
             <div style={{ marginBottom: 24 }}>
-              <h3 style={{
-                fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                color: 'var(--text-dim)', margin: '0 0 10px',
-                paddingBottom: 7, borderBottom: '1px solid var(--border)',
-              }}>Best Matching Resume</h3>
+              <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)', margin: '0 0 10px', paddingBottom: 7, borderBottom: '1px solid var(--border)' }}>Best Matching Resume</h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface2)' }}>
                 <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="var(--accent-ink)" strokeWidth="1.5" strokeLinecap="round"><rect x="3" y="1.5" width="10" height="13" rx="1.6"/><path d="M6 5h4M6 8h4M6 11h2.5"/></svg>
                 <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{match.resume_name}</span>
                 {match.hybrid_score != null && (
-                  <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>
-                    hybrid: {match.hybrid_score}
-                  </span>
+                  <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>hybrid: {match.hybrid_score}</span>
                 )}
               </div>
             </div>
           )}
 
-          {/* No data fallback */}
-          {!reasoning && !match.llm_scores && !match.component_scores && skills.length === 0 && (
+          {/* ── No data fallback (only if no description and no analysis) ── */}
+          {!decodedDescription && !reasoning && !match.llm_scores && !match.component_scores && skills.length === 0 && !fetching && (
             <div style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--text-dim)', fontSize: 13 }}>
               Detailed analysis will appear here after the LLM scoring pass completes.
             </div>
@@ -2186,9 +2389,8 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
                 Applied
               </div>
             ) : (
-              jobUrl && (
-                <a
-                  href={jobUrl} target="_blank" rel="noopener noreferrer"
+              onApply && (
+                <button
                   onClick={() => { onApply?.(); onClose(); }}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 7,
@@ -2196,13 +2398,13 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
                     border: 'none', background: 'var(--accent)',
                     color: 'var(--accent-contrast)', fontFamily: "'DM Sans', sans-serif",
                     fontSize: 13, fontWeight: 600, boxShadow: 'var(--accent-glow)',
-                    textDecoration: 'none', transition: 'background 0.18s',
+                    cursor: 'pointer', transition: 'background 0.18s',
                   }}
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-strong)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
                 >
-                  Apply ↗
-                </a>
+                  Apply →
+                </button>
               )
             )}
           </div>
@@ -2542,15 +2744,13 @@ function AutoMatchesTab({ profile, isPowerUser }) {
   const [archiveCount, setArchiveCount] = useState(() => loadArchive().length);
   const [isSlotView, setIsSlotView]     = useState(false); // true = free user cumulative view
   const [newJobIds, setNewJobIds]       = useState(new Set()); // today's fresh picks
-  const [appliedJobs, setAppliedJobs]   = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("rack_applied_jobs") || "[]")); }
-    catch { return new Set(); }
-  });
-  const [savedJobs, setSavedJobs]       = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("rack_saved_jobs") || "[]")); }
-    catch { return new Set(); }
-  });
+  const [appliedJobs, setAppliedJobs]   = useState(new Set());
+  const [savedJobs, setSavedJobs]       = useState(new Set());
   const [applyPrompt, setApplyPrompt]   = useState(null); // { job_id, job_title }
+  const [pendingApplyIds, setPendingApplyIds] = useState(new Set()); // showing overlay, still in grid
+  const [newAppRowIds, setNewAppRowIds]       = useState(new Set()); // entrance anim for strip rows
+  const [trkAppsData, setTrkAppsData]         = useState([]);        // local applications strip
+  const [trkAppsTab, setTrkAppsTab]           = useState('all');     // strip active tab
   const [dailySlots, setDailySlots]     = useState([]);
   const [slotsIsFresh, setSlotsIsFresh] = useState(false);
   const [expandedSlotId, setExpandedSlotId] = useState(null);
@@ -2566,7 +2766,6 @@ function AutoMatchesTab({ profile, isPowerUser }) {
     setAppliedJobs(prev => {
       const next = new Set(prev);
       next.add(job_id);
-      localStorage.setItem("rack_applied_jobs", JSON.stringify([...next]));
       return next;
     });
     setApplyPrompt(null);
@@ -2585,22 +2784,47 @@ function AutoMatchesTab({ profile, isPowerUser }) {
     }
   };
 
-  const handleApplyClick = (job_id, job_title) => {
-    pendingApplyRef.current = { job_id, job_title };
-    const onVisible = () => {
-      if (document.visibilityState === "visible" && pendingApplyRef.current) {
-        setApplyPrompt({ ...pendingApplyRef.current });
-        document.removeEventListener("visibilitychange", onVisible);
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
+  const handleApplyClick = (job_id, job_title, match) => {
+    // Phase 1: show "Application started" overlay on card (stays in grid)
+    setPendingApplyIds(prev => new Set([...prev, job_id]));
+
+    // Phase 2: after 1400ms — mark applied + drop row into strip with entrance anim
+    setTimeout(() => {
+      // Mark as applied — session only until backend is wired
+      setAppliedJobs(prev => {
+        const next = new Set(prev);
+        next.add(job_id);
+        return next;
+      });
+      setPendingApplyIds(prev => { const n = new Set(prev); n.delete(job_id); return n; });
+
+      // Add to local applications strip
+      const newEntry = {
+        job_id,
+        job_title: job_title || match?.job_title || 'Untitled',
+        company:   match?.company || '',
+        resume_name: match?.resume_name || null,
+        status:    'inflight',
+        updated_at: new Date().toISOString(),
+      };
+      setTrkAppsData(prev => {
+        if (prev.some(a => a.job_id === job_id)) return prev;
+        return [newEntry, ...prev];
+      });
+      setNewAppRowIds(prev => new Set([...prev, job_id]));
+      setTimeout(() => setNewAppRowIds(prev => { const n = new Set(prev); n.delete(job_id); return n; }), 1200);
+
+      // Persist to DB (best-effort)
+      getAuthHeaders().then(headers =>
+        fetch(`${API}/auto/${job_id}/applied`, { method: "PATCH", headers })
+      ).catch(e => console.warn("Failed to persist applied status:", e));
+    }, 1400);
   };
 
   const toggleSaved = (job_id) => {
     setSavedJobs(prev => {
       const next = new Set(prev);
       next.has(job_id) ? next.delete(job_id) : next.add(job_id);
-      localStorage.setItem("rack_saved_jobs", JSON.stringify([...next]));
       return next;
     });
   };
@@ -2754,7 +2978,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
   // so the layout doesn't jump when data arrives.
   if (initializing) {
     return (
-      <div className="trk-job-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }}>
+      <div className="trk-job-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 14 }}>
         {Array.from({ length: 10 }).map((_, i) => (
           <div key={i} style={{
             background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14,
@@ -3077,7 +3301,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       {!loading && paginated.length > 0 && (
         <div className="trk-job-grid" style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(5, 1fr)',
+          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
           gap: 14,
           marginBottom: 8,
         }}>
@@ -3090,8 +3314,9 @@ function AutoMatchesTab({ profile, isPowerUser }) {
                 index={(page - 1) * PAGE_SIZE + i}
                 isNew={isNew}
                 isApplied={appliedJobs.has(m.job_id)}
+                isPending={pendingApplyIds.has(m.job_id)}
                 isSaved={savedJobs.has(m.job_id)}
-                onApply={() => handleApplyClick(m.job_id, m.job_title)}
+                onApply={() => handleApplyClick(m.job_id, m.job_title, m)}
                 onSave={() => toggleSaved(m.job_id)}
                 onViewDetail={setSelectedMatch}
               />
@@ -3105,7 +3330,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
         <TrkJobDetailModal
           match={selectedMatch}
           onClose={() => setSelectedMatch(null)}
-          onApply={() => handleApplyClick(selectedMatch.job_id, selectedMatch.job_title)}
+          onApply={() => handleApplyClick(selectedMatch.job_id, selectedMatch.job_title, selectedMatch)}
           isApplied={appliedJobs.has(selectedMatch.job_id)}
           onSave={() => toggleSaved(selectedMatch.job_id)}
           isSaved={savedJobs.has(selectedMatch.job_id)}
@@ -3118,6 +3343,16 @@ function AutoMatchesTab({ profile, isPowerUser }) {
           showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} of {sorted.length} matches
           {filterBy !== "all" && <span style={{ color: "#34d399", opacity: 1, marginLeft: 6 }}>· filtered</span>}
         </div>
+      )}
+
+      {/* ── All Applications strip ── */}
+      {!loading && (
+        <TrkAllApplicationsStrip
+          appsData={trkAppsData}
+          activeTab={trkAppsTab}
+          onTabChange={setTrkAppsTab}
+          newAppRowIds={newAppRowIds}
+        />
       )}
     </div>
   );
@@ -4268,12 +4503,60 @@ export default function Tracking({ onNavigate }) {
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes rkFadeUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
         @keyframes rkFadeIn { from{opacity:0} to{opacity:1} }
         @keyframes trkSlideUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
+        @keyframes trkSlideInRight { from{opacity:0;transform:translateX(100%)} to{opacity:1;transform:translateX(0)} }
         @keyframes rkScaleIn { from{opacity:0;transform:scale(.97)} to{opacity:1;transform:scale(1)} }
         @keyframes rkMobileSheet { from{transform:translateY(100%)} to{transform:translateY(0)} }
         @keyframes rkBeacon { 0%,100%{box-shadow:0 0 0 0 rgba(232,255,107,0.0)} 50%{box-shadow:0 0 0 5px rgba(232,255,107,0.16)} }
+        @keyframes trkPulse { 0%,100%{opacity:.35} 50%{opacity:.9} }
+        /* ── Apply overlay sequence ── */
+        @keyframes trkAppOverlayIn  { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:scale(1)} }
+        @keyframes trkCheckCircleIn { from{opacity:0;transform:scale(0.4)} to{opacity:1;transform:scale(1)} }
+        @keyframes trkCheckDraw     { from{stroke-dashoffset:30;opacity:0} to{stroke-dashoffset:0;opacity:1} }
+        @keyframes trkDotPulse      { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+        /* ── New app row entrance ── */
+        @keyframes trkRowSlideIn    { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+
+        /* ── Job description HTML renderer (Tracking panel) ── */
+        .trk-jd-html { font-size: 13.5px; line-height: 1.75; color: var(--text-mid); }
+        .trk-jd-html p { margin: 0 0 12px; color: var(--text-mid); line-height: 1.75; }
+        .trk-jd-html p:last-child { margin-bottom: 0; }
+        .trk-jd-html ul, .trk-jd-html ol { margin: 0 0 14px; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+        .trk-jd-html li { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; line-height: 1.7; color: var(--text-mid); }
+        .trk-jd-html li::before { content: ''; flex-shrink: 0; margin-top: 9px; width: 4px; height: 4px; border-radius: 50%; background: var(--accent-ink); opacity: 0.5; }
+        .trk-jd-html ol { counter-reset: trk-ol; }
+        .trk-jd-html ol li::before { counter-increment: trk-ol; content: counter(trk-ol) '.'; width: auto; height: auto; border-radius: 0; background: none; opacity: 1; font-size: 12px; font-weight: 600; color: var(--accent-ink); margin-top: 0; line-height: 1.75; }
+        .trk-jd-html h1, .trk-jd-html h2, .trk-jd-html h3, .trk-jd-html h4 { margin: 20px 0 8px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; font-size: 10.5px; color: var(--text-dim); line-height: 1.4; }
+        .trk-jd-html h1:first-child, .trk-jd-html h2:first-child, .trk-jd-html h3:first-child { margin-top: 0; }
+        .trk-jd-html strong, .trk-jd-html b { font-weight: 600; color: var(--text); }
+        .trk-jd-html em, .trk-jd-html i { font-style: italic; }
+        .trk-jd-html a { color: var(--accent-ink); text-decoration: none; font-weight: 500; }
+        .trk-jd-html a:hover { text-decoration: underline; }
+        .trk-jd-html br { display: none; }
+        .trk-jd-html div.content-conclusion { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+        .trk-jd-html span[style] { font-family: inherit !important; }
+
+        /* ── Mobile override: right panel → bottom sheet ── */
+        @media (max-width: 767px) {
+          .trk-detail-handle { display: flex !important; }
+          .trk-detail-panel {
+            top: auto !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            width: 100% !important;
+            max-height: 92dvh !important;
+            border-left: none !important;
+            border-top: 1px solid var(--border-bright) !important;
+            border-radius: 20px 20px 0 0 !important;
+            box-shadow: 0 -16px 60px rgba(0,0,0,0.55) !important;
+            animation: trkSlideUp 0.38s cubic-bezier(0.22,1,0.36,1) both !important;
+            padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+          }
+        }
 
         /* Filter bar visibility — desktop shows chips, mobile shows single button */
         .trk-filter-bar-mobile { display: none; }
@@ -4283,7 +4566,8 @@ export default function Tracking({ onNavigate }) {
         .trk-root ::-webkit-scrollbar-track{background:transparent}
 
         /* ── Main content padding (base = desktop) ── */
-        .trk-main-content { padding: 30px 32px 60px; }
+        .trk-main-content { padding: 30px 32px 60px; min-width: 0; }
+        .trk-job-card { min-width: 0; }
 
         /* ── Tablet: 768–1199px ── */
         @media (max-width: 1199px) {
@@ -4312,6 +4596,7 @@ export default function Tracking({ onNavigate }) {
             grid-template-columns: 1fr 1fr !important;
             gap: 8px !important;
           }
+          .trk-job-card { min-width: 0 !important; }
 
         }
       `}</style>
@@ -4351,7 +4636,7 @@ export default function Tracking({ onNavigate }) {
       />
 
       {/* ── MAIN CONTENT ── */}
-      <main className="trk-root" style={{ flex: 1, height: '100%', overflowY: 'auto', position: 'relative' }}>
+      <main className="trk-root" style={{ flex: 1, minWidth: 0, height: '100%', overflowY: 'auto', overflowX: 'hidden', position: 'relative' }}>
         {/* Ambient glow */}
         <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
         <div style={{ position: 'absolute', top: 120, right: -140, width: 480, height: 480, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-2), transparent 70%)', pointerEvents: 'none', zIndex: 0 }}/>

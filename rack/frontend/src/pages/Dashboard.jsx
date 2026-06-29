@@ -123,6 +123,7 @@ function statusMeta(status) {
     case 'replaying':         return { label: 'Applying…',      color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
     case 'awaiting_otp':      return { label: 'Needs OTP',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
     case 'failed':            return { label: 'Failed',         color: 'var(--danger)',   bg: 'rgba(248,113,113,0.12)' }
+    case 'skipped':           return { label: 'Skipped',        color: 'var(--text-dim)', bg: 'var(--chip-bg)' }
     default:                  return { label: status?.replace(/_/g, ' ') || '—', color: 'var(--text-dim)', bg: 'var(--chip-bg)' }
   }
 }
@@ -209,7 +210,7 @@ function SkeletonCard() {
   )
 }
 
-function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, revealed }) {
+function JobCard({ job, appliedIds, pendingApplyIds, passedIds, onApply, onPass, onViewDetail, revealed }) {
   const [hovered, setHovered] = useState(false)
   const jd       = job.job_data || {}
   const title    = job.job_title  || jd.title || jd.job_title || 'Untitled'
@@ -221,6 +222,7 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, re
   const source   = (job.source || jd.source || 'greenhouse').toUpperCase()
   const jobId    = job.job_id || job.id
   const isApplied = appliedIds.has(jobId)
+  const isPending = pendingApplyIds?.has(jobId)
   const isPassed  = passedIds.has(jobId)
   const brand  = brandColor(company)
   const initial = (company || '?').charAt(0).toUpperCase()
@@ -233,17 +235,17 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, re
   return (
     <div
       className="rk-job-card"
-      onClick={() => onViewDetail && onViewDetail(job)}
+      onClick={() => !isPending && onViewDetail && onViewDetail(job)}
       style={{
-        borderRadius: 16, border: '1px solid var(--border)',
+        borderRadius: 16, border: `1px solid ${isPending ? 'rgba(34,197,94,0.5)' : 'var(--border)'}`,
         background: 'var(--surface)',
-        boxShadow: hovered ? 'var(--card-hover-shadow)' : 'var(--card-shadow)',
+        boxShadow: hovered && !isPending ? 'var(--card-hover-shadow)' : 'var(--card-shadow)',
         padding: '14px 14px 12px', display: 'flex', flexDirection: 'column', gap: 10,
-        position: 'relative',
+        position: 'relative', overflow: 'hidden',
         opacity: revealed ? 1 : 0,
         transform: revealed ? 'translateY(0)' : 'translateY(18px)',
-        transition: 'opacity 0.45s cubic-bezier(0.22,1,0.36,1), transform 0.45s cubic-bezier(0.22,1,0.36,1), border-color 0.22s ease, box-shadow 0.28s ease, transform 0.22s ease',
-        cursor: 'pointer',
+        transition: 'opacity 0.45s cubic-bezier(0.22,1,0.36,1), transform 0.45s cubic-bezier(0.22,1,0.36,1), border-color 0.4s ease, box-shadow 0.28s ease',
+        cursor: isPending ? 'default' : 'pointer',
         minWidth: 0,
       }}
       onMouseEnter={() => setHovered(true)}
@@ -310,19 +312,54 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, re
 
       <div style={{ height: 1, background: 'var(--border)', margin: '0' }}/>
 
-      {/* Footer */}
-      {isApplied ? (
+      {/* ── "Application started" overlay — shows during pending phase ── */}
+      {isPending && (
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-          height: 32, borderRadius: 9,
-          background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
-          color: 'var(--accent-ink)', fontSize: 11.5, fontWeight: 600,
-          animation: 'rkScaleIn 0.35s cubic-bezier(0.22,1,0.36,1) both',
+          position: 'absolute', inset: 0, borderRadius: 15,
+          background: 'linear-gradient(135deg, #16a34a 0%, #15803d 50%, #14532d 100%)',
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 10,
+          zIndex: 3,
+          animation: 'rkAppOverlayIn 0.4s cubic-bezier(0.22,1,0.36,1) both',
         }}>
-          <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
-          Queued
+          {/* Checkmark circle */}
+          <div style={{
+            width: 48, height: 48, borderRadius: '50%',
+            background: 'rgba(255,255,255,0.15)',
+            border: '2px solid rgba(255,255,255,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'rkCheckCircleIn 0.36s cubic-bezier(0.34,1.56,0.64,1) 0.15s both',
+          }}>
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none"
+              stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              style={{ animation: 'rkCheckDraw 0.45s ease 0.3s both', strokeDasharray: 30, strokeDashoffset: 30 }}>
+              <polyline points="4 12.5 9.5 18 20 7"/>
+            </svg>
+          </div>
+          {/* Text */}
+          <div style={{ textAlign: 'center', animation: 'rkFadeUp 0.35s ease 0.45s both' }}>
+            <div style={{ color: 'white', fontSize: 13.5, fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.2 }}>
+              Application started
+            </div>
+            <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: 11, marginTop: 4, letterSpacing: '0.02em' }}>
+              Agent is applying…
+            </div>
+          </div>
+          {/* Progress dots */}
+          <div style={{ display: 'flex', gap: 5, animation: 'rkFadeIn 0.3s ease 0.7s both' }}>
+            {[0,1,2].map(i => (
+              <div key={i} style={{
+                width: 5, height: 5, borderRadius: '50%',
+                background: 'rgba(255,255,255,0.6)',
+                animation: `rkDotPulse 1.1s ease-in-out ${0.7 + i * 0.18}s infinite`,
+              }}/>
+            ))}
+          </div>
         </div>
-      ) : (
+      )}
+
+      {/* Footer */}
+      {isApplied ? null : (
         <div className="rk-card-footer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
           <span className="rk-card-tier" style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, color: tierColor, flexShrink: 0 }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
@@ -419,29 +456,22 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
   const department  = fj.department || jd0.department || null
   const displayLoc  = fj.location  || location || ''
 
-  // ── Parse description into sections ──────────────────────────────
-  const parsedSections = (() => {
-    if (!description) return []
-    const lines = description.replace(/\r\n/g, '\n').split('\n')
-    const sections = []
-    let current = { heading: null, lines: [] }
-    const headerRe = /^(#{1,3}\s+|[A-Z][A-Za-z\s&/,\-]{2,40}:?\s*)$/
-    for (const raw of lines) {
-      const line = raw.trim()
-      if (!line) { if (current.lines.length) current.lines.push(''); continue }
-      const isHeader = headerRe.test(line) && line.length < 60
-      if (isHeader && current.lines.filter(l => l).length > 0) {
-        sections.push({ ...current })
-        current = { heading: line.replace(/^#+\s*/, '').replace(/:$/, '').trim(), lines: [] }
-      } else if (isHeader && current.lines.filter(l => l).length === 0) {
-        current.heading = line.replace(/^#+\s*/, '').replace(/:$/, '').trim()
-      } else {
-        current.lines.push(line)
-      }
+  // ── Decode HTML entities + detect HTML vs plain text ────────────
+  // Greenhouse stores descriptions as entity-encoded HTML: &lt;p&gt; instead of <p>
+  // Decode once using a temporary DOM element, then detect and render.
+  const decodedDescription = (() => {
+    if (!description) return ''
+    // Already real HTML tags — no decoding needed
+    if (/<[a-z][\s\S]*?>/i.test(description)) return description
+    // Entity-encoded — decode via textarea trick (browser only)
+    if (typeof document !== 'undefined' && /&lt;|&amp;|&gt;|&#/.test(description)) {
+      const txt = document.createElement('textarea')
+      txt.innerHTML = description
+      return txt.value
     }
-    if (current.lines.filter(l => l).length || current.heading) sections.push(current)
-    return sections.filter(s => s.lines.filter(l => l).length > 0 || s.heading)
+    return description
   })()
+  const descIsHtml = decodedDescription ? /<[a-z][\s\S]*?>/i.test(decodedDescription) : false
 
   // ── Meta grid items ───────────────────────────────────────────────
   const metaItems = [
@@ -613,42 +643,19 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
                 }}/>
               ))}
             </div>
-          ) : parsedSections.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-              {/* Section label */}
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
+          ) : decodedDescription ? (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 18, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
                 Description
               </div>
-              {parsedSections.map((section, si) => (
-                <div key={si}>
-                  {section.heading && (
-                    <h3 style={{
-                      fontSize: 11.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-                      color: 'var(--text-dim)', margin: '0 0 10px',
-                    }}>{section.heading}</h3>
-                  )}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {section.lines.map((line, li) => {
-                      if (!line.trim()) return <div key={li} style={{ height: 6 }}/>
-                      const isBullet = /^[-•*]\s/.test(line)
-                      const text = isBullet ? line.replace(/^[-•*]\s+/, '') : line
-                      return isBullet ? (
-                        <div key={li} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                          <span style={{ flexShrink: 0, marginTop: 8, width: 4, height: 4, borderRadius: '50%', background: 'var(--accent-ink)', opacity: 0.5 }}/>
-                          <span style={{ fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-mid)' }}>{text}</span>
-                        </div>
-                      ) : (
-                        <p key={li} style={{ margin: 0, fontSize: 13.5, lineHeight: 1.75, color: 'var(--text-mid)' }}>{text}</p>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : description ? (
-            <div>
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 14, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>Description</div>
-              <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>{description}</p>
+              {descIsHtml ? (
+                <div
+                  className="rk-jd-html"
+                  dangerouslySetInnerHTML={{ __html: decodedDescription }}
+                />
+              ) : (
+                <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>{decodedDescription}</p>
+              )}
             </div>
           ) : !fetching ? (
             <div style={{ textAlign: 'center', padding: '48px 24px' }}>
@@ -1346,7 +1353,9 @@ export default function Dashboard({ onNavigate }) {
   // ── Data state ──────────────────────────────────────────────────────────────
   const [phase, setPhase]           = useState('fetching') // 'fetching' | 'scanning' | 'ready' | 'error'
   const [allJobs, setAllJobs]       = useState([])
-  const [appliedIds, setAppliedIds] = useState(new Set())
+  const [appliedIds, setAppliedIds]   = useState(new Set())
+  const [pendingApplyIds, setPendingApplyIds] = useState(new Set()) // showing overlay, still in grid
+  const [newAppIds, setNewAppIds]     = useState(new Set()) // freshly added to strip (for entrance anim)
   const [passedIds, setPassedIds]   = useState(new Set())
   const [revealCount, setRevealCount] = useState(0)
   const [scanStep, setScanStep]     = useState(0)
@@ -1541,37 +1550,62 @@ export default function Dashboard({ onNavigate }) {
     return jobs
   })()
 
-  const DASHBOARD_JOB_CAP = 5    // dashboard shows top 5; "Browse all" → Tracking
+  const DASHBOARD_JOB_CAP = 5    // dashboard shows top 5 non-applied; "Browse all" → Tracking
 
   const freshCount = allJobs.filter(j => {
     const d = new Date(j.matched_at || j.posted_at || 0)
     return (Date.now() - d.getTime()) < 86400000 * 2
   }).length
 
-  // Cap what the dashboard grid shows
-  const visibleJobs = filteredJobs.slice(0, DASHBOARD_JOB_CAP)
+  // Pending cards still show in grid (with overlay). Only fully committed applied cards leave.
+  const visibleJobs = filteredJobs.filter(j => !appliedIds.has(j.job_id || j.id)).slice(0, DASHBOARD_JOB_CAP)
 
   const handleApply = (job) => {
     const id = job.job_id || job.id
-    setAppliedIds(prev => new Set([...prev, id]))
+    // Phase 1: show "Application started" overlay on card (card stays in grid)
+    setPendingApplyIds(prev => new Set([...prev, id]))
+
+    // Phase 2: after 1400ms — remove card from grid + drop row into strip
+    setTimeout(() => {
+      setAppliedIds(prev => new Set([...prev, id]))
+      setPendingApplyIds(prev => { const n = new Set(prev); n.delete(id); return n })
+
+      const newEntry = {
+        job_id:     id,
+        job_title:  job.job_title || job.job_data?.title || 'Untitled',
+        company:    job.company   || job.job_data?.company || '',
+        resume_name: job.resume_name || null,
+        status:     'inflight',
+        updated_at: new Date().toISOString(),
+        _local:     true,
+      }
+      setAppsData(prev => {
+        if (prev.some(a => a.job_id === id)) return prev
+        return [newEntry, ...prev]
+      })
+      // Mark as "new" for entrance animation, clear after 1200ms
+      setNewAppIds(prev => new Set([...prev, id]))
+      setTimeout(() => setNewAppIds(prev => { const n = new Set(prev); n.delete(id); return n }), 1200)
+    }, 1400)
   }
   const handlePass = (id) => setPassedIds(prev => new Set([...prev, id]))
 
-  const allApplied = visibleJobs.length > 0 && visibleJobs.every(j => appliedIds.has(j.job_id || j.id))
+  const allApplied = filteredJobs.filter(j => !appliedIds.has(j.job_id || j.id) && !pendingApplyIds.has(j.job_id || j.id)).length === 0
 
   const handleApplyAll = () => {
-    const ids = visibleJobs.map(j => j.job_id || j.id)
-    setAppliedIds(prev => new Set([...prev, ...ids]))
+    const unapplied = visibleJobs.filter(j => !appliedIds.has(j.job_id || j.id) && !pendingApplyIds.has(j.job_id || j.id))
+    unapplied.forEach((job, i) => setTimeout(() => handleApply(job), i * 120))
   }
 
 
   // ── Apps strip tab config ───────────────────────────────────────────────────
   const appTabDefs = [
-    { id: 'all', label: 'All' },
-    { id: 'applied', label: 'Applied' },
-    { id: 'interviewing', label: 'Interviewing' },
-    { id: 'offered', label: 'Offered' },
-    { id: 'rejected', label: 'Rejected' },
+    { id: 'all',       label: 'All' },
+    { id: 'submitted', label: 'Submitted' },
+    { id: 'inflight',  label: 'In flight' },
+    { id: 'needsyou',  label: 'Needs you' },
+    { id: 'failed',    label: 'Failed' },
+    { id: 'skipped',   label: 'Skipped' },
   ]
 
   const filteredApps = appsTab === 'all'
@@ -1612,9 +1646,15 @@ export default function Dashboard({ onNavigate }) {
         @keyframes rkSlideInRight { from{opacity:0;transform:translateX(100%)} to{opacity:1;transform:translateX(0)} }
         @keyframes rkPulse   { 0%,100%{opacity:0.5} 50%{opacity:0.9} }
         @keyframes rkSpin    { to{transform:rotate(360deg)} }
-        @keyframes rkPulse   { 0%,100%{opacity:.35} 50%{opacity:.9} }
         @keyframes rkShimmer { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
         @keyframes rkMobileSheet { from{transform:translateY(100%)} to{transform:translateY(0)} }
+        /* ── Apply overlay animation sequence ── */
+        @keyframes rkAppOverlayIn  { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:scale(1)} }
+        @keyframes rkCheckCircleIn { from{opacity:0;transform:scale(0.4)} to{opacity:1;transform:scale(1)} }
+        @keyframes rkCheckDraw     { from{stroke-dashoffset:30;opacity:0} to{stroke-dashoffset:0;opacity:1} }
+        @keyframes rkDotPulse      { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+        /* ── New app row entrance ── */
+        @keyframes rkRowSlideIn    { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
 
         .rk-root ::-webkit-scrollbar{width:6px;height:6px}
         .rk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px}
@@ -1697,6 +1737,88 @@ export default function Dashboard({ onNavigate }) {
           .rk-job-card { padding: 9px 9px 8px !important; gap: 6px !important; }
           .rk-job-card h3 { font-size: 10.5px !important; min-height: 24px !important; }
         }
+
+        /* ── Job description HTML renderer ── */
+        .rk-jd-html {
+          font-size: 13.5px;
+          line-height: 1.75;
+          color: var(--text-mid);
+        }
+        .rk-jd-html p {
+          margin: 0 0 12px;
+          color: var(--text-mid);
+          line-height: 1.75;
+        }
+        .rk-jd-html p:last-child { margin-bottom: 0; }
+        .rk-jd-html ul, .rk-jd-html ol {
+          margin: 0 0 14px;
+          padding-left: 0;
+          list-style: none;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .rk-jd-html li {
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          font-size: 13.5px;
+          line-height: 1.7;
+          color: var(--text-mid);
+        }
+        .rk-jd-html li::before {
+          content: '';
+          flex-shrink: 0;
+          margin-top: 9px;
+          width: 4px;
+          height: 4px;
+          border-radius: 50%;
+          background: var(--accent-ink);
+          opacity: 0.5;
+        }
+        .rk-jd-html ol { counter-reset: rk-ol; }
+        .rk-jd-html ol li::before {
+          counter-increment: rk-ol;
+          content: counter(rk-ol) '.';
+          width: auto;
+          height: auto;
+          border-radius: 0;
+          background: none;
+          opacity: 1;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--accent-ink);
+          margin-top: 0;
+          line-height: 1.75;
+        }
+        .rk-jd-html h1, .rk-jd-html h2, .rk-jd-html h3, .rk-jd-html h4 {
+          margin: 20px 0 8px;
+          font-weight: 700;
+          letter-spacing: 0.07em;
+          text-transform: uppercase;
+          font-size: 10.5px;
+          color: var(--text-dim);
+          line-height: 1.4;
+        }
+        .rk-jd-html h1:first-child, .rk-jd-html h2:first-child, .rk-jd-html h3:first-child { margin-top: 0; }
+        .rk-jd-html strong, .rk-jd-html b {
+          font-weight: 600;
+          color: var(--text);
+        }
+        .rk-jd-html em, .rk-jd-html i { font-style: italic; }
+        .rk-jd-html a {
+          color: var(--accent-ink);
+          text-decoration: none;
+          font-weight: 500;
+        }
+        .rk-jd-html a:hover { text-decoration: underline; }
+        .rk-jd-html br { display: none; }
+        .rk-jd-html div.content-conclusion {
+          margin-top: 22px;
+          padding-top: 18px;
+          border-top: 1px solid var(--border);
+        }
+        .rk-jd-html span[style] { font-family: inherit !important; }
 
         /* ── Mobile: detail panel → bottom sheet ── */
         @media (max-width: 767px) {
@@ -1881,6 +2003,7 @@ export default function Dashboard({ onNavigate }) {
                         key={job.job_id || job.id || i}
                         job={job}
                         appliedIds={appliedIds}
+                        pendingApplyIds={pendingApplyIds}
                         passedIds={passedIds}
                         onApply={handleApply}
                         onPass={handlePass}
@@ -1892,19 +2015,18 @@ export default function Dashboard({ onNavigate }) {
                 </>
               )}
 
-              {/* Applications strip */}
-              {appsData.length > 0 && (
-                <div style={{ animation: 'rkFadeUp 0.55s cubic-bezier(0.22,1,0.36,1) 0.3s both' }}>
-                  <ApplicationsStrip
-                    apps={filteredApps}
-                    allApps={appsData}
-                    activeTab={appsTab}
-                    tabDefs={appTabDefs}
-                    onTabChange={setAppsTab}
-                    onOpenTracker={() => navigate('Tracking')}
-                  />
-                </div>
-              )}
+              {/* Applications strip — always visible once phase is ready */}
+              <div style={{ animation: 'rkFadeUp 0.55s cubic-bezier(0.22,1,0.36,1) 0.3s both' }}>
+                <AllApplicationsStrip
+                  apps={filteredApps}
+                  allApps={appsData}
+                  activeTab={appsTab}
+                  tabDefs={appTabDefs}
+                  onTabChange={setAppsTab}
+                  onOpenTracker={() => navigate('Tracking')}
+                  newAppIds={newAppIds}
+                />
+              </div>
             </>
           )}
         </div>
@@ -2137,11 +2259,16 @@ function BrowseAllCTA({ total, shown, onClick }) {
   )
 }
 
-function ApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onOpenTracker }) {
+function AllApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onOpenTracker, newAppIds }) {
+  const [searchCo, setSearchCo] = useState('')
+  const displayApps = searchCo.trim()
+    ? apps.filter(a => (a.company || '').toLowerCase().includes(searchCo.toLowerCase()) || (a.job_title || '').toLowerCase().includes(searchCo.toLowerCase()))
+    : apps
+
   return (
     <div className="rk-apps-strip" style={{ marginTop: 40 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 16 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Recent applications</h2>
+        <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>All applications</h2>
         <SecondaryBtn onClick={onOpenTracker} icon={
           <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
         }>
@@ -2150,33 +2277,52 @@ function ApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onO
       </div>
 
       <div style={{ border: '1px solid var(--border)', background: 'var(--surface)', borderRadius: 16, boxShadow: 'var(--card-shadow)', overflow: 'hidden' }}>
-        {/* Tabs */}
+        {/* Tabs + search row */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '13px 16px', borderBottom: '1px solid var(--border)', overflowX: 'auto', flexWrap: 'nowrap' }}>
           {tabDefs.map(t => {
             const count = t.id === 'all' ? allApps.length : allApps.filter(a => a.status === t.id).length
             const active = activeTab === t.id
-            return (
-              <AppTabBtn key={t.id} label={t.label} count={count} active={active} onClick={() => onTabChange(t.id)} />
-            )
+            return <AppTabBtn key={t.id} label={t.label} count={count} active={active} onClick={() => onTabChange(t.id)} />
           })}
+          {/* Search by company */}
+          <div style={{ marginLeft: 'auto', position: 'relative', flexShrink: 0 }}>
+            <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-dim)', pointerEvents: 'none' }}>
+              <circle cx="6.5" cy="6.5" r="4.5"/><path d="M10.5 10.5l2.5 2.5"/>
+            </svg>
+            <input
+              value={searchCo}
+              onChange={e => setSearchCo(e.target.value)}
+              placeholder="Search company..."
+              style={{
+                height: 34, paddingLeft: 30, paddingRight: 12, borderRadius: 9,
+                border: '1px solid var(--border-bright)', background: 'var(--surface2)',
+                fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--text)',
+                outline: 'none', width: 160,
+              }}
+            />
+          </div>
         </div>
-        {/* Table header — hidden on mobile via CSS */}
-        <div className="rk-apps-table-header" style={{ display: 'grid', gridTemplateColumns: '2fr 1.4fr 1.1fr 1fr', gap: 14, padding: '11px 18px', borderBottom: '1px solid var(--border)' }}>
-          {['Company / Role', 'Resume', 'Status', 'Applied'].map((h, i) => (
+
+        {/* Table header */}
+        <div className="rk-apps-table-header" style={{ display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1fr 0.8fr', gap: 14, padding: '11px 18px', borderBottom: '1px solid var(--border)' }}>
+          {['Company / Role', 'Resume', 'Cover Letter', 'Status', 'Applied'].map((h, i) => (
             <span key={h} style={{
               fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
               letterSpacing: '0.1em', color: 'var(--text-dim)', textTransform: 'uppercase',
-              textAlign: i === 3 ? 'right' : 'left',
+              textAlign: i === 4 ? 'right' : 'left',
             }}>{h}</span>
           ))}
         </div>
+
         {/* Rows */}
-        {apps.length === 0 ? (
+        {displayApps.length === 0 ? (
           <div style={{ padding: '34px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
-            No applications match this filter.
+            {allApps.length === 0
+              ? 'No applications yet. Click Apply on a job card above to get started.'
+              : 'No applications match this filter.'}
           </div>
-        ) : apps.map((a, i) => (
-          <AppRow key={i} app={a} last={i === apps.length - 1} />
+        ) : displayApps.map((a, i) => (
+          <AppRow key={a.job_id || i} app={a} last={i === displayApps.length - 1} isNew={newAppIds?.has(a.job_id)} />
         ))}
       </div>
     </div>
@@ -2205,23 +2351,23 @@ function AppTabBtn({ label, count, active, onClick }) {
   )
 }
 
-function AppRow({ app, last }) {
+function AppRow({ app, last, isNew }) {
   const [hov, setHov] = useState(false)
-  const brand  = brandColor(app.company || '')
-  const initial = (app.company || '?').charAt(0).toUpperCase()
   const st = statusMeta(app.status)
   const title = app.job_title || app.title || 'Role'
   const posted = app.updated_at || app.created_at
-  const daysLabel = posted ? daysAgoLabel(posted) : '—'
+  const daysLabel = posted ? daysAgoLabel(posted) : 'just now'
   return (
     <div
       className="rk-app-row-grid"
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
       style={{
-        display: 'grid', gridTemplateColumns: '2fr 1.4fr 1.1fr 1fr', gap: 14,
+        display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1fr 0.8fr', gap: 14,
         padding: '14px 18px', borderBottom: last ? 'none' : '1px solid var(--border)',
-        alignItems: 'center', background: hov ? 'var(--surface2)' : 'transparent',
-        transition: 'background 0.18s',
+        alignItems: 'center',
+        background: isNew ? 'rgba(34,197,94,0.05)' : hov ? 'var(--surface2)' : 'transparent',
+        transition: 'background 0.5s ease',
+        animation: isNew ? 'rkRowSlideIn 0.5s cubic-bezier(0.22,1,0.36,1) both' : undefined,
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
         <CompanyLogo company={app.company || ''} size={32} radius={9} fontSize={13} />
@@ -2232,6 +2378,9 @@ function AppRow({ app, last }) {
       </div>
       <span className="rk-app-resume-col" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-mid)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {app.resume_name || '—'}
+      </span>
+      <span className="rk-app-resume-col" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-dim)' }}>
+        {app.cover_letter ? '✓' : '—'}
       </span>
       <span style={{
         display: 'inline-flex', alignItems: 'center', gap: 6,
