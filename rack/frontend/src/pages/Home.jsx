@@ -656,13 +656,13 @@ const mobileCardStyles = `
   }
 
   @media (max-width: 600px) {
-    .rack-chat-scroll { padding: 16px 12px 12px; padding-top: 24px; }
+    .rack-chat-scroll { padding: 16px 12px 12px; padding-top: calc(52px + 16px); }
     .rack-greeting-title { font-size: clamp(26px, 7.5vw, 38px); letter-spacing: -0.03em; }
     .rack-greeting-sub { font-size: 14px; }
     .rack-bubble-user { max-width: 85%; font-size: 13px; }
     .rack-bubble-rack { max-width: 100%; }
     .rack-msg-container { width: 100% !important; max-width: 100% !important; }
-    .rack-chat-input-bar { padding: 10px 14px 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+    .rack-chat-input-bar { padding: 10px 14px 12px; padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 12px); }
     .rack-chat-input-inner { padding: 10px 10px 10px 16px; border-radius: 18px; }
     .rack-chat-textarea { font-size: 16px; /* prevent iOS zoom */ }
     .rack-suggestion-chips { gap: 6px; }
@@ -3632,15 +3632,17 @@ Check the **Tracking tab** in a couple of minutes for your first matches, or pas
 
     {/* ── Shared sidebar — same component as Dashboard/Tracking ── */}
     {(() => {
-      const fullName  = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || ''
-      const firstName = (fullName.split('@')[0].split(' ')[0]) || ''
-      const initial   = (firstName[0] || 'U').toUpperCase()
+      const fullName    = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || ''
+      const firstName   = (fullName.split('@')[0].split(' ')[0]) || ''
+      const initial     = (firstName[0] || 'U').toUpperCase()
+      const avatarUrl   = user?.user_metadata?.avatar_url || null
       return (
         <Sidebar
           activeNav="Home"
           onNavigate={onNavigate}
           userName={firstName}
           userInitial={initial}
+          userAvatarUrl={avatarUrl}
           onAskRack={null}
         />
       )

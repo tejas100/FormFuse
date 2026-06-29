@@ -369,31 +369,38 @@ function JobCard({ job, appliedIds, passedIds, onApply, onPass, onViewDetail, re
 // ── Job Detail Panel — slide-in from right ──────────────────────────────────────
 
 function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
-  const jd         = job?.job_data || {}
-  const title      = job?.job_title  || jd.title    || jd.job_title || 'Untitled'
-  const company    = job?.company    || jd.company   || ''
-  const location   = job?.location   || jd.location  || ''
+  // ── Base fields always available from auto_match_results ──
+  const jd0        = job?.job_data || {}
+  const title      = job?.job_title  || jd0.title    || jd0.job_title || 'Untitled'
+  const company    = job?.company    || jd0.company   || ''
+  const location   = job?.location   || jd0.location  || ''
   const score      = Math.round(job?.score ?? 0)
   const posted     = job?.posted_at  || job?.matched_at
-  const skills     = job?.matched_skills || jd.skills || []
+  const skills     = job?.matched_skills || jd0.skills || []
   const missing    = job?.missing_skills || []
-  const source     = (job?.source || jd.source || 'greenhouse').toUpperCase()
+  const source     = (job?.source || jd0.source || 'greenhouse').toUpperCase()
   const jobId      = job?.job_id || job?.id
   const isApplied  = appliedIds?.has(jobId)
   const brand      = brandColor(company)
-  const initial    = (company || '?').charAt(0).toUpperCase()
   const { label: tierLabel, color: tierColor } = tierMeta(score)
 
-  const description = jd.description || jd.full_description || jd.body || ''
-  const applyUrl    = jd.apply_url   || jd.url || job?.apply_url || null
-  const salary      = jd.salary      || jd.salary_range || null
-  const jobType     = jd.job_type    || jd.employment_type || null
-  const workplace   = jd.workplace   || jd.work_type || null
-  const experience  = jd.years_exp != null ? `${jd.years_exp}+ years experience` : jd.experience || null
-  const education   = jd.education   || null
-  const openings    = jd.openings    ?? null
-  const department  = jd.department  || null
+  // ── Fetch full job details from job_pool ──
+  const [fullJob, setFullJob]   = useState(null)
+  const [fetching, setFetching] = useState(true)
   const [bookmarked, setBookmarked] = useState(false)
+
+  useEffect(() => {
+    if (!jobId) { setFetching(false); return }
+    setFetching(true)
+    getAuthHeaders().then(headers =>
+      fetch(`${API_BASE}/api/match/job/${jobId}`, { headers })
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+    ).then(data => {
+      setFullJob(data)
+      setFetching(false)
+    })
+  }, [jobId])
 
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose() }
@@ -402,6 +409,15 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
   }, [onClose])
 
   if (!job) return null
+
+  // ── Merge: prefer fullJob fields, fallback to job_data ──
+  const fj          = fullJob || {}
+  const description = fj.description_text || jd0.description || jd0.full_description || jd0.body || ''
+  const applyUrl    = fj.url      || jd0.apply_url || jd0.url || job?.apply_url || null
+  const salary      = fj.salary   || jd0.salary    || jd0.salary_range || null
+  const jobType     = fj.commitment || jd0.job_type || jd0.employment_type || null
+  const department  = fj.department || jd0.department || null
+  const displayLoc  = fj.location  || location || ''
 
   // ── Parse description into sections ──────────────────────────────
   const parsedSections = (() => {
@@ -427,13 +443,24 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
     return sections.filter(s => s.lines.filter(l => l).length > 0 || s.heading)
   })()
 
-  // Meta pill list — only render what we have
-  const metaPills = [
-    salary    && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v1.5a2 2 0 0 1 0 3V11M6.5 6.5h2.2M6.5 9.5h2.2"/></svg>, label: salary },
-    experience && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="6" width="12" height="8" rx="1.5"/><path d="M5 6V4.5a3 3 0 0 1 6 0V6"/></svg>, label: experience },
-    jobType   && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.5V8l2.4 1.4"/></svg>, label: jobType },
-    workplace && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 14V6l6-4 6 4v8M6 14v-4h4v4"/></svg>, label: workplace },
-    department && { icon: <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 4h12M4 4V2h8v2M4 14V8M12 14V8M2 14h12"/></svg>, label: department },
+  // ── Meta grid items ───────────────────────────────────────────────
+  const metaItems = [
+    displayLoc && {
+      icon: <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>,
+      label: displayLoc,
+    },
+    salary && {
+      icon: <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v1.5a2 2 0 0 1 0 3V11M6.5 6.5h2.2M6.5 9.5h2.2"/></svg>,
+      label: salary,
+    },
+    jobType && {
+      icon: <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="12" height="8" rx="1.5"/><path d="M5 6V4.5a3 3 0 0 1 6 0V6"/></svg>,
+      label: jobType,
+    },
+    department && {
+      icon: <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M4 4V2h8v2M4 14V8M12 14V8M2 14h12"/></svg>,
+      label: department,
+    },
   ].filter(Boolean)
 
   return createPortal(
@@ -441,63 +468,57 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
       {/* Backdrop */}
       <div onClick={onClose} style={{
         position: 'fixed', inset: 0, zIndex: 60,
-        background: 'rgba(4,4,8,0.48)',
-        backdropFilter: 'blur(3px)',
+        background: 'rgba(4,4,8,0.52)',
+        backdropFilter: 'blur(4px)',
         animation: 'rkFadeIn 0.2s ease both',
       }}/>
 
-      {/* Slide-in panel — desktop: right drawer | mobile: bottom sheet */}
+      {/* Slide-in panel */}
       <div className="rk-detail-panel" style={{
         position: 'fixed', top: 0, right: 0, bottom: 0,
-        width: 'min(520px, 92vw)',
+        width: 'min(540px, 94vw)',
         background: 'var(--surface)',
         borderLeft: '1px solid var(--border-bright)',
-        boxShadow: '-24px 0 80px rgba(0,0,0,0.45)',
+        boxShadow: '-24px 0 80px rgba(0,0,0,0.5)',
         zIndex: 61,
         display: 'flex', flexDirection: 'column',
         animation: 'rkSlideInRight 0.36s cubic-bezier(0.22,1,0.36,1) both',
         overflowY: 'hidden',
       }}>
 
-        {/* ── Mobile drag handle (hidden on desktop) ── */}
+        {/* Mobile drag handle */}
         <div className="rk-detail-handle" style={{ display: 'none', justifyContent: 'center', padding: '10px 0 4px', flexShrink: 0 }}>
           <div style={{ width: 36, height: 4, borderRadius: 4, background: 'var(--border-bright)' }}/>
         </div>
 
-        {/* ── Accent bar ── */}
-        <div style={{ height: 3, background: `linear-gradient(90deg, ${brand}, ${brand}88 60%, transparent 100%)`, flexShrink: 0 }}/>
+        {/* Brand accent bar */}
+        <div style={{ height: 3, background: `linear-gradient(90deg, ${brand}, ${brand}66 55%, transparent 100%)`, flexShrink: 0 }}/>
 
         {/* ── Header ── */}
-        <div style={{
-          padding: '20px 24px 18px', flexShrink: 0,
-          borderBottom: '1px solid var(--border)',
-          background: 'linear-gradient(180deg, var(--surface) 60%, transparent 100%)',
-        }}>
-          {/* Top row: company logo + close */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <CompanyLogo company={company} size={44} radius={12} fontSize={18} />
+        <div style={{ padding: '22px 26px 20px', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
+
+          {/* Company row + close */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+              <CompanyLogo company={company} size={46} radius={12} fontSize={18} />
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em' }}>{company}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em', lineHeight: 1.2 }}>{company}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 4 }}>
                   <span style={{
                     fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 700,
-                    letterSpacing: '0.1em', color: 'var(--text-dim)',
-                    background: 'var(--chip-bg)', border: '1px solid var(--border)',
-                    padding: '1px 7px', borderRadius: 4,
+                    letterSpacing: '0.1em', textTransform: 'uppercase',
+                    color: 'var(--text-dim)', background: 'var(--chip-bg)',
+                    border: '1px solid var(--border)', padding: '2px 7px', borderRadius: 4,
                   }}>{source}</span>
-                  {posted && (
-                    <span style={{ fontSize: 11.5, color: 'var(--text-dim)' }}>· posted {daysAgoLabel(posted)}</span>
-                  )}
+                  {posted && <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>· posted {daysAgoLabel(posted)}</span>}
                 </div>
               </div>
             </div>
-
             <button onClick={onClose} style={{
               width: 32, height: 32, borderRadius: 9, border: '1px solid var(--border-bright)',
-              background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-              transition: 'color 0.15s, border-color 0.15s, background 0.15s',
+              background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'background 0.15s, color 0.15s',
             }}
               onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface2)'; e.currentTarget.style.color = 'var(--text)' }}
               onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-dim)' }}
@@ -507,133 +528,117 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
           </div>
 
           {/* Title */}
-          <h2 style={{
-            fontSize: 20, fontWeight: 700, lineHeight: 1.2,
-            letterSpacing: '-0.025em', margin: '0 0 14px', color: 'var(--text)',
-          }}>{title}</h2>
+          <h2 style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.25, letterSpacing: '-0.025em', margin: '0 0 16px', color: 'var(--text)' }}>
+            {title}
+          </h2>
 
-          {/* Location + score row */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: location ? 14 : 0 }}>
-            {location && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: 'var(--text-mid)' }}>
-                <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 14s5-4.2 5-8a5 5 0 0 0-10 0c0 3.8 5 8 5 8z"/><circle cx="8" cy="6" r="1.8"/></svg>
-                {location}
-              </span>
-            )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: tierColor, flexShrink: 0 }}/>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: tierColor }}>{tierLabel}</span>
-              <MatchRing score={score} size={42} strokeW={3} />
+          {/* Score + tier badge */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: metaItems.length > 0 ? 18 : 0 }}>
+            <MatchRing score={score} size={44} strokeW={3.5} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: tierColor, lineHeight: 1 }}>{tierLabel}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2 }}>{score}% match score</div>
             </div>
+            {skills.length > 0 && (
+              <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', maxWidth: 220 }}>
+                {skills.slice(0, 4).map((sk, i) => (
+                  <span key={i} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10,
+                    color: 'var(--accent-ink)', background: 'var(--accent-soft)',
+                    border: '1px solid var(--accent-line)',
+                    padding: '2px 8px', borderRadius: 5, whiteSpace: 'nowrap',
+                  }}>✓ {sk}</span>
+                ))}
+                {missing.slice(0, 2).map((sk, i) => (
+                  <span key={`m${i}`} style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 10,
+                    color: 'var(--text-dim)', background: 'var(--chip-bg)',
+                    border: '1px solid var(--border)',
+                    padding: '2px 8px', borderRadius: 5, whiteSpace: 'nowrap', opacity: 0.65,
+                  }}>✗ {sk}</span>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Meta pills grid */}
-          {metaPills.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '7px 12px', marginTop: 4 }}>
-              {metaPills.map((p, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          {/* Meta grid — location, salary, type, department */}
+          {metaItems.length > 0 && (
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr',
+              gap: 10, padding: '14px 16px',
+              background: 'var(--surface2)', borderRadius: 12,
+              border: '1px solid var(--border)',
+            }}>
+              {metaItems.map((item, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                   <span style={{
-                    width: 28, height: 28, borderRadius: 8, flexShrink: 0,
-                    background: 'var(--surface2)', border: '1px solid var(--border)',
+                    width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+                    background: 'var(--surface)', border: '1px solid var(--border-bright)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     color: 'var(--text-dim)',
-                  }}>{p.icon}</span>
-                  <span style={{ fontSize: 12.5, color: 'var(--text-mid)', lineHeight: 1.3 }}>{p.label}</span>
+                  }}>{item.icon}</span>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-mid)', lineHeight: 1.35, wordBreak: 'break-word' }}>{item.label}</span>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Education pills */}
-          {education && (
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 7 }}>Education</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {(Array.isArray(education) ? education : [education]).map((e, i) => (
-                  <span key={i} style={{
-                    fontSize: 12, padding: '4px 11px', borderRadius: 20,
-                    background: 'var(--surface2)', border: '1px solid var(--border)',
-                    color: 'var(--text-mid)',
-                  }}>{e}</span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Matched skills */}
-          {skills.length > 0 && (
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 7 }}>Matched skills</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                {skills.map((sk, i) => (
-                  <span key={i} style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 10.5,
-                    color: 'var(--accent-ink)', background: 'var(--accent-soft)',
-                    border: '1px solid var(--accent-line)',
-                    padding: '3px 9px', borderRadius: 6,
-                  }}>{sk}</span>
-                ))}
-                {missing.slice(0, 3).map((sk, i) => (
-                  <span key={`m${i}`} style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 10.5,
-                    color: 'var(--text-dim)', background: 'var(--chip-bg)',
-                    border: '1px solid var(--border)',
-                    padding: '3px 9px', borderRadius: 6, opacity: 0.6,
-                  }}>{sk}</span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Openings notice */}
-          {openings != null && openings > 1 && (
+          {/* Skeleton while loading */}
+          {fetching && metaItems.length === 0 && (
             <div style={{
-              marginTop: 14, display: 'flex', alignItems: 'center', gap: 10,
-              padding: '10px 14px', borderRadius: 11,
-              background: 'var(--surface2)', border: '1px solid var(--border)',
+              display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10,
+              padding: '14px 16px', background: 'var(--surface2)',
+              borderRadius: 12, border: '1px solid var(--border)',
             }}>
-              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="var(--text-dim)" strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="6" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg>
-              <span style={{ fontSize: 12.5, color: 'var(--text-mid)' }}>
-                <strong style={{ color: 'var(--text)', fontWeight: 600 }}>{openings} openings</strong>
-                {' '}· same role, multiple locations
-              </span>
-              <span style={{
-                marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 10,
-                fontWeight: 700, padding: '2px 8px', borderRadius: 20,
-                background: 'var(--chip-bg)', color: 'var(--text-dim)', border: '1px solid var(--border)',
-              }}>{openings}</span>
+              {[1,2,3,4].map(i => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--border)', flexShrink: 0, animation: 'rkPulse 1.4s ease infinite' }}/>
+                  <div style={{ height: 12, flex: 1, borderRadius: 6, background: 'var(--border)', animation: `rkPulse 1.4s ease ${i * 0.1}s infinite` }}/>
+                </div>
+              ))}
             </div>
           )}
         </div>
 
-        {/* ── Scrollable body ── */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '22px 24px', scrollbarWidth: 'thin' }}>
-          {parsedSections.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        {/* ── Scrollable body — description ── */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '22px 26px 8px', scrollbarWidth: 'thin' }}>
+
+          {fetching && !description ? (
+            /* Loading skeleton for description */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {[90, 75, 100, 60, 85, 70, 95, 55].map((w, i) => (
+                <div key={i} style={{
+                  height: 13, borderRadius: 6, background: 'var(--border)',
+                  width: `${w}%`, animation: `rkPulse 1.4s ease ${i * 0.07}s infinite`,
+                }}/>
+              ))}
+            </div>
+          ) : parsedSections.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              {/* Section label */}
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
+                Description
+              </div>
               {parsedSections.map((section, si) => (
                 <div key={si}>
                   {section.heading && (
                     <h3 style={{
-                      fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
-                      color: 'var(--text-dim)', margin: '0 0 11px', paddingBottom: 8,
-                      borderBottom: '1px solid var(--border)',
+                      fontSize: 11.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+                      color: 'var(--text-dim)', margin: '0 0 10px',
                     }}>{section.heading}</h3>
                   )}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {section.lines.map((line, li) => {
-                      if (!line.trim()) return <div key={li} style={{ height: 5 }}/>
+                      if (!line.trim()) return <div key={li} style={{ height: 6 }}/>
                       const isBullet = /^[-•*]\s/.test(line)
                       const text = isBullet ? line.replace(/^[-•*]\s+/, '') : line
                       return isBullet ? (
                         <div key={li} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                          <span style={{
-                            flexShrink: 0, marginTop: 7, width: 4, height: 4, borderRadius: '50%',
-                            background: 'var(--accent-ink)', opacity: 0.55,
-                          }}/>
-                          <span style={{ fontSize: 13.5, lineHeight: 1.65, color: 'var(--text-mid)' }}>{text}</span>
+                          <span style={{ flexShrink: 0, marginTop: 8, width: 4, height: 4, borderRadius: '50%', background: 'var(--accent-ink)', opacity: 0.5 }}/>
+                          <span style={{ fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-mid)' }}>{text}</span>
                         </div>
                       ) : (
-                        <p key={li} style={{ margin: 0, fontSize: 13.5, lineHeight: 1.7, color: 'var(--text-mid)' }}>{text}</p>
+                        <p key={li} style={{ margin: 0, fontSize: 13.5, lineHeight: 1.75, color: 'var(--text-mid)' }}>{text}</p>
                       )
                     })}
                   </div>
@@ -641,76 +646,88 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
               ))}
             </div>
           ) : description ? (
-            <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>
-              {description}
-            </p>
-          ) : (
-            <div style={{ textAlign: 'center', padding: '52px 24px', color: 'var(--text-dim)', fontSize: 13 }}>
-              No description available for this role.
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 14, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>Description</div>
+              <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: 'var(--text-mid)', whiteSpace: 'pre-line' }}>{description}</p>
             </div>
-          )}
+          ) : !fetching ? (
+            <div style={{ textAlign: 'center', padding: '48px 24px' }}>
+              <div style={{ fontSize: 28, marginBottom: 12, opacity: 0.3 }}>📄</div>
+              <div style={{ fontSize: 13.5, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                No description available for this role.<br/>
+                <a href={applyUrl || '#'} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-ink)', textDecoration: 'none', fontWeight: 600 }}>
+                  View the original posting ↗
+                </a>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* ── Sticky footer ── */}
         <div style={{
-          padding: '14px 24px 20px', flexShrink: 0,
+          padding: '14px 26px 22px', flexShrink: 0,
           borderTop: '1px solid var(--border)',
           background: 'var(--surface)',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          display: 'flex', alignItems: 'center', gap: 10,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {applyUrl && (
-              <a href={applyUrl} target="_blank" rel="noopener noreferrer" style={{
-                display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5,
-                color: 'var(--text-dim)', textDecoration: 'none',
-                padding: '8px 13px', borderRadius: 9,
-                border: '1px solid var(--border-bright)', background: 'var(--surface2)',
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
-                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--text-mid)' }}
-                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)' }}
-              >
-                <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9M10 2h4v4M8 8l6-6"/></svg>
-                View original posting
-              </a>
-            )}
-            <button onClick={() => setBookmarked(b => !b)} style={{
-              width: 36, height: 36, borderRadius: 9, flexShrink: 0,
-              border: `1px solid ${bookmarked ? 'var(--accent-line)' : 'var(--border-bright)'}`,
-              background: bookmarked ? 'var(--accent-soft)' : 'transparent',
-              cursor: 'pointer', color: bookmarked ? 'var(--accent-ink)' : 'var(--text-dim)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 0.18s',
-            }}>
-              <svg width={14} height={14} viewBox="0 0 16 16" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3-6 3V3a1 1 0 0 1 1-1z"/></svg>
-            </button>
-          </div>
-
-          {isApplied ? (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 7, padding: '10px 18px',
-              borderRadius: 10, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
-              color: 'var(--accent-ink)', fontSize: 13, fontWeight: 600,
-            }}>
-              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
-              Queued to apply
-            </div>
-          ) : (
-            <button onClick={() => { onApply(job); onClose() }} style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '10px 24px', borderRadius: 10, cursor: 'pointer',
-              border: 'none', background: 'var(--accent)',
-              color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
-              fontSize: 14, fontWeight: 700, boxShadow: 'var(--accent-glow)',
-              transition: 'background 0.18s, transform 0.12s',
+          {/* View original posting */}
+          {applyUrl && (
+            <a href={applyUrl} target="_blank" rel="noopener noreferrer" style={{
+              display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 500,
+              color: 'var(--text-dim)', textDecoration: 'none',
+              padding: '9px 14px', borderRadius: 10,
+              border: '1px solid var(--border-bright)', background: 'var(--surface2)',
+              transition: 'color 0.15s, border-color 0.15s, background 0.15s',
+              flexShrink: 0,
             }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-strong)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.transform = 'translateY(0)' }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--chip-bg)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.borderColor = 'var(--border-bright)'; e.currentTarget.style.background = 'var(--surface2)' }}
             >
-              Apply
-              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
-            </button>
+              <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 3H3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V9M10 2h4v4M8 8l6-6"/></svg>
+              View posting
+            </a>
           )}
+
+          {/* Bookmark */}
+          <button onClick={() => setBookmarked(b => !b)} title={bookmarked ? 'Saved' : 'Save'} style={{
+            width: 38, height: 38, borderRadius: 10, flexShrink: 0,
+            border: `1px solid ${bookmarked ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+            background: bookmarked ? 'var(--accent-soft)' : 'transparent',
+            cursor: 'pointer', color: bookmarked ? 'var(--accent-ink)' : 'var(--text-dim)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.18s',
+          }}>
+            <svg width={14} height={14} viewBox="0 0 16 16" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2h10a1 1 0 0 1 1 1v11l-6-3-6 3V3a1 1 0 0 1 1-1z"/></svg>
+          </button>
+
+          {/* Apply / Applied — pushed to right */}
+          <div style={{ marginLeft: 'auto' }}>
+            {isApplied ? (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 7, padding: '10px 18px',
+                borderRadius: 10, background: 'var(--accent-soft)', border: '1px solid var(--accent-line)',
+                color: 'var(--accent-ink)', fontSize: 13, fontWeight: 600,
+              }}>
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>
+                Queued to apply
+              </div>
+            ) : (
+              <button onClick={() => { onApply(job); onClose() }} style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '10px 26px', borderRadius: 10, cursor: 'pointer',
+                border: 'none', background: 'var(--accent)',
+                color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
+                fontSize: 14, fontWeight: 700, boxShadow: 'var(--accent-glow)',
+                transition: 'background 0.18s, transform 0.12s',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-strong)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.transform = 'translateY(0)' }}
+              >
+                Apply
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h9M8.5 4l4 4-4 4"/></svg>
+              </button>
+            )}
+          </div>
         </div>
 
       </div>
@@ -1593,6 +1610,7 @@ export default function Dashboard({ onNavigate }) {
         @keyframes rkScaleIn { from{opacity:0;transform:scale(.97)} to{opacity:1;transform:scale(1)} }
         @keyframes rkDrawer  { from{transform:translateX(102%)} to{transform:translateX(0)} }
         @keyframes rkSlideInRight { from{opacity:0;transform:translateX(100%)} to{opacity:1;transform:translateX(0)} }
+        @keyframes rkPulse   { 0%,100%{opacity:0.5} 50%{opacity:0.9} }
         @keyframes rkSpin    { to{transform:rotate(360deg)} }
         @keyframes rkPulse   { 0%,100%{opacity:.35} 50%{opacity:.9} }
         @keyframes rkShimmer { 0%{background-position:-420px 0} 100%{background-position:420px 0} }
@@ -1640,7 +1658,7 @@ export default function Dashboard({ onNavigate }) {
         @media (max-width: 767px) {
           .rk-root { flex-direction: column !important; }
           .rk-main { flex: 1 !important; min-height: 0 !important; height: auto !important; }
-          .rk-main-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+          .rk-main-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; padding-top: calc(52px + 16px) !important; }
           .rk-greeting { font-size: 20px !important; }
           .rk-subline  { font-size: 12px !important; }
           .rk-header-row { margin-bottom: 16px !important; }
@@ -1666,7 +1684,7 @@ export default function Dashboard({ onNavigate }) {
         /* ── Small mobile (≤ 420px, e.g. iPhone SE): card footer stacks ── */
         @media (max-width: 420px) {
           .rk-job-grid { grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
-          .rk-main-content { padding: 14px 12px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+          .rk-main-content { padding: 14px 12px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; padding-top: calc(52px + 14px) !important; }
           .rk-card-footer { flex-direction: column !important; align-items: stretch !important; gap: 6px !important; }
           .rk-card-footer-actions { justify-content: flex-end !important; }
           .rk-card-tier { font-size: 10px !important; }
@@ -1674,7 +1692,7 @@ export default function Dashboard({ onNavigate }) {
 
         /* ── iPhone SE (≤ 375px): extra tightening ── */
         @media (max-width: 375px) {
-          .rk-main-content { padding: 12px 10px calc(56px + env(safe-area-inset-bottom,0px) + 12px) !important; }
+          .rk-main-content { padding: 12px 10px calc(56px + env(safe-area-inset-bottom,0px) + 12px) !important; padding-top: calc(52px + 12px) !important; }
           .rk-job-grid { gap: 7px !important; }
           .rk-job-card { padding: 9px 9px 8px !important; gap: 6px !important; }
           .rk-job-card h3 { font-size: 10.5px !important; min-height: 24px !important; }

@@ -1319,3 +1319,67 @@ async def trigger_onboarding_match(
 
     _onboarding_log.info(f"[OnboardingMatch] Queued for user={user_id}")
     return {"status": "queued", "user_id": user_id}
+
+
+# ── GET /api/match/job/{job_id} — full job detail from job_pool ─────────────────
+
+import psycopg2 as _psycopg2
+import psycopg2.extras as _psycopg2_extras
+import os as _job_os
+import logging as _job_log
+
+_job_log = logging.getLogger(__name__) if 'logging' in dir() else _logging.getLogger(__name__)
+
+_jd_bearer = _HTTPBearer(auto_error=False)
+
+
+@router.get("/job/{job_id}")
+async def get_job_detail(
+    job_id: str,
+    credentials: _Opt[_OBCreds] = Depends(_jd_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns full job_pool record for a given job_id.
+    Frontend uses this to populate the job detail drawer with
+    description_text, location, commitment, department, url, etc.
+
+    Auth required. job_pool read via raw psycopg2 (port 5432 session pooler)
+    per the invariant: job_pool is NEVER accessed through ORM.
+    """
+    from routers.auth import get_current_user as _get_current_user
+
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        await _get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
+    db_url = _job_os.environ.get("DATABASE_URL_DIRECT", "")
+    # psycopg2.connect() needs a plain postgresql:// DSN — strip the +psycopg2 driver tag
+    psycopg2_url = db_url.replace("postgresql+psycopg2://", "postgresql://")
+    if not psycopg2_url:
+        raise HTTPException(status_code=500, detail="DATABASE_URL_DIRECT not configured.")
+
+    try:
+        conn = _psycopg2.connect(psycopg2_url)
+        cur  = conn.cursor(cursor_factory=_psycopg2_extras.RealDictCursor)
+        cur.execute("""
+            SELECT job_id, source, title, company, location, url,
+                   description_text, posted_at, department, commitment
+            FROM   job_pool
+            WHERE  job_id = %s
+              AND  is_active = TRUE
+        """, (job_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        _job_log.error(f"[JobDetail] DB error for job_id={job_id}: {e}")
+        raise HTTPException(status_code=500, detail="Database error.")
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    return dict(row)

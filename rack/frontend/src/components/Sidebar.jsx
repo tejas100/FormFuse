@@ -33,12 +33,14 @@ const ICONS = {
   Close:     <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>,
   Star:      <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M8 1.5l1.8 4.2 4.7.4-3.6 3 1.1 4.6L8 11.3 4 13.7l1.1-4.6-3.6-3 4.7-.4z"/></svg>,
   Ask:       <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="var(--accent-ink)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>,
+  Chat:      <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg>,
 }
 
 // ── Nav structure — groups replace hard dividers ───────────────────────────────
 // group: 'main' = top section, 'tools' = middle, 'account' = bottom (pushed down)
 export const DEFAULT_NAV = [
   { id: 'Dashboard', label: 'Matches',        icon: ICONS.Matches,   group: 'main'    },
+  { id: 'Home',      label: 'Chat assistant', icon: ICONS.Chat,      group: 'main'    },
   { id: 'Tracking',  label: 'Browse all jobs', icon: ICONS.BrowseAll, group: 'main'    },
   { id: 'Resumes',   label: 'Resumes',         icon: ICONS.Resumes,   group: 'main'    },
   { id: 'TrackApps', label: 'Tracking',        icon: ICONS.Tracking,  group: 'tools'                          },
@@ -311,6 +313,15 @@ const SIDEBAR_CSS = `
     background: var(--sidebar-bg); z-index: 10;
   }
 
+  /* ── Mobile: < 768px ── */
+  @media (max-width: 767px) {
+    .rk-mobile-topbar {
+      position: fixed !important;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+    }
+  }
+
   /* ── Mobile overlay ── */
   .rk-sidebar-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.55);
@@ -354,7 +365,7 @@ const SIDEBAR_CSS = `
     .rk-collapse-toggle { display: none !important; }
   }
 
-  /* ── Mobile: < 768px ── */
+  /* ── Mobile: < 768px — show/hide rules ── */
   @media (max-width: 767px) {
     .rk-sidebar       { display: none !important; }
     .rk-mobile-topbar { display: flex !important; }
@@ -461,7 +472,7 @@ export default function Sidebar({
 
   const bottomNavItems = [
     { id: 'Dashboard', label: 'Matches', icon: ICONS.Matches   },
-    { id: 'Tracking',  label: 'Browse',  icon: ICONS.BrowseAll },
+    { id: 'Home',      label: 'Chat',    icon: ICONS.Chat       },
     { id: 'Resumes',   label: 'Resumes', icon: ICONS.Resumes   },
     { id: 'Account',   label: 'Account', icon: ICONS.Account   },
   ]

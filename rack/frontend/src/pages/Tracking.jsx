@@ -2218,6 +2218,313 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
 
 const PAGE_SIZE = 10; // 2 rows × 5 cols per page
 
+// ── Tracking filter config ──────────────────────────────────────────────────────
+
+const TRK_DROPDOWN_FILTERS = [
+  { id: 'sort',   label: 'Sort' },
+  { id: 'filter', label: 'Filter' },
+]
+
+const TRK_FILTER_OPTIONS = {
+  sort: [
+    { id: 'score_desc', label: 'Score: High → Low' },
+    { id: 'score_asc',  label: 'Score: Low → High' },
+    { id: 'recent',     label: 'Recency: Newest first' },
+    { id: 'oldest',     label: 'Recency: Oldest first' },
+  ],
+  filter: [
+    { id: 'all',         label: 'All matches' },
+    { id: 'saved',       label: '★ Saved' },
+    { id: 'applied',     label: '✓ Applied' },
+    { id: '85',          label: '85%+ · Strong only' },
+    { id: '75',          label: '75%+ · Good & above' },
+    { id: '65',          label: '65%+ · Partial & above' },
+    { id: 'strong',      label: '✦ Strong Match label' },
+    { id: 'exceptional', label: '⚡ Exceptional Fit label' },
+  ],
+}
+
+// ── Shared dropdown primitives (mirrors Dashboard) ─────────────────────────────
+
+function TrkDropdownChip({ label, active, open, onClick }) {
+  const [hov, setHov] = useState(false)
+  return (
+    <button onClick={onClick}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '8px 13px', borderRadius: 10, cursor: 'pointer',
+        fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+        background: active ? 'var(--accent-soft)' : hov || open ? 'var(--surface2)' : 'var(--surface)',
+        color: active ? 'var(--text)' : hov || open ? 'var(--text)' : 'var(--text-mid)',
+        border: `1px solid ${active ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+        transition: 'background 0.15s, color 0.12s, border-color 0.15s',
+        whiteSpace: 'nowrap',
+      }}>
+      {label}
+      {active && (
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700,
+          background: 'var(--accent)', color: 'var(--accent-contrast)',
+          borderRadius: 20, padding: '1px 6px', lineHeight: '14px',
+        }}>1</span>
+      )}
+      <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"
+        strokeLinecap="round" strokeLinejoin="round"
+        style={{ opacity: 0.55, transform: open ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.18s' }}>
+        <path d="M4 6l4 4 4-4"/>
+      </svg>
+    </button>
+  )
+}
+
+function TrkDropdownOption({ label, selected, onClick }) {
+  const [hov, setHov] = useState(false)
+  return (
+    <button onClick={onClick}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        width: '100%', padding: '8px 10px', borderRadius: 8,
+        border: 'none', cursor: 'pointer', textAlign: 'left',
+        fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: selected ? 600 : 400,
+        background: hov ? 'var(--surface2)' : 'transparent',
+        color: selected ? 'var(--text)' : 'var(--text-mid)',
+        transition: 'background 0.12s, color 0.12s',
+      }}>
+      <span style={{
+        width: 14, height: 14, borderRadius: '50%', flexShrink: 0,
+        border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border-bright)'}`,
+        background: selected ? 'var(--accent)' : 'transparent',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        {selected && <svg width={8} height={8} viewBox="0 0 16 16" fill="none" stroke="var(--accent-contrast)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>}
+      </span>
+      {label}
+    </button>
+  )
+}
+
+function TrkFilterBar({ sortBy, filterBy, onSortChange, onFilterChange, titleFilter, onTitleChange }) {
+  const [openId, setOpenId] = useState(null)
+  const barRef = useRef(null)
+
+  useEffect(() => {
+    const handler = (e) => { if (barRef.current && !barRef.current.contains(e.target)) setOpenId(null) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const activeVals = { sort: sortBy, filter: filterBy }
+  const defaultVals = { sort: 'score_desc', filter: 'all' }
+
+  return (
+    <div ref={barRef} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      {/* Search input */}
+      <div style={{ position: 'relative', flexShrink: 0 }}>
+        <svg style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', opacity: 0.4 }}
+          width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/>
+        </svg>
+        <input
+          type="text"
+          value={titleFilter}
+          onChange={e => onTitleChange(e.target.value)}
+          placeholder="Search by title…"
+          style={{
+            paddingLeft: 30, paddingRight: 12, paddingTop: 8, paddingBottom: 8,
+            borderRadius: 10, border: '1px solid var(--border-bright)',
+            background: 'var(--surface)', color: 'var(--text)',
+            fontFamily: 'var(--font-sans)', fontSize: 13, outline: 'none',
+            width: 190,
+            transition: 'border-color 0.15s',
+          }}
+          onFocus={e => e.target.style.borderColor = 'var(--accent-line)'}
+          onBlur={e => e.target.style.borderColor = 'var(--border-bright)'}
+        />
+      </div>
+
+      {/* Dropdown chips */}
+      {TRK_DROPDOWN_FILTERS.map(f => {
+        const currentVal = activeVals[f.id]
+        const isActive   = currentVal !== defaultVals[f.id]
+        const isOpen     = openId === f.id
+        const options    = TRK_FILTER_OPTIONS[f.id] || []
+        const activeLabel = options.find(o => o.id === currentVal)?.label
+
+        return (
+          <div key={f.id} style={{ position: 'relative' }}>
+            <TrkDropdownChip
+              label={isActive ? `${f.label}: ${activeLabel}` : f.label}
+              active={isActive}
+              open={isOpen}
+              onClick={() => setOpenId(isOpen ? null : f.id)}
+            />
+            {isOpen && (
+              <div style={{
+                position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+                minWidth: 200, background: 'var(--surface)',
+                border: '1px solid var(--border-bright)', borderRadius: 12,
+                boxShadow: 'var(--card-hover-shadow)', zIndex: 50,
+                padding: '5px', animation: 'rkScaleIn 0.18s cubic-bezier(0.22,1,0.36,1) both',
+                transformOrigin: 'top left',
+              }}>
+                {options.map(opt => (
+                  <TrkDropdownOption
+                    key={opt.id}
+                    label={opt.label}
+                    selected={currentVal === opt.id}
+                    onClick={() => {
+                      if (f.id === 'sort') onSortChange(opt.id)
+                      else onFilterChange(opt.id)
+                      setOpenId(null)
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function TrkMobileFilterBtn({ sortBy, filterBy, onClick }) {
+  const activeCount = [sortBy !== 'score_desc', filterBy !== 'all'].filter(Boolean).length
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '9px 16px', borderRadius: 10, cursor: 'pointer',
+        fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 600,
+        border: `1px solid ${activeCount > 0 ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+        background: activeCount > 0 ? 'var(--accent-soft)' : 'var(--surface)',
+        color: activeCount > 0 ? 'var(--text)' : 'var(--text-mid)',
+        transition: 'background 0.15s, border-color 0.15s, color 0.12s',
+        width: '100%', justifyContent: 'center', marginBottom: 12,
+      }}>
+      <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2 4h12M4 8h8M6 12h4"/>
+      </svg>
+      Filters
+      {activeCount > 0 && (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: 19, height: 19, borderRadius: '50%',
+          background: 'var(--accent)', color: 'var(--accent-contrast)',
+          fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700,
+        }}>{activeCount}</span>
+      )}
+    </button>
+  )
+}
+
+function TrkMobileFilterSheet({ open, onClose, sortBy, filterBy, titleFilter, onSortChange, onFilterChange, onTitleChange, onClearAll }) {
+  const hasAnyActive = sortBy !== 'score_desc' || filterBy !== 'all'
+  if (!open) return null
+  return createPortal(
+    <>
+      <div onClick={onClose} style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+        zIndex: 200, backdropFilter: 'blur(2px)',
+        animation: 'rkFadeIn 0.22s ease both',
+      }}/>
+      <div style={{
+        position: 'fixed', left: 0, right: 0, bottom: 0,
+        background: 'var(--surface)', borderRadius: '20px 20px 0 0',
+        borderTop: '1px solid var(--border-bright)',
+        zIndex: 201, maxHeight: '88dvh', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 -12px 48px rgba(0,0,0,0.4)',
+        animation: 'rkMobileSheet 0.34s cubic-bezier(0.22,1,0.36,1) both',
+        paddingBottom: 'calc(56px + env(safe-area-inset-bottom, 0px))',
+      }}>
+        {/* Handle */}
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0 4px' }}>
+          <div style={{ width: 36, height: 4, borderRadius: 4, background: 'var(--border-bright)' }}/>
+        </div>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 20px 14px', flexShrink: 0 }}>
+          <span style={{ fontSize: 16, fontWeight: 600 }}>Filters</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {hasAnyActive && (
+              <button onClick={onClearAll} style={{
+                padding: '6px 12px', borderRadius: 8, cursor: 'pointer',
+                fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500,
+                background: 'transparent', color: 'var(--danger)', border: '1px solid transparent',
+              }}>Clear all</button>
+            )}
+            <button onClick={onClose} style={{
+              width: 32, height: 32, borderRadius: 9, border: '1px solid var(--border)',
+              background: 'transparent', cursor: 'pointer', color: 'var(--text-dim)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+          </div>
+        </div>
+        {/* Search */}
+        <div style={{ padding: '0 20px 16px', flexShrink: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 9 }}>Search</div>
+          <input
+            type="text" value={titleFilter} onChange={e => onTitleChange(e.target.value)}
+            placeholder="Search by title…"
+            style={{
+              width: '100%', padding: '9px 14px', borderRadius: 10,
+              border: '1px solid var(--border-bright)', background: 'var(--surface2)',
+              color: 'var(--text)', fontFamily: 'var(--font-sans)', fontSize: 13.5, outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+        {/* Filter sections */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 20px 20px' }}>
+          {TRK_DROPDOWN_FILTERS.map(f => {
+            const currentVal = f.id === 'sort' ? sortBy : filterBy
+            const options    = TRK_FILTER_OPTIONS[f.id] || []
+            return (
+              <div key={f.id} style={{ marginBottom: 22 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 9 }}>
+                  {f.label}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+                  {options.map(opt => {
+                    const selected = currentVal === opt.id
+                    return (
+                      <button key={opt.id} onClick={() => {
+                        if (f.id === 'sort') onSortChange(opt.id)
+                        else onFilterChange(opt.id)
+                      }} style={{
+                        padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
+                        fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: selected ? 600 : 400,
+                        border: `1px solid ${selected ? 'var(--accent-line)' : 'var(--border-bright)'}`,
+                        background: selected ? 'var(--accent-soft)' : 'var(--surface2)',
+                        color: selected ? 'var(--text)' : 'var(--text-mid)',
+                        transition: 'background 0.13s, border-color 0.13s',
+                      }}>{opt.label}</button>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        {/* Done */}
+        <div style={{ padding: '12px 20px 16px', flexShrink: 0, borderTop: '1px solid var(--border)' }}>
+          <button onClick={onClose} style={{
+            width: '100%', padding: '14px', borderRadius: 12, cursor: 'pointer',
+            border: 'none', background: 'var(--accent)',
+            color: 'var(--accent-contrast)', fontFamily: 'var(--font-sans)',
+            fontSize: 15, fontWeight: 700, boxShadow: 'var(--accent-glow)',
+          }}>Done</button>
+        </div>
+      </div>
+    </>,
+    document.body
+  )
+}
+
 function AutoMatchesTab({ profile, isPowerUser }) {
   const [matches, setMatches]           = useState([]);
   const [loading, setLoading]           = useState(false);
@@ -2229,6 +2536,7 @@ function AutoMatchesTab({ profile, isPowerUser }) {
   const [titleFilter, setTitleFilter]   = useState("");
   const [sortBy, setSortBy]             = useState("score_desc");
   const [filterBy, setFilterBy]         = useState("all");
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const [page, setPage]                 = useState(1);
   const [showArchive, setShowArchive]   = useState(false);
   const [archiveCount, setArchiveCount] = useState(() => loadArchive().length);
@@ -2683,107 +2991,45 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       )}
 
       {matches.length > 0 && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-          {/* Search */}
-          <input
-            type="text"
-            value={titleFilter}
-            onChange={e => setTitleFilter(e.target.value)}
-            placeholder="Search by title…"
-            style={{ ...inputStyle, flex: "1 1 180px" }}
+        <div style={{ marginBottom: 16 }}>
+          {/* Desktop: inline dropdown chips — hidden on mobile */}
+          <div className="trk-filter-bar-desktop" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <TrkFilterBar
+              sortBy={sortBy}
+              filterBy={filterBy}
+              titleFilter={titleFilter}
+              onSortChange={v => setSortBy(v)}
+              onFilterChange={v => setFilterBy(v)}
+              onTitleChange={v => setTitleFilter(v)}
+            />
+            <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace", flexShrink: 0 }}>
+              {sorted.length} jobs · p.{page}/{totalPages}
+            </span>
+          </div>
+
+          {/* Mobile: single "Filters" button — hidden on desktop */}
+          <div className="trk-filter-bar-mobile">
+            <TrkMobileFilterBtn
+              sortBy={sortBy}
+              filterBy={filterBy}
+              onClick={() => setFilterSheetOpen(true)}
+            />
+            <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace", display: 'block', textAlign: 'center', marginBottom: 8 }}>
+              {sorted.length} jobs · p.{page}/{totalPages}
+            </span>
+          </div>
+
+          <TrkMobileFilterSheet
+            open={filterSheetOpen}
+            onClose={() => setFilterSheetOpen(false)}
+            sortBy={sortBy}
+            filterBy={filterBy}
+            titleFilter={titleFilter}
+            onSortChange={v => setSortBy(v)}
+            onFilterChange={v => setFilterBy(v)}
+            onTitleChange={v => setTitleFilter(v)}
+            onClearAll={() => { setSortBy('score_desc'); setFilterBy('all'); setTitleFilter(''); }}
           />
-
-          {/* Sort By dropdown */}
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            <select
-              value={sortBy}
-              onChange={e => setSortBy(e.target.value)}
-              style={{
-                ...inputStyle,
-                paddingRight: 32,
-                appearance: "none",
-                WebkitAppearance: "none",
-                cursor: "pointer",
-                background: sortBy !== "score_desc"
-                  ? "rgba(232,255,107,0.06)"
-                  : "var(--surface)",
-                color: sortBy !== "score_desc"
-                  ? "var(--accent)"
-                  : "var(--text-dim)",
-                border: sortBy !== "score_desc"
-                  ? "1px solid rgba(232,255,107,0.28)"
-                  : "1px solid var(--border)",
-                transition: "all 0.18s",
-                minWidth: 148,
-              }}
-            >
-              <option value="score_desc">↓ Score: High → Low</option>
-              <option value="score_asc">↑ Score: Low → High</option>
-              <option value="recent">⏱ Recency: Newest first</option>
-              <option value="oldest">⏱ Recency: Oldest first</option>
-            </select>
-            <span style={{
-              position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)",
-              pointerEvents: "none", fontSize: 10,
-              color: sortBy !== "score_desc" ? "var(--accent)" : "var(--text-dim)",
-            }}>▾</span>
-          </div>
-
-          {/* Filter By dropdown */}
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            <select
-              value={filterBy}
-              onChange={e => setFilterBy(e.target.value)}
-              style={{
-                ...inputStyle,
-                paddingRight: 32,
-                appearance: "none",
-                WebkitAppearance: "none",
-                cursor: "pointer",
-                background: filterBy === "saved"
-                  ? "rgba(232,255,107,0.07)"
-                  : filterBy === "applied"
-                  ? "rgba(52,211,153,0.07)"
-                  : filterBy !== "all"
-                  ? "rgba(52,211,153,0.06)"
-                  : "var(--surface)",
-                color: filterBy === "saved"
-                  ? "var(--accent)"
-                  : filterBy === "applied"
-                  ? "#34d399"
-                  : filterBy !== "all"
-                  ? "#34d399"
-                  : "var(--text-dim)",
-                border: filterBy === "saved"
-                  ? "1px solid rgba(232,255,107,0.28)"
-                  : filterBy === "applied"
-                  ? "1px solid rgba(52,211,153,0.3)"
-                  : filterBy !== "all"
-                  ? "1px solid rgba(52,211,153,0.28)"
-                  : "1px solid var(--border)",
-                transition: "all 0.18s",
-                minWidth: 164,
-              }}
-            >
-              <option value="all">⊙ All matches</option>
-              <option value="saved">★ Saved</option>
-              <option value="applied">✓ Applied</option>
-              <option value="85">↑ 85%+ · Strong only</option>
-              <option value="75">↑ 75%+ · Good &amp; above</option>
-              <option value="65">↑ 65%+ · Partial &amp; above</option>
-              <option value="strong">✦ Strong Match label</option>
-              <option value="exceptional">⚡ Exceptional Fit label</option>
-            </select>
-            <span style={{
-              position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)",
-              pointerEvents: "none", fontSize: 10,
-              color: filterBy === "saved" ? "var(--accent)" : filterBy !== "all" ? "#34d399" : "var(--text-dim)",
-            }}>▾</span>
-          </div>
-
-          <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "'JetBrains Mono',monospace", flexShrink: 0 }}>
-            {sorted.length} jobs · p.{page}/{totalPages}
-          </span>
         </div>
       )}
 
@@ -4026,7 +4272,12 @@ export default function Tracking({ onNavigate }) {
         @keyframes rkFadeIn { from{opacity:0} to{opacity:1} }
         @keyframes trkSlideUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
         @keyframes rkScaleIn { from{opacity:0;transform:scale(.97)} to{opacity:1;transform:scale(1)} }
+        @keyframes rkMobileSheet { from{transform:translateY(100%)} to{transform:translateY(0)} }
         @keyframes rkBeacon { 0%,100%{box-shadow:0 0 0 0 rgba(232,255,107,0.0)} 50%{box-shadow:0 0 0 5px rgba(232,255,107,0.16)} }
+
+        /* Filter bar visibility — desktop shows chips, mobile shows single button */
+        .trk-filter-bar-mobile { display: none; }
+        .trk-filter-bar-desktop { display: flex; }
         .trk-root ::-webkit-scrollbar{width:8px;height:8px}
         .trk-root ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px}
         .trk-root ::-webkit-scrollbar-track{background:transparent}
@@ -4042,9 +4293,12 @@ export default function Tracking({ onNavigate }) {
         @media (max-width: 767px) {
           [data-trk-root] { flex-direction: column !important; }
           .trk-root { flex: 1 !important; min-height: 0 !important; height: auto !important; }
-          .trk-main-content { padding: 16px 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
+          .trk-main-content { padding: calc(56px + 16px) 14px calc(56px + env(safe-area-inset-bottom,0px) + 16px) !important; }
           .trk-header-actions { display: none !important; }
           .trk-page-title { font-size: 21px !important; }
+          .trk-filter-bar-desktop { display: none !important; }
+          .trk-filter-bar-mobile { display: block !important; }
+          .trk-page-header { margin-bottom: 16px !important; }
 
           /* ── Compact job cards on mobile ── */
           .trk-job-card {
@@ -4115,7 +4369,7 @@ export default function Tracking({ onNavigate }) {
             }
             const meta = tabMeta[activeTab] || tabMeta.auto
             return (
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, marginBottom: 28 }}>
+              <div className="trk-page-header" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, marginBottom: 28 }}>
                 <div>
                   <h1 className="trk-page-title" style={{ fontSize: 25, fontWeight: 600, letterSpacing: '-0.01em', margin: '0 0 5px' }}>{meta.label}</h1>
                   <p style={{ fontSize: 14, color: 'var(--text-mid)', margin: 0 }}>{meta.sub}</p>
