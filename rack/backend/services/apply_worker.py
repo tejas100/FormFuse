@@ -610,3 +610,54 @@ async def recover_orphans():
     # NOTE: recovered rows are NOT auto-restarted. A "Retry" action in the
     # review UI (or re-creating the batch) picks them up — deliberate, so a
     # crash loop can't silently hammer an ATS.
+
+
+# ── Phase 1 for a single job — resume-optimizer approval flow ─────────────────
+# process_batch() above fills every "queued" job in a batch against ONE
+# shared profile/resume (batch.resume_id). That doesn't fit the resume
+# optimizer flow: each job now gets its OWN approved, optimized resume at a
+# different time (whenever the user approves it), so Phase 1 for that job
+# has to fire independently, using that job's specific resume_id — not the
+# batch's.
+#
+# Called from routers/apply.py's POST /jobs/{id}/resume/approve.
+# Deliberately NOT a refactor of process_batch() — same _capture_one() /
+# _browser_lock / status-transition logic, just scoped to one job so the
+# existing batch path is untouched and doesn't need re-testing.
+async def process_single_job(job_id: str, resume_id: str) -> None:
+    """Phase 1 driver for exactly one job, using its own approved optimized resume."""
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(ApplyJob).where(ApplyJob.id == _uuid.UUID(job_id)))
+        job = res.scalar_one_or_none()
+        if not job:
+            logger.error(f"[apply_worker] process_single_job: job {job_id} not found")
+            return
+        if job.status != "queued":
+            logger.warning(f"[apply_worker] process_single_job: job {job_id} status={job.status}, expected 'queued' — skipping")
+            return
+        user_id = job.user_id
+
+    user = await _load_user(user_id)
+    if not user:
+        logger.error(f"[apply_worker] process_single_job: user {user_id} not found for job {job_id}")
+        return
+
+    # Deferred import — avoids circular import at module load, same pattern as process_batch
+    from routers.apply import _build_profile
+    async with AsyncSessionLocal() as db:
+        profile = await _build_profile(user, resume_id, db)
+    resolved_resume_id = profile.get("_resume_id") or resume_id
+
+    async with _browser_lock:
+        await _set_job(job.id, status="filling", attempts=job.attempts + 1)
+        try:
+            outcome = await _capture_one(job, profile, resolved_resume_id, str(user_id))
+        except Exception as e:
+            logger.error(f"[apply_worker] process_single_job: capture crashed for job {job.id}: {e}", exc_info=True)
+            await _set_job(job.id, status="failed", error=str(e)[:300])
+            outcome = "failed"
+
+    if outcome == "awaiting_review":
+        await _send_review_email(user.email, user.display_name, 1, 0)
+
+    logger.info(f"[apply_worker] process_single_job: job {job.id} done — outcome={outcome}")

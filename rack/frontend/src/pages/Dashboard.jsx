@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
 import { useTheme } from '../App'
 import Sidebar from '../components/Sidebar'
+import ResumeEditor from '../components/ResumeEditor'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -1373,6 +1374,14 @@ export default function Dashboard({ onNavigate }) {
   const [appsData, setAppsData]             = useState([])
   const [selectedJob, setSelectedJob]       = useState(null)
 
+  // ── Dashboard body view — 'matches' (default) or 'resumeReview'. Sidebar
+  // never changes; only the <main> content swaps. Opened by clicking a row
+  // in the All Applications table.
+  const [dashboardView, setDashboardView]   = useState('matches')
+  const [reviewApp, setReviewApp]           = useState(null)
+  const openResumeReview  = useCallback((app) => { setReviewApp(app); setDashboardView('resumeReview') }, [])
+  const closeResumeReview = useCallback(() => { setDashboardView('matches'); setReviewApp(null) }, [])
+
   // ── Derived user info ────────────────────────────────────────────────────────
   const displayName = user?.user_metadata?.full_name
     || user?.user_metadata?.name
@@ -1858,6 +1867,42 @@ export default function Dashboard({ onNavigate }) {
       />
 
       {/* ── MAIN ── */}
+      {dashboardView === 'resumeReview' && reviewApp ? (
+        <main className="rk-main" style={{ flex: 1, overflow: 'hidden', position: 'relative', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
+          <div className="rk-main-content" style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: '18px 32px 20px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14, flexShrink: 0 }}>
+              <div>
+                <div style={{ fontSize: 12, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
+                  {reviewApp.company}
+                </div>
+                <h1 style={{ fontWeight: 600, letterSpacing: '-0.01em', margin: '2px 0 0', fontSize: 18 }}>
+                  {reviewApp.job_title || reviewApp.title || 'Role'}
+                </h1>
+              </div>
+              <button onClick={closeResumeReview} title="Back to matches" style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32,
+                background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 9,
+                color: 'var(--text-mid)', cursor: 'pointer', flexShrink: 0,
+              }}>
+                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12.5 4L6 8l6.5 4"/></svg>
+              </button>
+            </div>
+            {/*
+              TODO(backend): once GET /api/apply/jobs/{id}/resume,
+              /resume/decision and /resume/approve exist, pass:
+                applyJobId={reviewApp.job_id}
+                initialDoc / initialPatches / requirementClassification from a fetch
+                onApprove={async ({decisions, manualEdits}) => POST .../resume/approve}
+              Until then this renders its built-in mock document so the flow
+              is visually testable end-to-end.
+            */}
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <ResumeEditor />
+            </div>
+          </div>
+        </main>
+      ) : (
       <main className="rk-main" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', position: 'relative', minWidth: 0 }}>
         {/* Ambient glows */}
         <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
@@ -2025,12 +2070,14 @@ export default function Dashboard({ onNavigate }) {
                   onTabChange={setAppsTab}
                   onOpenTracker={() => navigate('Tracking')}
                   newAppIds={newAppIds}
+                  onOpenApp={openResumeReview}
                 />
               </div>
             </>
           )}
         </div>
       </main>
+      )}
 
       {/* ── Job Detail Modal ── */}
       {selectedJob && (
@@ -2259,7 +2306,7 @@ function BrowseAllCTA({ total, shown, onClick }) {
   )
 }
 
-function AllApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onOpenTracker, newAppIds }) {
+function AllApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, onOpenTracker, newAppIds, onOpenApp }) {
   const [searchCo, setSearchCo] = useState('')
   const displayApps = searchCo.trim()
     ? apps.filter(a => (a.company || '').toLowerCase().includes(searchCo.toLowerCase()) || (a.job_title || '').toLowerCase().includes(searchCo.toLowerCase()))
@@ -2322,7 +2369,7 @@ function AllApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, 
               : 'No applications match this filter.'}
           </div>
         ) : displayApps.map((a, i) => (
-          <AppRow key={a.job_id || i} app={a} last={i === displayApps.length - 1} isNew={newAppIds?.has(a.job_id)} />
+          <AppRow key={a.job_id || i} app={a} last={i === displayApps.length - 1} isNew={newAppIds?.has(a.job_id)} onOpen={onOpenApp} />
         ))}
       </div>
     </div>
@@ -2351,7 +2398,7 @@ function AppTabBtn({ label, count, active, onClick }) {
   )
 }
 
-function AppRow({ app, last, isNew }) {
+function AppRow({ app, last, isNew, onOpen }) {
   const [hov, setHov] = useState(false)
   const st = statusMeta(app.status)
   const title = app.job_title || app.title || 'Role'
@@ -2361,10 +2408,11 @@ function AppRow({ app, last, isNew }) {
     <div
       className="rk-app-row-grid"
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
+      onClick={() => onOpen?.(app)}
       style={{
         display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1fr 0.8fr', gap: 14,
         padding: '14px 18px', borderBottom: last ? 'none' : '1px solid var(--border)',
-        alignItems: 'center',
+        alignItems: 'center', cursor: onOpen ? 'pointer' : 'default',
         background: isNew ? 'rgba(34,197,94,0.05)' : hov ? 'var(--surface2)' : 'transparent',
         transition: 'background 0.5s ease',
         animation: isNew ? 'rkRowSlideIn 0.5s cubic-bezier(0.22,1,0.36,1) both' : undefined,

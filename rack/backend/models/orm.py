@@ -139,6 +139,23 @@ class Resume(Base):
     # Added Migration B (2026-06-27): averaged chunk embedding for instant match
     resume_embedding: Mapped[list | None] = mapped_column(Vector(1536), nullable=True)
 
+    # Added — resume optimizer document model (services/resume_parser.py).
+    # Cached on first optimize call so repeat applies against the same base
+    # resume skip re-parsing. Shape: see resume_parser.py module docstring.
+    structured_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Added — optimizer output rows. An "optimized" resume is a REAL row in
+    # this same table (so browser_agent.py's file-upload lookup needs zero
+    # changes — it already resolves any resume_id -> storage_path), flagged
+    # so it's excluded from the user's manual 5-resume cap and from
+    # Home/Dashboard matching. source_resume_id points at the original.
+    is_optimized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    source_resume_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=True
+    )
+
     user: Mapped["User"] = relationship("User", back_populates="resumes")
     chunks: Mapped[list["ResumeChunk"]] = relationship(
         "ResumeChunk", back_populates="resume", cascade="all, delete-orphan"
@@ -412,6 +429,16 @@ class ApplyJob(Base):
         String(32), nullable=False, default="queued", server_default="queued", index=True
     )
 
+    # Separate lifecycle from `status` above — gates WHEN Phase 1 filling is
+    # allowed to start. create_apply_batch() no longer fires process_batch()
+    # immediately; it fires optimize_batch_resumes() instead, and Phase 1
+    # for a given job only runs after that job's resume_status hits
+    # "approved" (see POST /jobs/{id}/resume/approve).
+    #   pending → optimizing → ready → approved | failed
+    resume_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+
     # Phase 1 artifacts — what the user reviews
     draft:             Mapped[list | None]      = mapped_column(JSONB, nullable=True)
     screenshot_paths:  Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
@@ -445,3 +472,59 @@ class ApplyJob(Base):
 
     user:  Mapped["User"]       = relationship("User", back_populates="apply_jobs")
     batch: Mapped["ApplyBatch"] = relationship("ApplyBatch", back_populates="jobs")
+
+
+# ── Resume Optimizations ────────────────────────────────────────────────────────
+# One row per (apply_job) — the surgical-patch optimizer's output for that
+# specific application, plus the user's accept/reject/manual-edit decisions.
+# UNIQUE(apply_job_id): exactly one optimization run per application.
+#
+# structured_doc: snapshot of the parsed document AT OPTIMIZE TIME (not a
+#   live reference to resumes.structured_json) — the GET /resume endpoint
+#   reads this row alone, no join/re-derivation needed, and it stays
+#   correct even if the base resume is re-parsed later for a different job.
+# patches: services/resume_optimizer.py's validated patch list, verbatim.
+# decisions: {patch_id: "accepted" | "rejected"} — starts all-accepted.
+# manual_edits: {field_id: final_text} — freehand overrides from the editor,
+#   same key scheme the frontend uses ("header:name", "b_uber_1",
+#   "exp:{company_id}:company", etc.)
+# optimized_resume_id: set on approve — points at the NEW `resumes` row
+#   (is_optimized=True) holding the rendered PDF that actually gets
+#   uploaded to the ATS. NULL until approved.
+class ResumeOptimization(Base):
+    __tablename__ = "resume_optimizations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    apply_job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("apply_jobs.id", ondelete="CASCADE"),
+        nullable=False, unique=True, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_resume_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=False
+    )
+    optimized_resume_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("resumes.id"), nullable=True
+    )
+    job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    structured_doc:              Mapped[dict] = mapped_column(JSONB, nullable=False)
+    patches:                     Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    requirement_classification:  Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    decisions:                   Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    manual_edits:                Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    match_score:                 Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # optimizing → ready → approved | failed
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="optimizing", server_default="optimizing"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

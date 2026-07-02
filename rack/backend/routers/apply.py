@@ -41,7 +41,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from db.database import get_db
+from db.database import get_db, AsyncSessionLocal
 from routers.auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -576,9 +576,11 @@ async def create_apply_batch(
     batch.job_count = len(created)
     await db.commit()
 
-    # Kick Phase 1 in the background — survives this request ending
-    from services.apply_worker import process_batch
-    asyncio.create_task(process_batch(batch.id))
+    # Kick resume optimization in the background — survives this request ending.
+    # Phase 1 fill no longer fires here; it now fires per-job from
+    # POST /jobs/{id}/resume/approve once that job's optimized resume is approved.
+    from services.resume_optimize_worker import optimize_batch_resumes
+    asyncio.create_task(optimize_batch_resumes(batch.id))
 
     logger.info(f"[apply/batch] user={current_user.email} batch={batch.id} jobs={len(created)}")
     return {
@@ -586,8 +588,8 @@ async def create_apply_batch(
         "batch_id":   str(batch.id),
         "job_count":  len(created),
         "skipped_no_url": skipped_no_url,
-        "message":    f"Rack is filling {len(created)} application(s) in the background. "
-                      f"You'll get an email when they're ready for review.",
+        "message":    f"Rack is tailoring your resume for {len(created)} application(s). "
+                      f"Review and approve each one to start applying.",
     }
 
 
@@ -843,3 +845,228 @@ async def submit_otp_batch(
 
     logger.info(f"[apply/otp] Security code delivered for apply_job={job.id} ({job.company})")
     return {"ok": True, "message": f"Code received — submitting your application to {job.company} now."}
+
+
+# ── Resume optimization ─────────────────────────────────────────────────────────
+# Runs after create_apply_batch(), before Phase 1 fill. See
+# services/resume_optimize_worker.py for the background pipeline.
+
+@router.get("/batch/{batch_id}/resume-stream")
+async def resume_status_stream(
+    batch_id:    str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:          AsyncSession = Depends(get_db),
+):
+    """
+    SSE stream of resume_status changes for every job in this batch, so the
+    Dashboard "All applications" table can flip Optimizing… -> Optimized
+    live instead of polling. Same text/event-stream shape as POST /stream.
+    """
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyBatch
+    from services import resume_optimize_worker
+
+    bres = await db.execute(select(ApplyBatch).where(
+        ApplyBatch.id == _uuid.UUID(batch_id), ApplyBatch.user_id == current_user.id))
+    if not bres.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    async def event_stream():
+        from models.orm import ApplyJob
+
+        # Send current state immediately on connect, so a client that
+        # connects late (e.g. page refresh mid-optimization) isn't stuck
+        # showing stale "Optimizing…" for jobs that already finished.
+        async with AsyncSessionLocal() as sdb:
+            current_jobs = list((await sdb.execute(
+                select(ApplyJob).where(ApplyJob.batch_id == _uuid.UUID(batch_id))
+            )).scalars())
+        for j in current_jobs:
+            yield _sse({"apply_job_id": str(j.id), "resume_status": j.resume_status})
+
+        q = resume_optimize_worker.subscribe(batch_id)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=25)
+                    yield _sse(event)
+                except asyncio.TimeoutError:
+                    yield _sse({"type": "ping"})
+        finally:
+            resume_optimize_worker.unsubscribe(batch_id, q)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/jobs/{apply_job_id}/resume")
+async def get_resume_optimization(
+    apply_job_id: str,
+    credentials:  Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:           AsyncSession = Depends(get_db),
+):
+    """Everything ResumeEditor.jsx needs: structured doc, patches, classification, score."""
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyJob, ResumeOptimization
+
+    jres = await db.execute(select(ApplyJob).where(
+        ApplyJob.id == _uuid.UUID(apply_job_id), ApplyJob.user_id == current_user.id))
+    job = jres.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Application not found.")
+
+    ores = await db.execute(select(ResumeOptimization).where(ResumeOptimization.apply_job_id == job.id))
+    opt = ores.scalar_one_or_none()
+    if not opt:
+        raise HTTPException(status_code=404, detail="Resume optimization hasn't started for this application yet.")
+
+    required = [c for c in opt.requirement_classification if c.get("importance") == "required"]
+    total = len(opt.requirement_classification) or 1
+    met = sum(1 for c in opt.requirement_classification if c.get("classification") != "absent")
+
+    return {
+        "apply_job_id":              str(job.id),
+        "resume_status":             job.resume_status,
+        "structured_doc":            opt.structured_doc,
+        "patches":                   opt.patches,
+        "requirement_classification": opt.requirement_classification,
+        "decisions":                 opt.decisions,
+        "manual_edits":              opt.manual_edits,
+        "match_score":               opt.match_score or {
+            "percent": round(100 * met / total),
+            "label": "Excellent Match" if met / total >= 0.85 else "Good Match" if met / total >= 0.65 else "Partial Match",
+        },
+        "status": opt.status,
+    }
+
+
+class PatchDecisionRequest(BaseModel):
+    patch_id: str
+    decision: str   # "accepted" | "rejected"
+
+
+@router.post("/jobs/{apply_job_id}/resume/decision")
+async def decide_resume_patch(
+    apply_job_id: str,
+    body:         PatchDecisionRequest,
+    credentials:  Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:           AsyncSession = Depends(get_db),
+):
+    """Persist a single accept/reject decision — called as the user clicks in the sidebar list."""
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyJob, ResumeOptimization
+
+    if body.decision not in ("accepted", "rejected"):
+        raise HTTPException(status_code=400, detail="decision must be 'accepted' or 'rejected'.")
+
+    jres = await db.execute(select(ApplyJob).where(
+        ApplyJob.id == _uuid.UUID(apply_job_id), ApplyJob.user_id == current_user.id))
+    job = jres.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Application not found.")
+
+    ores = await db.execute(select(ResumeOptimization).where(ResumeOptimization.apply_job_id == job.id))
+    opt = ores.scalar_one_or_none()
+    if not opt:
+        raise HTTPException(status_code=404, detail="Resume optimization not found.")
+    if opt.status == "approved":
+        raise HTTPException(status_code=409, detail="This resume is already approved — can't change decisions now.")
+
+    decisions = dict(opt.decisions or {})
+    decisions[body.patch_id] = body.decision
+    opt.decisions = decisions
+    await db.commit()
+    return {"ok": True, "decisions": opt.decisions}
+
+
+class ResumeApproveRequest(BaseModel):
+    decisions:    Optional[dict] = None   # {patch_id: "accepted"|"rejected"} — full overwrite if provided
+    manual_edits: Optional[dict] = None   # {field_id: final_text} — full overwrite if provided
+
+
+@router.post("/jobs/{apply_job_id}/resume/approve")
+async def approve_resume_optimization(
+    apply_job_id: str,
+    body:         ResumeApproveRequest,
+    credentials:  Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer),
+    db:           AsyncSession = Depends(get_db),
+):
+    """
+    Bakes decisions + manual edits into the final document, renders a PDF,
+    uploads it as a NEW resumes row (is_optimized=True) so browser_agent.py's
+    existing storage_path lookup needs zero changes, then kicks Phase 1 fill
+    for THIS job only via apply_worker.process_single_job().
+    """
+    current_user = await _require_user(credentials, db)
+    from models.orm import ApplyJob, ResumeOptimization, Resume
+    from services.resume_renderer import render_resume_pdf
+    from datetime import datetime, timezone
+    import uuid as _uuid2
+
+    jres = await db.execute(select(ApplyJob).where(
+        ApplyJob.id == _uuid.UUID(apply_job_id), ApplyJob.user_id == current_user.id))
+    job = jres.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Application not found.")
+
+    ores = await db.execute(select(ResumeOptimization).where(ResumeOptimization.apply_job_id == job.id))
+    opt = ores.scalar_one_or_none()
+    if not opt:
+        raise HTTPException(status_code=404, detail="Resume optimization not found.")
+    if opt.status != "ready":
+        raise HTTPException(status_code=409, detail=f"Resume isn't ready to approve yet (status={opt.status}).")
+
+    if body.decisions is not None:
+        opt.decisions = body.decisions
+    if body.manual_edits is not None:
+        opt.manual_edits = body.manual_edits
+
+    try:
+        pdf_bytes = render_resume_pdf(opt.structured_doc, opt.patches, opt.decisions, opt.manual_edits)
+    except Exception as e:
+        logger.error(f"[apply/resume/approve] PDF render failed for job {job.id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Couldn't generate the final resume file. Try again.")
+
+    source_res = await db.execute(select(Resume).where(Resume.id == opt.source_resume_id))
+    source_resume = source_res.scalar_one_or_none()
+    filename = f"{(source_resume.filename.rsplit('.',1)[0] if source_resume else 'resume')}_optimized.pdf"
+
+    new_resume_id = _uuid2.uuid4()
+    storage_path = f"{current_user.id}/optimized/{job.id}.pdf"
+    try:
+        from routers.resumes import _get_supabase, STORAGE_BUCKET
+        supabase = _get_supabase()
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            path=storage_path, file=pdf_bytes,
+            file_options={"content-type": "application/pdf", "upsert": "true"},
+        )
+    except Exception as e:
+        logger.error(f"[apply/resume/approve] Storage upload failed for job {job.id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Couldn't save the final resume file. Try again.")
+
+    optimized_resume = Resume(
+        id=new_resume_id, user_id=current_user.id, filename=filename, display_name=filename,
+        storage_path=storage_path, file_ext="pdf",
+        years_exp=source_resume.years_exp if source_resume else None,
+        titles=source_resume.titles if source_resume else None,
+        domains=source_resume.domains if source_resume else None,
+        skills=source_resume.skills if source_resume else None,
+        status="active", is_optimized=True, source_resume_id=opt.source_resume_id,
+    )
+    db.add(optimized_resume)
+
+    opt.optimized_resume_id = new_resume_id
+    opt.status = "approved"
+    opt.approved_at = datetime.now(timezone.utc)
+    job.resume_status = "approved"
+    await db.commit()
+
+    # Phase 1 fill for THIS job only, using the newly-approved optimized resume.
+    from services.apply_worker import process_single_job
+    asyncio.create_task(process_single_job(str(job.id), str(new_resume_id)))
+
+    logger.info(f"[apply/resume/approve] job={job.id} approved — optimized_resume={new_resume_id}")
+    return {
+        "ok": True,
+        "optimized_resume_id": str(new_resume_id),
+        "message": "Resume approved. Rack is filling out the application now.",
+    }
