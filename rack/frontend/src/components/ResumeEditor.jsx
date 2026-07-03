@@ -40,6 +40,21 @@ const FONT_DOC     = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 
 const PAGE_WIDTH  = 680
 const PAGE_HEIGHT = Math.round(PAGE_WIDTH * (11 / 8.5))   // 880, real US-Letter ratio
+const PAD_X = 46                                          // page horizontal padding (matches printed margin)
+const PAD_Y = 40                                          // page vertical padding
+const CONTENT_W = PAGE_WIDTH - PAD_X * 2                  // 588 — usable text width per page
+const USABLE_H  = PAGE_HEIGHT - PAD_Y * 2                 // 800 — usable text height per page
+const PAGE_GAP  = 24                                      // visual gap between stacked pages
+const FIT_FONT_FLOOR = 7                                  // smallest font "fit to 1 page" may shrink to
+
+// Vertical spacing baked into each flow item as padding-bottom (so it's included
+// when we measure the item's footprint — margins are NOT captured by getBoundingClientRect).
+const GAP_SECTION   = 14   // after the last item of a section
+const GAP_EXP       = 10   // between two experience/project entries
+const GAP_HEADER    = 14   // after the name/contact block
+const GAP_SEC_TITLE = 6    // after a section title, before its first item
+const GAP_SUBHEAD   = 4    // after an experience/project header row, before its bullets
+const GAP_BULLET    = 3    // between bullets / skill lines / edu rows
 
 // ── Mock data ────────────────────────────────────────────────────────────
 const MOCK_DOC = {
@@ -241,7 +256,7 @@ function SuggestedChanges({ patches, decisions, onAccept, onReject }) {
 }
 
 // ── Right: floating vertical toolbar ────────────────────────────────────────
-function DocToolbar({ fontSize, setFontSize, fitToPage, setFitToPage, align, setAlign, editing, onEditToggle }) {
+function DocToolbar({ fontSize, effFont, setFontSize, fitToPage, setFitToPage, align, setAlign, editing, onEditToggle }) {
   const btn = (active, disabled) => ({
     width: 30, height: 30, borderRadius: 8, border: `1px solid ${active ? COLORS.text : COLORS.border}`,
     background: active ? COLORS.text : 'transparent', color: active ? '#fff' : COLORS.text,
@@ -251,9 +266,9 @@ function DocToolbar({ fontSize, setFontSize, fitToPage, setFitToPage, align, set
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '16px 10px', background: COLORS.panelBg, borderLeft: `1px solid ${COLORS.border}`, width: 56, flexShrink: 0 }}>
       <Label>FONT</Label>
-      <button style={btn(false, fitToPage)} disabled={fitToPage} onClick={() => setFontSize(f => Math.min(f + 0.5, 17))}>A+</button>
-      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textDim }}>{fontSize.toFixed(1)}</span>
-      <button style={btn(false, fitToPage)} disabled={fitToPage} onClick={() => setFontSize(f => Math.max(f - 0.5, 10))}>A-</button>
+      <button style={btn(false)} onClick={() => setFontSize(f => Math.min(f + 0.5, 17))}>A+</button>
+      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: COLORS.textDim }}>{(fitToPage ? effFont : fontSize).toFixed(1)}</span>
+      <button style={btn(false)} onClick={() => setFontSize(f => Math.max(f - 0.5, 10))}>A-</button>
       <Divider />
       <Label>FIT</Label>
       <button style={{ ...btn(fitToPage), fontSize: 9.5 }} onClick={() => setFitToPage(f => !f)} title="Shrink content to fit one page">1pg</button>
@@ -299,9 +314,10 @@ export default function ResumeEditor({
   const [align, setAlign]             = useState('left')
   const [editing, setEditing]         = useState(false)
   const [fitToPage, setFitToPage]     = useState(false)
-  const [scale, setScale]             = useState(1)
+  const [pages, setPages]             = useState(null)   // read-mode pagination: array of flow-item index arrays
+  const [effFont, setEffFont]         = useState(11)     // effective font (fitToPage may shrink below fontSize)
 
-  const contentRef = useRef(null)
+  const measureRef = useRef(null)                        // hidden off-screen measurer
 
   const patchesByTarget = useMemo(() => {
     const map = {}
@@ -313,16 +329,75 @@ export default function ResumeEditor({
     setDecisions(prev => { const next = { ...prev, [patchId]: value }; onDecisionChange?.(patchId, value); return next })
   }, [onDecisionChange])
 
+  // ── Measurement-based pagination ─────────────────────────────────────────
+  // Read mode renders as a stack of real US-Letter pages. We measure every flow
+  // item off-screen at the true content width, then greedily pack items into
+  // pages of USABLE_H. "Fit to 1 page" honestly shrinks the font (real reflow)
+  // rather than visually scaling — so text re-wraps and fills the page width.
   useLayoutEffect(() => {
-    if (!fitToPage) { setScale(1); return }
-    const el = contentRef.current
-    if (!el) return
-    el.style.transform = 'none'
-    const naturalHeight = el.scrollHeight
-    const usable = PAGE_HEIGHT - 80
-    const s = naturalHeight > 0 ? Math.min(1, usable / naturalHeight) : 1
-    setScale(Math.max(s, 0.55))
-  }, [fitToPage, fontSize, align, decisions, manualEdits, doc, patches])
+    if (editing) { setPages(null); setEffFont(fontSize); return }
+
+    const run = () => {
+      const container = measureRef.current
+      if (!container) return
+      const kids = () => Array.from(container.children)
+      const totalAt = (f) => {
+        container.style.fontSize = f + 'px'
+        void container.offsetHeight   // force reflow
+        return kids().reduce((sum, el) => sum + el.getBoundingClientRect().height, 0)
+      }
+
+      // 1. Decide the effective font.
+      let eff = fontSize
+      if (fitToPage) {
+        if (totalAt(fontSize) <= USABLE_H) {
+          eff = fontSize
+        } else {
+          let lo = FIT_FONT_FLOOR, hi = fontSize, best = FIT_FONT_FLOOR
+          for (let i = 0; i < 14; i++) {
+            const mid = (lo + hi) / 2
+            if (totalAt(mid) <= USABLE_H) { best = mid; lo = mid } else { hi = mid }
+          }
+          eff = Math.max(FIT_FONT_FLOOR, Math.floor(best * 2) / 2)   // snap to 0.5px
+        }
+      }
+
+      // 2. Measure each item's footprint at the effective font, then pack.
+      container.style.fontSize = eff + 'px'
+      void container.offsetHeight
+      const heights = kids().map(el => el.getBoundingClientRect().height)
+
+      const result = []
+      let cur = [], used = 0
+      for (let i = 0; i < heights.length; i++) {
+        const h = heights[i]
+        if (used + h > USABLE_H && cur.length > 0) { result.push(cur); cur = []; used = 0 }
+        cur.push(i); used += h
+      }
+      if (cur.length) result.push(cur)
+
+      // 3. Push orphaned headers (a section/sub header stranded at a page bottom)
+      //    onto the next page so a heading never dangles with no content under it.
+      for (let p = 0; p < result.length - 1; p++) {
+        const page = result[p]
+        while (page.length) {
+          const t = flowItems[page[page.length - 1]]?.type
+          if (t === 'section-header' || t === 'sub-header') result[p + 1].unshift(page.pop())
+          else break
+        }
+      }
+      const packed = result.filter(pg => pg.length)
+
+      container.style.fontSize = fontSize + 'px'   // restore for next render
+      setEffFont(eff)
+      setPages(packed.length ? packed : [heights.map((_, i) => i)])
+    }
+
+    if (document.fonts && document.fonts.status !== 'loaded') {
+      document.fonts.ready.then(run).catch(run)
+    } else run()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, fontSize, align, fitToPage, decisions, manualEdits, doc, patches])
 
   const fieldText = (key, fallback) => manualEdits[key] !== undefined ? manualEdits[key] : fallback
 
@@ -352,6 +427,122 @@ export default function ResumeEditor({
 
   const headerName      = renderField('header:name', doc.header.name)
   const headerFieldKeys = ['location', 'email', 'phone', 'linkedin', 'github'].filter(f => doc.header[f])
+
+  // Flatten the document into an ordered list of atomic, individually-measurable
+  // flow items. Spacing is expressed as padding-bottom (`gap`) so it's captured
+  // when we measure each item's height. Font sizes use `em` so they scale with
+  // the page's effective font (important for "fit to 1 page").
+  const flowItems = (() => {
+    const out = []
+    const push = (id, type, node, gap) => out.push({ id, type, node, gap })
+    const endSection = () => { if (out.length) out[out.length - 1].gap = GAP_SECTION }
+    const sectionTitle = (title) => (
+      <div style={{ fontWeight: 700, letterSpacing: '0.03em', textTransform: 'uppercase',
+        color: COLORS.text, borderBottom: `1px solid ${COLORS.text}`, paddingBottom: 3 }}>{title}</div>
+    )
+    const bulletRow = (id, text) => (
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, paddingLeft: 3 }}>
+        <span style={{ flexShrink: 0, lineHeight: 1.34 }}>{'\u2022'}</span>
+        <div style={{ flex: 1, lineHeight: 1.34 }}>{renderTarget(id, text)}</div>
+      </div>
+    )
+
+    // Header (name + contact line)
+    push('__header', 'header', (
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontWeight: 700, fontSize: '1.95em', letterSpacing: '-0.01em', lineHeight: 1.14 }}>{headerName}</div>
+        <div style={{ color: COLORS.textDim, fontSize: '0.88em', marginTop: 3, lineHeight: 1.4 }}>
+          {headerFieldKeys.map((f, i) => (
+            <span key={f}>{renderField(`header:${f}`, doc.header[f])}{i < headerFieldKeys.length - 1 ? '  |  ' : ''}</span>
+          ))}
+        </div>
+      </div>
+    ), GAP_HEADER)
+
+    // Summary
+    if (doc.summary) {
+      push('__sec_summary', 'section-header', sectionTitle('Summary'), GAP_SEC_TITLE)
+      push(doc.summary.id, 'body', <div>{renderTarget(doc.summary.id, doc.summary.text)}</div>, GAP_BULLET)
+      endSection()
+    }
+
+    // Skills
+    if (doc.skills && doc.skills.length > 0) {
+      push('__sec_skills', 'section-header', sectionTitle('Skills'), GAP_SEC_TITLE)
+      doc.skills.forEach(g => push(g.group_id, 'body', (
+        <div><strong>{g.group_label}: </strong>
+          {g.items.map((item, i) => (
+            <span key={item.id}>{renderTarget(item.id, item.text)}{i < g.items.length - 1 ? ', ' : ''}</span>
+          ))}
+        </div>
+      ), GAP_BULLET))
+      endSection()
+    }
+
+    // Work Experience
+    if (doc.experience && doc.experience.length > 0) {
+      push('__sec_exp', 'section-header', sectionTitle('Work Experience'), GAP_SEC_TITLE)
+      doc.experience.forEach(exp => {
+        push(`${exp.company_id}__h`, 'sub-header', (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
+            <span>
+              {renderField(`exp:${exp.company_id}:company`, exp.company)}
+              {exp.title && <> {'|'} {renderField(`exp:${exp.company_id}:title`, exp.title)}</>}
+            </span>
+            <span style={{ color: COLORS.textDim, fontWeight: 400, fontSize: '0.9em' }}>
+              {renderField(`exp:${exp.company_id}:dates`, exp.dates)}
+            </span>
+          </div>
+        ), GAP_SUBHEAD)
+        exp.bullets.forEach((b, bi) =>
+          push(b.id, 'bullet', bulletRow(b.id, b.text), bi === exp.bullets.length - 1 ? GAP_EXP : GAP_BULLET))
+      })
+      endSection()
+    }
+
+    // Projects
+    if (doc.projects && doc.projects.length > 0) {
+      push('__sec_proj', 'section-header', sectionTitle('Projects'), GAP_SEC_TITLE)
+      doc.projects.forEach(p => {
+        const pid = p.project_id || p.id
+        const pname = p.name || p.title || ''
+        const psub = p.subtitle || p.tech || ''
+        const bullets = p.bullets || []
+        push(`${pid}__h`, 'sub-header', (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
+            <span>
+              {renderField(`proj:${pid}:name`, pname)}
+              {psub && <span style={{ fontWeight: 400, color: COLORS.textDim }}> {'\u2014'} {renderField(`proj:${pid}:subtitle`, psub)}</span>}
+            </span>
+            {p.dates && <span style={{ color: COLORS.textDim, fontWeight: 400, fontSize: '0.9em' }}>{renderField(`proj:${pid}:dates`, p.dates)}</span>}
+          </div>
+        ), GAP_SUBHEAD)
+        bullets.forEach((b, bi) =>
+          push(b.id, 'bullet', bulletRow(b.id, b.text), bi === bullets.length - 1 ? GAP_EXP : GAP_BULLET))
+      })
+      endSection()
+    }
+
+    // Education
+    if (doc.education && doc.education.length > 0) {
+      push('__sec_edu', 'section-header', sectionTitle('Education'), GAP_SEC_TITLE)
+      doc.education.forEach(e => push(e.id, 'body', (
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>{renderField(`edu:${e.id}:school`, e.school)}</span>
+          <span style={{ color: COLORS.textDim, fontSize: '0.9em' }}>{renderField(`edu:${e.id}:dates`, e.dates)}</span>
+        </div>
+      ), GAP_BULLET))
+      endSection()
+    }
+
+    if (out.length) out[out.length - 1].gap = 0   // no trailing gap on the very last item
+    return out
+  })()
+
+  // Guard page indices against a doc that changed since the last measure.
+  const safePages = pages
+    ? pages.map(pg => pg.filter(i => i < flowItems.length)).filter(pg => pg.length)
+    : null
 
   return (
     <div style={{ display: 'flex', fontFamily: FONT_BODY, background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 16, overflow: 'hidden', height: '100%', minHeight: 0 }}>
@@ -428,121 +619,59 @@ export default function ResumeEditor({
             <span style={{ opacity: 0.75 }}>Click any field to edit</span>
           </div>
         )}
-        <div style={{ padding: 24, display: 'flex', justifyContent: 'center' }}>
-          <div style={{
-            width: '100%', maxWidth: PAGE_WIDTH, minHeight: PAGE_HEIGHT,
-            height: fitToPage ? PAGE_HEIGHT : 'auto', overflow: fitToPage ? 'hidden' : 'visible',
-            background: COLORS.pageBg, borderRadius: 4, flexShrink: 0,
-            boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.06)',
+        {/* Off-screen measurer — one wrapper per flow item, at true content width. */}
+        {!editing && (
+          <div ref={measureRef} aria-hidden style={{
+            position: 'absolute', left: -99999, top: 0, visibility: 'hidden', pointerEvents: 'none',
+            width: CONTENT_W, fontFamily: FONT_DOC, fontSize, lineHeight: 1.34, textAlign: align, color: COLORS.text,
           }}>
-            <div ref={contentRef} style={{
-              padding: '40px 46px', fontFamily: FONT_DOC, fontSize, lineHeight: 1.34,
+            {flowItems.map(it => (
+              <div key={it.id} style={{ paddingBottom: it.gap }}>{it.node}</div>
+            ))}
+          </div>
+        )}
+
+        {editing ? (
+          // Edit mode: a single continuous page (grows with content) so caret
+          // never jumps from a mid-edit re-pagination.
+          <div style={{ padding: PAGE_GAP, display: 'flex', justifyContent: 'center' }}>
+            <div style={{
+              width: '100%', maxWidth: PAGE_WIDTH, minHeight: PAGE_HEIGHT, flexShrink: 0,
+              background: COLORS.pageBg, borderRadius: 4,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.06)',
+              padding: `${PAD_Y}px ${PAD_X}px`, fontFamily: FONT_DOC, fontSize, lineHeight: 1.34,
               textAlign: align, color: COLORS.text,
-              transform: `scale(${scale})`, transformOrigin: 'top center',
             }}>
-              <div style={{ textAlign: 'center', marginBottom: 14 }}>
-                <div style={{ fontWeight: 700, fontSize: fontSize * 1.95, letterSpacing: '-0.01em', lineHeight: 1.14 }}>{headerName}</div>
-                <div style={{ color: COLORS.textDim, fontSize: fontSize * 0.88, marginTop: 3, lineHeight: 1.4 }}>
-                  {headerFieldKeys.map((f, i) => (
-                    <span key={f}>{renderField(`header:${f}`, doc.header[f])}{i < headerFieldKeys.length - 1 ? '  |  ' : ''}</span>
-                  ))}
-                </div>
-              </div>
-
-              {doc.summary && <Section title="Summary" fontSize={fontSize}><p>{renderTarget(doc.summary.id, doc.summary.text)}</p></Section>}
-
-              {doc.skills.length > 0 && (
-                <Section title="Skills" fontSize={fontSize}>
-                  {doc.skills.map(g => (
-                    <div key={g.group_id} style={{ marginBottom: 4 }}>
-                      <strong>{g.group_label}: </strong>
-                      {g.items.map((item, i) => (
-                        <span key={item.id}>{renderTarget(item.id, item.text)}{i < g.items.length - 1 ? ', ' : ''}</span>
-                      ))}
-                    </div>
-                  ))}
-                </Section>
-              )}
-
-              {doc.experience.length > 0 && (
-                <Section title="Work Experience" fontSize={fontSize}>
-                  {doc.experience.map(exp => (
-                    <div key={exp.company_id} style={{ marginBottom: 11 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
-                        <span>
-                          {renderField(`exp:${exp.company_id}:company`, exp.company)}
-                          {exp.title && <> {'|'} {renderField(`exp:${exp.company_id}:title`, exp.title)}</>}
-                        </span>
-                        <span style={{ color: COLORS.textDim, fontWeight: 400, fontSize: fontSize * 0.9 }}>
-                          {renderField(`exp:${exp.company_id}:dates`, exp.dates)}
-                        </span>
-                      </div>
-                      <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
-                        {exp.bullets.map(b => <li key={b.id} style={{ marginBottom: 2.5 }}>{renderTarget(b.id, b.text)}</li>)}
-                      </ul>
-                    </div>
-                  ))}
-                </Section>
-              )}
-
-              {doc.projects && doc.projects.length > 0 && (
-                <Section title="Projects" fontSize={fontSize}>
-                  {doc.projects.map(p => {
-                    const pid = p.project_id || p.id
-                    const pname = p.name || p.title || ''
-                    const psub = p.subtitle || p.tech || ''
-                    const bullets = p.bullets || []
-                    return (
-                      <div key={pid} style={{ marginBottom: 11 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
-                          <span>
-                            {renderField(`proj:${pid}:name`, pname)}
-                            {psub && <span style={{ fontWeight: 400, color: COLORS.textDim }}> {'\u2014'} {renderField(`proj:${pid}:subtitle`, psub)}</span>}
-                          </span>
-                          {p.dates && <span style={{ color: COLORS.textDim, fontWeight: 400, fontSize: fontSize * 0.9 }}>{renderField(`proj:${pid}:dates`, p.dates)}</span>}
-                        </div>
-                        {bullets.length > 0 && (
-                          <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
-                            {bullets.map(b => <li key={b.id} style={{ marginBottom: 2.5 }}>{renderTarget(b.id, b.text)}</li>)}
-                          </ul>
-                        )}
-                      </div>
-                    )
-                  })}
-                </Section>
-              )}
-
-              {doc.education.length > 0 && (
-                <Section title="Education" fontSize={fontSize}>
-                  {doc.education.map(e => (
-                    <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span>{renderField(`edu:${e.id}:school`, e.school)}</span>
-                      <span style={{ color: COLORS.textDim, fontSize: fontSize * 0.9 }}>{renderField(`edu:${e.id}:dates`, e.dates)}</span>
-                    </div>
-                  ))}
-                </Section>
-              )}
+              {flowItems.map(it => <div key={it.id} style={{ paddingBottom: it.gap }}>{it.node}</div>)}
             </div>
           </div>
-        </div>
+        ) : (
+          // Read mode: a stack of real US-Letter pages.
+          <div style={{ padding: PAGE_GAP, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: PAGE_GAP }}>
+            {(safePages || [flowItems.map((_, i) => i)]).map((idxs, pi) => (
+              <div key={pi} style={{
+                width: '100%', maxWidth: PAGE_WIDTH, height: PAGE_HEIGHT, flexShrink: 0, overflow: 'hidden',
+                background: COLORS.pageBg, borderRadius: 4,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.06)',
+                padding: `${PAD_Y}px ${PAD_X}px`, fontFamily: FONT_DOC, fontSize: effFont, lineHeight: 1.34,
+                textAlign: align, color: COLORS.text,
+              }}>
+                {idxs.map(i => flowItems[i] && (
+                  <div key={flowItems[i].id} style={{ paddingBottom: flowItems[i].gap }}>{flowItems[i].node}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── RIGHT: toolbar ── */}
-      <DocToolbar fontSize={fontSize} setFontSize={setFontSize} fitToPage={fitToPage} setFitToPage={setFitToPage}
+      <DocToolbar fontSize={fontSize} effFont={effFont} setFontSize={setFontSize} fitToPage={fitToPage} setFitToPage={setFitToPage}
         align={align} setAlign={setAlign} editing={editing} onEditToggle={handleToolbarEditToggle} />
     </div>
   )
 }
 
-function Section({ title, children, fontSize }) {
-  const base = fontSize || 11
-  return (
-    <div style={{ marginBottom: 13 }}>
-      <div style={{ fontSize: base, fontWeight: 700, letterSpacing: '0.03em', textTransform: 'uppercase', color: COLORS.text, borderBottom: `1px solid ${COLORS.text}`, paddingBottom: 3, marginBottom: 6 }}>{title}</div>
-      {children}
-    </div>
-  )
-}
 function feedbackBtn(active) {
   return { width: 26, height: 26, borderRadius: 7, border: `1px solid ${active ? COLORS.text : COLORS.border}`, background: active ? COLORS.panelBg : 'transparent', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }
 }

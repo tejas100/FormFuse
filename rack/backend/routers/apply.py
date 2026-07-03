@@ -511,6 +511,7 @@ async def create_apply_batch(
     from models.orm import ApplyBatch, ApplyJob
 
     limit = max(1, min(body.limit or 7, 10))
+    ACTIVE_STATUSES = ["queued", "filling", "awaiting_review", "approved", "replaying", "awaiting_otp"]
 
     # Resolve target jobs
     q = select(AutoMatchResult).where(
@@ -524,13 +525,32 @@ async def create_apply_batch(
 
     rows = list((await db.execute(q)).scalars())
     if not rows:
+        # No un-applied match rows for this selection. Distinguish "already
+        # applied" (idempotent — a harmless re-click on a finished job) from
+        # "genuinely not a match for this user" (a real 404).
+        if body.job_ids:
+            already = list((await db.execute(
+                select(AutoMatchResult.job_id).where(
+                    AutoMatchResult.user_id == current_user.id,
+                    AutoMatchResult.job_id.in_(body.job_ids),
+                    AutoMatchResult.applied.is_(True),
+                )
+            )).scalars())
+            if already:
+                return {
+                    "ok": True,
+                    "already_applied": True,
+                    "applied_job_ids": [j for j in already if j],
+                    "job_count": 0,
+                    "message": "You've already applied to this job.",
+                }
         raise HTTPException(status_code=404, detail="No matched, un-applied jobs found to apply to.")
 
     # Exclude jobs already in an active batch pipeline
     active = list((await db.execute(
         select(ApplyJob.job_id).where(
             ApplyJob.user_id == current_user.id,
-            ApplyJob.status.in_(["queued", "filling", "awaiting_review", "approved", "replaying", "awaiting_otp"]),
+            ApplyJob.status.in_(ACTIVE_STATUSES),
         )
     )).scalars())
     active_set = {a for a in active if a}
@@ -540,6 +560,27 @@ async def create_apply_batch(
     # ("apply to all of them" on a 20-row table → 20 sequential headless fills).
     rows = rows[:10]
     if not rows:
+        # Every requested job is already queued in an active batch. Idempotent:
+        # hand back the existing batch so a re-click just re-opens it, rather
+        # than erroring with a 409 that the UI can't act on.
+        existing_q = select(ApplyJob).where(
+            ApplyJob.user_id == current_user.id,
+            ApplyJob.status.in_(ACTIVE_STATUSES),
+        )
+        if body.job_ids:
+            existing_q = existing_q.where(ApplyJob.job_id.in_(body.job_ids))
+        existing = (await db.execute(
+            existing_q.order_by(ApplyJob.created_at.desc())
+        )).scalars().first()
+        if existing:
+            return {
+                "ok": True,
+                "already_active": True,
+                "batch_id": str(existing.batch_id),
+                "apply_job_id": str(existing.id),
+                "job_count": 0,
+                "message": "This application is already in progress.",
+            }
         raise HTTPException(status_code=409, detail="All selected jobs are already in an active apply batch.")
 
     batch = ApplyBatch(

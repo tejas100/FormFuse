@@ -8,6 +8,38 @@ import ResumeEditor from '../components/ResumeEditor'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+// EventSource can't send an Authorization header, and every RACK endpoint
+// requires one — so the resume-status SSE stream is consumed via fetch's
+// streaming body reader instead, parsing "data: {...}\n\n" frames by hand.
+// Runs until the connection closes; caller doesn't await this, it just
+// pushes updates into state as they arrive.
+async function subscribeResumeStream(batchId, headers, onEvent) {
+  try {
+    const res = await fetch(`${API_BASE}/api/apply/batch/${batchId}/resume-stream`, { headers })
+    if (!res.ok || !res.body) return
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const frames = buffer.split('\n\n')
+      buffer = frames.pop() || ''
+      for (const frame of frames) {
+        const line = frame.split('\n').find(l => l.startsWith('data:'))
+        if (!line) continue
+        try {
+          const evt = JSON.parse(line.slice(5).trim())
+          if (evt.type !== 'ping') onEvent(evt)
+        } catch { /* malformed frame — skip, stream continues */ }
+      }
+    }
+  } catch (e) {
+    console.error('[subscribeResumeStream] stream ended:', e)
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function daysAgoLabel(dateStr) {
@@ -1356,6 +1388,7 @@ export default function Dashboard({ onNavigate }) {
   const [allJobs, setAllJobs]       = useState([])
   const [appliedIds, setAppliedIds]   = useState(new Set())
   const [pendingApplyIds, setPendingApplyIds] = useState(new Set()) // showing overlay, still in grid
+  const [applyError, setApplyError]   = useState(null)              // transient Apply failure toast
   const [newAppIds, setNewAppIds]     = useState(new Set()) // freshly added to strip (for entrance anim)
   const [passedIds, setPassedIds]   = useState(new Set())
   const [revealCount, setRevealCount] = useState(0)
@@ -1444,6 +1477,10 @@ export default function Dashboard({ onNavigate }) {
       }
 
       setAllJobs(matches)
+      // Reflect jobs the backend already marks applied so their cards don't
+      // render a dead Apply button (harmless no-op if the field isn't present).
+      const preApplied = matches.filter(m => m && m.applied === true).map(m => m.job_id || m.id).filter(Boolean)
+      if (preApplied.length) setAppliedIds(prev => new Set([...prev, ...preApplied]))
       setPhase('ready')
       startReveal(matches.length)
 
@@ -1569,33 +1606,70 @@ export default function Dashboard({ onNavigate }) {
   // Pending cards still show in grid (with overlay). Only fully committed applied cards leave.
   const visibleJobs = filteredJobs.filter(j => !appliedIds.has(j.job_id || j.id)).slice(0, DASHBOARD_JOB_CAP)
 
-  const handleApply = (job) => {
-    const id = job.job_id || job.id
-    // Phase 1: show "Application started" overlay on card (card stays in grid)
-    setPendingApplyIds(prev => new Set([...prev, id]))
+  const handleApply = async (job) => {
+    const jobId = job.job_id || job.id
+    setPendingApplyIds(prev => new Set([...prev, jobId]))
 
-    // Phase 2: after 1400ms — remove card from grid + drop row into strip
-    setTimeout(() => {
-      setAppliedIds(prev => new Set([...prev, id]))
-      setPendingApplyIds(prev => { const n = new Set(prev); n.delete(id); return n })
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE}/api/apply/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ job_ids: [jobId], limit: 1 }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Could not start this application.')
+
+      // Idempotent: this job was already applied (prior session) — just reflect
+      // it in the UI. No batch to open, no stream to subscribe.
+      if (data.already_applied) {
+        setAppliedIds(prev => new Set([...prev, jobId]))
+        setPendingApplyIds(prev => { const n = new Set(prev); n.delete(jobId); return n })
+        return
+      }
+      // (data.already_active carries batch_id and flows through the normal path.)
+
+      // create_apply_batch only returns batch_id — fetch the batch to get
+      // the actual ApplyJob row (its `id` is what ResumeEditor needs to
+      // open the review panel for this specific application).
+      const batchRes = await fetch(`${API_BASE}/api/apply/batch/${data.batch_id}`, { headers })
+      const batchData = await batchRes.json()
+      const createdJob = (batchData.jobs || []).find(j => j.job_id === jobId) || (batchData.jobs || [])[0]
+
+      setAppliedIds(prev => new Set([...prev, jobId]))
+      setPendingApplyIds(prev => { const n = new Set(prev); n.delete(jobId); return n })
 
       const newEntry = {
-        job_id:     id,
-        job_title:  job.job_title || job.job_data?.title || 'Untitled',
-        company:    job.company   || job.job_data?.company || '',
-        resume_name: job.resume_name || null,
-        status:     'inflight',
-        updated_at: new Date().toISOString(),
-        _local:     true,
+        id:            createdJob?.id || null,   // apply_job_id (uuid) — opens ResumeEditor
+        batch_id:      data.batch_id,
+        job_id:        jobId,
+        job_title:     job.job_title || job.job_data?.title || 'Untitled',
+        company:       job.company   || job.job_data?.company || '',
+        resume_name:   null,
+        resume_status: createdJob?.resume_status || 'pending',
+        status:        createdJob?.status || 'queued',
+        updated_at:    new Date().toISOString(),
       }
-      setAppsData(prev => {
-        if (prev.some(a => a.job_id === id)) return prev
-        return [newEntry, ...prev]
+      setAppsData(prev => (prev.some(a => a.job_id === jobId) ? prev : [newEntry, ...prev]))
+      setNewAppIds(prev => new Set([...prev, jobId]))
+      setTimeout(() => setNewAppIds(prev => { const n = new Set(prev); n.delete(jobId); return n }), 1200)
+
+      // Fire-and-forget — pushes "Optimizing…" -> "Optimized" into the row
+      // as the background optimizer finishes each job in the batch.
+      subscribeResumeStream(data.batch_id, headers, (evt) => {
+        if (!evt.apply_job_id) return
+        setAppsData(prev => prev.map(a =>
+          (a.id === evt.apply_job_id || a.job_id === jobId)
+            ? { ...a, resume_status: evt.resume_status }
+            : a
+        ))
       })
-      // Mark as "new" for entrance animation, clear after 1200ms
-      setNewAppIds(prev => new Set([...prev, id]))
-      setTimeout(() => setNewAppIds(prev => { const n = new Set(prev); n.delete(id); return n }), 1200)
-    }, 1400)
+    } catch (e) {
+      console.error('[handleApply] failed:', e)
+      setPendingApplyIds(prev => { const n = new Set(prev); n.delete(jobId); return n })
+      setApplyError(e.message || 'Could not start this application.')
+      setTimeout(() => setApplyError(null), 4500)
+    }
   }
   const handlePass = (id) => setPassedIds(prev => new Set([...prev, id]))
 
@@ -1850,6 +1924,18 @@ export default function Dashboard({ onNavigate }) {
         }
       `}</style>
 
+      {/* ── Apply error toast ── */}
+      {applyError && (
+        <div style={{
+          position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', zIndex: 1000,
+          background: '#2a1416', color: '#ffd9d9', border: '1px solid #7a2e2e', borderRadius: 10,
+          padding: '10px 16px', fontSize: 13.5, fontWeight: 500, maxWidth: 440, textAlign: 'center',
+          boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
+        }}>
+          {applyError}
+        </div>
+      )}
+
       {/* ── SIDEBAR (shared component) ── */}
       <Sidebar
         activeNav="Dashboard"
@@ -1898,7 +1984,7 @@ export default function Dashboard({ onNavigate }) {
               is visually testable end-to-end.
             */}
             <div style={{ flex: 1, minHeight: 0 }}>
-              <ResumeEditor />
+              <ResumeReviewPanel applyJobId={reviewApp?.id} />
             </div>
           </div>
         </main>
@@ -2398,6 +2484,128 @@ function AppTabBtn({ label, count, active, onClick }) {
   )
 }
 
+function ResumeReviewPanel({ applyJobId }) {
+  const [state, setState] = useState('loading')   // loading | optimizing | ready | error
+  const [data, setData]   = useState(null)
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const fetchOnce = useCallback(async () => {
+    if (!applyJobId) { setState('error'); setErrorMsg('No application selected.'); return }
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE}/api/apply/jobs/${applyJobId}/resume`, { headers })
+      if (res.status === 404) { setState('optimizing'); return }
+      const json = await res.json()
+      if (!res.ok) { setState('error'); setErrorMsg(json.detail || 'Could not load this resume.'); return }
+      setData(json)
+      setState(json.status === 'optimizing' ? 'optimizing' : 'ready')
+    } catch (e) {
+      console.error('[ResumeReviewPanel] fetch failed:', e)
+      setState('error'); setErrorMsg('Network error loading resume.')
+    }
+  }, [applyJobId])
+
+  useEffect(() => { setState('loading'); fetchOnce() }, [fetchOnce])
+
+  // Poll while optimization is still running — the SSE stream already
+  // updates the table row live, but this panel only re-fetches the full
+  // document once, so it needs its own fallback to notice "ready".
+  useEffect(() => {
+    if (state !== 'optimizing') return
+    const t = setInterval(fetchOnce, 3000)
+    return () => clearInterval(t)
+  }, [state, fetchOnce])
+
+  const handleDecision = async (patchId, decision) => {
+    try {
+      const headers = await getAuthHeaders()
+      await fetch(`${API_BASE}/api/apply/jobs/${applyJobId}/resume/decision`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ patch_id: patchId, decision }),
+      })
+    } catch (e) {
+      console.error('[ResumeReviewPanel] decision save failed:', e)
+    }
+  }
+
+  const handleApprove = async ({ decisions, manualEdits }) => {
+    const headers = await getAuthHeaders()
+    const res = await fetch(`${API_BASE}/api/apply/jobs/${applyJobId}/resume/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ decisions, manual_edits: manualEdits }),
+    })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.detail || 'Approval failed.')
+    return json
+  }
+
+  const handleDownload = async () => {
+    // No signed-download endpoint for a not-yet-approved optimized resume —
+    // approving is what generates and stores the PDF. Being explicit about
+    // the gap instead of faking a link.
+    window.alert('Download will be available once this resume is approved.')
+  }
+
+  if (state === 'loading') {
+    return <PanelMessage>Loading…</PanelMessage>
+  }
+  if (state === 'optimizing') {
+    return <PanelMessage>Optimizing your resume for this role<AnimatedDots /></PanelMessage>
+  }
+  if (state === 'error') {
+    return <PanelMessage color="#c14545">{errorMsg}</PanelMessage>
+  }
+  return (
+    <ResumeEditor
+      applyJobId={applyJobId}
+      initialDoc={data.structured_doc}
+      initialPatches={data.patches}
+      requirementClassification={data.requirement_classification}
+      matchScore={data.match_score}
+      onApprove={handleApprove}
+      onDecisionChange={handleDecision}
+      onDownload={handleDownload}
+    />
+  )
+}
+
+function PanelMessage({ children, color = 'var(--text-dim)' }) {
+  return (
+    <div style={{
+      height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color, fontFamily: 'var(--font-mono)', fontSize: 13,
+      border: '1px solid var(--border)', borderRadius: 16, background: 'var(--surface)',
+    }}>
+      {children}
+    </div>
+  )
+}
+
+function AnimatedDots() {
+  return (
+    <span style={{ display: 'inline-flex', gap: 2, marginLeft: 3 }}>
+      {[0, 1, 2].map(i => (
+        <span key={i} style={{
+          width: 3.5, height: 3.5, borderRadius: '50%', background: 'currentColor',
+          animation: `rkDotPulse 1.2s ease-in-out ${i * 0.15}s infinite`,
+        }} />
+      ))}
+    </span>
+  )
+}
+
+function ResumeStatusCell({ app }) {
+  const rs = app.resume_status
+  if (!rs) return <>{app.resume_name || '—'}</>
+  if (rs === 'pending' || rs === 'optimizing') {
+    return <span style={{ display: 'inline-flex', alignItems: 'center' }}>Optimizing<AnimatedDots /></span>
+  }
+  if (rs === 'ready')    return <span style={{ color: 'var(--accent-ink)' }}>Optimized</span>
+  if (rs === 'approved') return <span>{app.resume_name || 'Optimized'}</span>
+  if (rs === 'failed')   return <span style={{ color: '#c14545' }}>Failed</span>
+  return <>{app.resume_name || '—'}</>
+}
+
 function AppRow({ app, last, isNew, onOpen }) {
   const [hov, setHov] = useState(false)
   const st = statusMeta(app.status)
@@ -2425,7 +2633,7 @@ function AppRow({ app, last, isNew, onOpen }) {
         </div>
       </div>
       <span className="rk-app-resume-col" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-mid)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {app.resume_name || '—'}
+        <ResumeStatusCell app={app} />
       </span>
       <span className="rk-app-resume-col" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-dim)' }}>
         {app.cover_letter ? '✓' : '—'}
