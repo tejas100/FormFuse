@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { getAuthHeaders } from '../utils/api'
 import { useTheme } from '../App'
 import Sidebar from '../components/Sidebar'
-import ResumeEditor from '../components/ResumeEditor'
+import ResumeOptimizer from '../components/ResumeOptimizer'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -1630,7 +1630,7 @@ export default function Dashboard({ onNavigate }) {
       // (data.already_active carries batch_id and flows through the normal path.)
 
       // create_apply_batch only returns batch_id — fetch the batch to get
-      // the actual ApplyJob row (its `id` is what ResumeEditor needs to
+      // the actual ApplyJob row (its `id` is what the resume review panel needs to
       // open the review panel for this specific application).
       const batchRes = await fetch(`${API_BASE}/api/apply/batch/${data.batch_id}`, { headers })
       const batchData = await batchRes.json()
@@ -1640,7 +1640,7 @@ export default function Dashboard({ onNavigate }) {
       setPendingApplyIds(prev => { const n = new Set(prev); n.delete(jobId); return n })
 
       const newEntry = {
-        id:            createdJob?.id || null,   // apply_job_id (uuid) — opens ResumeEditor
+        id:            createdJob?.id || null,   // apply_job_id (uuid) — opens ResumeOptimizer review
         batch_id:      data.batch_id,
         job_id:        jobId,
         job_title:     job.job_title || job.job_data?.title || 'Untitled',
@@ -1955,37 +1955,15 @@ export default function Dashboard({ onNavigate }) {
       {/* ── MAIN ── */}
       {dashboardView === 'resumeReview' && reviewApp ? (
         <main className="rk-main" style={{ flex: 1, overflow: 'hidden', position: 'relative', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ position: 'absolute', top: -160, left: -80, width: 520, height: 520, borderRadius: '50%', background: 'radial-gradient(circle, var(--glow-1), transparent 68%)', pointerEvents: 'none', zIndex: 0 }}/>
-          <div className="rk-main-content" style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: '18px 32px 20px' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14, flexShrink: 0 }}>
-              <div>
-                <div style={{ fontSize: 12, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-                  {reviewApp.company}
-                </div>
-                <h1 style={{ fontWeight: 600, letterSpacing: '-0.01em', margin: '2px 0 0', fontSize: 18 }}>
-                  {reviewApp.job_title || reviewApp.title || 'Role'}
-                </h1>
-              </div>
-              <button onClick={closeResumeReview} title="Back to matches" style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32,
-                background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 9,
-                color: 'var(--text-mid)', cursor: 'pointer', flexShrink: 0,
-              }}>
-                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12.5 4L6 8l6.5 4"/></svg>
-              </button>
-            </div>
-            {/*
-              TODO(backend): once GET /api/apply/jobs/{id}/resume,
-              /resume/decision and /resume/approve exist, pass:
-                applyJobId={reviewApp.job_id}
-                initialDoc / initialPatches / requirementClassification from a fetch
-                onApprove={async ({decisions, manualEdits}) => POST .../resume/approve}
-              Until then this renders its built-in mock document so the flow
-              is visually testable end-to-end.
-            */}
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <ResumeReviewPanel applyJobId={reviewApp?.id} />
-            </div>
+          {/* ResumeOptimizer renders its own header (company/role + back), stepper
+              and toolbar, so it fills this area edge-to-edge. */}
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ResumeReviewPanel
+              applyJobId={reviewApp?.id}
+              company={reviewApp.company}
+              role={reviewApp.job_title || reviewApp.title || 'Role'}
+              onClose={closeResumeReview}
+            />
           </div>
         </main>
       ) : (
@@ -2484,7 +2462,8 @@ function AppTabBtn({ label, count, active, onClick }) {
   )
 }
 
-function ResumeReviewPanel({ applyJobId }) {
+function ResumeReviewPanel({ applyJobId, company, role, onClose }) {
+  const { theme, toggleTheme } = useTheme()
   const [state, setState] = useState('loading')   // loading | optimizing | ready | error
   const [data, setData]   = useState(null)
   const [errorMsg, setErrorMsg] = useState('')
@@ -2555,18 +2534,125 @@ function ResumeReviewPanel({ applyJobId }) {
   if (state === 'error') {
     return <PanelMessage color="#c14545">{errorMsg}</PanelMessage>
   }
+  // Map the live API contract into the shape ResumeOptimizer consumes.
+  const optDoc     = apiDocToOptimizer(data.structured_doc)
+  const optPatches = apiPatchesToOptimizer(data.patches, data.structured_doc)
+  const skills     = classificationToSkills(data.requirement_classification)
+  const matchPct   = typeof data.match_score?.percent === 'number'
+    ? data.match_score.percent
+    : (typeof data.match_score === 'number' ? data.match_score : 91)
+
   return (
-    <ResumeEditor
-      applyJobId={applyJobId}
-      initialDoc={data.structured_doc}
-      initialPatches={data.patches}
-      requirementClassification={data.requirement_classification}
-      matchScore={data.match_score}
+    <ResumeOptimizer
+      rootHeight="100%"
+      skipIntro
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      company={company}
+      role={role}
+      initialDoc={optDoc}
+      patches={optPatches}
+      reqSkills={skills.req}
+      prefSkills={skills.pref}
+      matchPercent={matchPct}
       onApprove={handleApprove}
       onDecisionChange={handleDecision}
       onDownload={handleDownload}
+      onClose={onClose}
     />
   )
+}
+
+// ── API → ResumeOptimizer adapters ─────────────────────────────────────────
+// resume_optimizer.py returns structured_doc / patches / requirement_classification.
+// ResumeOptimizer uses a generic sections model, so map between the two while
+// preserving the stable IDs that patches anchor to.
+function apiDocToOptimizer(api) {
+  if (!api) return undefined
+  const h = api.header || {}
+  const contact = [h.phone, h.email, h.linkedin, h.github, h.website, h.location].filter(Boolean).join(' | ')
+  const sections = []
+  if (api.summary) {
+    sections.push({ id: 'summary', title: 'Summary', kind: 'lines', lines: [{ id: 'sum_1', label: '', text: api.summary }] })
+  }
+  if (Array.isArray(api.experience) && api.experience.length) {
+    sections.push({ id: 'exp', title: 'Experience', kind: 'entries', entries: api.experience.map(e => ({
+      id: e.company_id || e.id,
+      head: [e.company, e.title].filter(Boolean).join(' - '),
+      right: e.dates || '',
+      bullets: (e.bullets || []).map(b => ({ id: b.id, text: b.text })),
+    })) })
+  }
+  if (Array.isArray(api.projects) && api.projects.length) {
+    sections.push({ id: 'proj', title: 'Projects', kind: 'entries', entries: api.projects.map(p => ({
+      id: p.company_id || p.id,
+      head: [p.company || p.name || p.title, p.title && p.company ? p.title : null].filter(Boolean).join(' - ') || (p.title || 'Project'),
+      right: p.dates || p.location || '',
+      bullets: (p.bullets || []).map(b => ({ id: b.id, text: b.text })),
+    })) })
+  }
+  if (Array.isArray(api.skills) && api.skills.length) {
+    sections.push({ id: 'skills', title: 'Technical Skills', kind: 'lines', lines: api.skills.map(g => ({
+      id: g.group_id,
+      label: g.group_label || '',
+      text: (g.items || []).map(it => it.text).join(', '),
+    })) })
+  }
+  if (Array.isArray(api.certifications) && api.certifications.length) {
+    sections.push({ id: 'certs', title: 'Certifications', kind: 'lines', lines: api.certifications.map((c, i) => ({
+      id: c.id || `cert_${i}`, label: '', text: c.text || c.name || String(c),
+    })) })
+  }
+  if (Array.isArray(api.education) && api.education.length) {
+    sections.push({ id: 'edu', title: 'Education', kind: 'edu', rows: api.education.map(r => ({
+      id: r.id, school: r.school || '', degree: r.degree || '', right: r.location || '', dates: r.dates || '',
+    })) })
+  }
+  return { header: { name: h.name || '', contact }, sections }
+}
+
+function _skillItemToGroup(api) {
+  const map = {}
+  for (const g of (api?.skills || [])) for (const it of (g.items || [])) map[it.id] = g.group_id
+  return map
+}
+
+function _addedFragment(before, after) {
+  if (!before || !after) return after || ''
+  if (after.startsWith(before)) return after.slice(before.length).trim() || after
+  if (after.endsWith(before))   return after.slice(0, after.length - before.length).trim() || after
+  return after
+}
+
+function apiPatchesToOptimizer(apiPatches, api) {
+  if (!Array.isArray(apiPatches)) return []
+  const itemToGroup = _skillItemToGroup(api)
+  return apiPatches.map(p => {
+    const isReplace = p.operation === 'replace_text'
+    const anchor = (p.position && p.position.startsWith('after:')) ? p.position.slice(6) : ''
+    return {
+      id: p.id,
+      target: itemToGroup[p.target_id] || p.target_id,   // remap skill-item ids → group line id
+      op: isReplace ? 'replace' : 'insert',
+      anchor,
+      text: p.text || '',
+      before: p.before,
+      after: p.after,
+      shown: isReplace ? _addedFragment(p.before, p.after) : (p.text || '').trim(),
+      req: p.requirement_id || '',
+      context: '',
+      reason: p.reason || '',
+    }
+  })
+}
+
+function classificationToSkills(classification) {
+  if (!Array.isArray(classification) || !classification.length) return { req: [], pref: [] }
+  const toChip = c => ({ text: c.requirement, met: c.classification !== 'absent' })
+  return {
+    req:  classification.filter(c => c.importance === 'required').map(toChip),
+    pref: classification.filter(c => c.importance === 'preferred').map(toChip),
+  }
 }
 
 function PanelMessage({ children, color = 'var(--text-dim)' }) {
