@@ -103,13 +103,9 @@ const GLOBAL_CSS = `
   @keyframes rkBlink { 0%, 55% { opacity:1; } 56%, 100% { opacity:0; } }
   @keyframes rkPulse { 0%,100% { opacity:0.35; } 50% { opacity:0.9; } }
   @keyframes rkSweep { 0% { transform:translateX(-100%); } 100% { transform:translateX(260%); } }
-  .rk-edit-field { background:rgba(124,108,240,0.055); box-shadow:inset 0 0 0 1px rgba(124,108,240,0.16); border-radius:3px; transition:background 0.12s, box-shadow 0.12s; -webkit-user-select:text !important; user-select:text !important; cursor:text; }
+  .rk-edit-field { background:rgba(124,108,240,0.055); box-shadow:inset 0 0 0 1px rgba(124,108,240,0.16); border-radius:3px; transition:background 0.12s, box-shadow 0.12s; }
   .rk-edit-field:hover { background:rgba(124,108,240,0.10); }
-  .rk-edit-field:focus { background:#fff; box-shadow:inset 0 0 0 1px rgba(124,108,240,0.35); outline:none; }
-  /* Make the actual character selection unmistakable so it never reads as a
-     whole-line/field highlight. */
-  .rk-edit-field::selection, .rk-edit-field *::selection { background:rgba(124,108,240,0.38); color:#141414; }
-  .rk-edit-field::-moz-selection, .rk-edit-field *::-moz-selection { background:rgba(124,108,240,0.38); color:#141414; }
+  .rk-edit-field:focus { background:#fff; box-shadow:0 0 0 2px #7c6cf0; outline:none; }
   .rk-page { transition: font-size 0.32s cubic-bezier(0.4,0,0.2,1), padding 0.32s cubic-bezier(0.4,0,0.2,1), line-height 0.32s cubic-bezier(0.4,0,0.2,1); }
   .rk-page .rk-fi { transition: padding-bottom 0.32s cubic-bezier(0.4,0,0.2,1); }
   .rk-page .rk-dragrow { transition: line-height 0.32s cubic-bezier(0.4,0,0.2,1); }
@@ -431,6 +427,12 @@ export default class ResumeOptimizer extends React.Component {
       if (!(S.editing || S.coverEditing)) { if (S.selBar) this.setState({ selBar: null, linkMode: false }); return }
       if (S.linkMode) return
       const sel = window.getSelection()
+      console.log('[RACK selection]', {
+        text: sel ? sel.toString() : null,
+        length: sel ? sel.toString().length : 0,
+        collapsed: sel ? sel.isCollapsed : null,
+        rangeCount: sel ? sel.rangeCount : 0,
+      })
       let bar = null, px = null
       if (sel && sel.rangeCount && !sel.isCollapsed) {
         const n = sel.anchorNode
@@ -441,6 +443,8 @@ export default class ResumeOptimizer extends React.Component {
             bar = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top) }
             px = Math.round(parseFloat(getComputedStyle(elp).fontSize) * 10) / 10
           }
+        } else {
+          console.log('[RACK selection] anchor node is NOT inside a .rk-edit-field', elp)
         }
       }
       const prev = S.selBar
@@ -768,9 +772,9 @@ export default class ResumeOptimizer extends React.Component {
       if (sec.kind === 'entries') {
         sec.entries.forEach((ent, ei) => {
           const entInfo = { kind: 'entry', id: ent.id, parentSec: sec.id }
-          push(ent.id + '__h', 'sub', dragRow(entInfo, { display: 'flex', justifyContent: 'space-between', gap: 12, fontWeight: 700 },
-            el('span', { style: { minWidth: 0 } }, field('e:' + ent.id + ':head', ent.head)),
-            el('span', { style: { fontWeight: 400, color: '#444', fontSize: '0.92em', whiteSpace: 'nowrap' } }, field('e:' + ent.id + ':right', ent.right)),
+          push(ent.id + '__h', 'sub', dragRow(entInfo, { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, fontWeight: 700 },
+            el('span', { style: { minWidth: 0, flex: '1 1 auto', overflowWrap: 'break-word' } }, field('e:' + ent.id + ':head', ent.head)),
+            el('span', { style: { fontWeight: 400, color: '#444', fontSize: '0.92em', whiteSpace: 'nowrap', flexShrink: 0 } }, field('e:' + ent.id + ':right', ent.right)),
           ), G_SUB)
           ent.bullets.forEach((b, bi) => {
             const bInfo = { kind: 'bullet', id: b.id, parentSec: sec.id, parentEntry: ent.id }
@@ -792,13 +796,13 @@ export default class ResumeOptimizer extends React.Component {
         sec.rows.forEach((r, ri) => {
           const rInfo = { kind: 'line', id: r.id, parentSec: sec.id }
           push(r.id, 'line', dragRow(rInfo, {},
-            el('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 12, fontWeight: 700 } },
-              el('span', null, field('edu:' + r.id + ':school', r.school)),
-              el('span', { style: { fontWeight: 400, color: '#444', fontSize: '0.92em' } }, field('edu:' + r.id + ':right', r.right)),
+            el('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, fontWeight: 700 } },
+              el('span', { style: { minWidth: 0, flex: '1 1 auto', overflowWrap: 'break-word' } }, field('edu:' + r.id + ':school', r.school)),
+              el('span', { style: { fontWeight: 400, color: '#444', fontSize: '0.92em', whiteSpace: 'nowrap', flexShrink: 0 } }, field('edu:' + r.id + ':right', r.right)),
             ),
-            el('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 12 } },
-              el('span', null, field('edu:' + r.id + ':degree', r.degree)),
-              el('span', { style: { color: '#444', fontSize: '0.92em' } }, field('edu:' + r.id + ':dates', r.dates)),
+            el('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 } },
+              el('span', { style: { minWidth: 0, flex: '1 1 auto', overflowWrap: 'break-word' } }, field('edu:' + r.id + ':degree', r.degree)),
+              el('span', { style: { color: '#444', fontSize: '0.92em', whiteSpace: 'nowrap', flexShrink: 0 } }, field('edu:' + r.id + ':dates', r.dates)),
             ),
           ), ri === sec.rows.length - 1 ? 0 : G_LINE)
         })

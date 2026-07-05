@@ -683,15 +683,53 @@ async def list_review_queue(
     jobs paused at the security-code gate (awaiting_otp).
     """
     current_user = await _require_user(credentials, db)
-    from models.orm import ApplyJob
+    from models.orm import ApplyJob, ResumeOptimization, Resume
     from services.apply_worker import signed_screenshot_url
 
     jrows = list((await db.execute(
         select(ApplyJob).where(
             ApplyJob.user_id == current_user.id,
-            ApplyJob.status.in_(["awaiting_review", "needs_attention", "approved", "replaying", "awaiting_otp"]),
+            # "queued"/"filling" MUST be included — every application starts
+            # in "queued" and stays there through resume optimization until
+            # POST /jobs/{id}/resume/approve kicks Phase 1 fill. Excluding
+            # them meant a page reload (or SSE disconnect) before that point
+            # made the application invisible to the user even though it was
+            # still live in the DB — the row simply never came back from this
+            # endpoint, so "All applications" looked empty and re-clicking
+            # Apply just handed back the same stuck batch.
+            ApplyJob.status.in_([
+                "queued", "filling",
+                "awaiting_review", "needs_attention", "approved", "replaying", "awaiting_otp",
+            ]),
         ).order_by(ApplyJob.created_at.asc())
     )).scalars())
+
+    # Which resume was actually matched/optimized for each job — previously
+    # never surfaced, so every row in "All applications" showed the generic
+    # "Optimized" label instead of which resume that meant. Prefer the
+    # rendered optimized_resume_id (set once approved); fall back to the
+    # source resume used to generate the patches (set as soon as resume_status
+    # reaches "ready", before approval).
+    job_ids = [j.id for j in jrows]
+    resume_name_by_job: dict = {}
+    if job_ids:
+        opt_rows = list((await db.execute(
+            select(ResumeOptimization.apply_job_id,
+                   ResumeOptimization.source_resume_id,
+                   ResumeOptimization.optimized_resume_id)
+            .where(ResumeOptimization.apply_job_id.in_(job_ids))
+        )).all())
+        wanted_resume_ids = {(o.optimized_resume_id or o.source_resume_id) for o in opt_rows}
+        wanted_resume_ids.discard(None)
+        name_by_resume_id = {}
+        if wanted_resume_ids:
+            res_rows = list((await db.execute(
+                select(Resume.id, Resume.display_name).where(Resume.id.in_(wanted_resume_ids))
+            )).all())
+            name_by_resume_id = {r.id: r.display_name for r in res_rows}
+        for o in opt_rows:
+            rid = o.optimized_resume_id or o.source_resume_id
+            resume_name_by_job[o.apply_job_id] = name_by_resume_id.get(rid)
 
     out = []
     for j in jrows:
@@ -714,7 +752,20 @@ async def list_review_queue(
             "company":            j.company,
             "job_url":            j.job_url,
             "status":             j.status,
+            # Already a live column on ApplyJob (see resume/approve + the SSE
+            # stream below) — just wasn't being surfaced here, so a reload
+            # lost the "Optimizing…" / "Optimized" state the live SSE stream
+            # showed. AllApplicationsStrip already reads app.resume_status,
+            # no frontend change needed.
+            "resume_status":      j.resume_status,
+            "resume_name":        resume_name_by_job.get(j.id),
             "filled_count":       j.filled_count,
+            # AppRow computes its timestamp as `app.updated_at || app.created_at`
+            # — this endpoint never sent either, so every row rendered "just now"
+            # regardless of true age. Needed now more than ever since queued/
+            # filling rows (added above) can be genuinely old.
+            "created_at":         j.created_at.isoformat() if j.created_at else None,
+            "updated_at":         j.updated_at.isoformat() if getattr(j, "updated_at", None) else None,
             "validation_errors":  j.validation_errors,
             # Draft shown as readable Q&A — only what was actually filled
             "answers": [

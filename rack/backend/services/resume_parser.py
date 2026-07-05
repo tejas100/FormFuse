@@ -18,7 +18,8 @@ DOCUMENT MODEL (the contract — frontend and backend both key off this):
   "projects":  [ { "project_id": str, "name": str,
                     "bullets": [ { "id": str, "text": str } ] } ],
   "education": [ { "id": str, "school": str, "degree": str, "dates": str } ],
-  "certifications": [ { "id": str, "text": str } ]
+  "certifications": [ { "id": str, "text": str } ],
+  "publications": [ { "id": str, "text": str } ]
 }
 
 Every leaf that can be individually patched (summary, a skill item, a bullet)
@@ -56,17 +57,20 @@ _SECTION_HEADERS = {
     "projects":       ("projects", "personal projects", "selected projects"),
     "education":      ("education",),
     "certifications": ("certifications", "certificates", "licenses"),
+    "publications":   ("publications", "publication", "papers"),
 }
 
 _EMAIL_RE    = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _PHONE_RE    = re.compile(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}")
 _LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/in/[\w-]+", re.I)
 _GITHUB_RE   = re.compile(r"(?:https?://)?(?:www\.)?github\.com/[\w-]+", re.I)
+_DATE_TOKEN = (
+    r"(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*\d{4}"  # "August 2025" / "Aug. 2025"
+    r"|\d{1,2}/\d{4}"                                                          # "08/2025"
+    r"|\d{4})"                                                                 # "2025"
+)
 _DATE_RANGE_RE = re.compile(
-    r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*\d{4}"
-    r"|\d{4})\s*[-–—]\s*"
-    r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s*\d{4}"
-    r"|\d{4}|Present|Current)",
+    rf"({_DATE_TOKEN})\s*[-–—]\s*({_DATE_TOKEN}|Present|Current)",
     re.I,
 )
 
@@ -159,6 +163,7 @@ def _build_from_lines(lines: list[dict]) -> dict:
         "projects": [],
         "education": [],
         "certifications": [],
+        "publications": [],
     }
 
     # Header: first few lines before any recognized section heading
@@ -284,6 +289,21 @@ def _build_from_lines(lines: list[dict]) -> dict:
             doc["certifications"].append({"id": cid, "text": text.strip()[:200]})
             continue
 
+        if current_section == "publications":
+            # A citation is often visually one line in the PDF but wraps
+            # across two physical lines in extraction (title, then venue —
+            # e.g. "...LGBMR" / "Published in IEEE"). Only a bulleted line
+            # (or the very first line of the section) starts a new entry;
+            # anything else is a continuation of the previous one.
+            is_new = bool(re.match(r"^\s*[•▪●\-–\*]\s*", text)) or not doc["publications"]
+            cleaned = re.sub(r"^\s*[•▪●\-–\*]\s*", "", text).strip()
+            if is_new:
+                pid = _stable_id("pub", cleaned, str(len(doc["publications"])))
+                doc["publications"].append({"id": pid, "text": cleaned[:300]})
+            else:
+                doc["publications"][-1]["text"] = (doc["publications"][-1]["text"] + " " + cleaned)[:300]
+            continue
+
     return doc
 
 
@@ -331,7 +351,7 @@ def parse_resume_structured(pdf_bytes: Optional[bytes], full_text: str) -> dict:
                 "bullets": [{"id": f"fallback_{i}", "text": t.strip()}
                             for i, t in enumerate((full_text or "").split("\n")) if t.strip()][:40],
             }],
-            "projects": [], "education": [], "certifications": [],
+            "projects": [], "education": [], "certifications": [], "publications": [],
         }
 
     # Guard: if extraction produced essentially nothing usable, signal it

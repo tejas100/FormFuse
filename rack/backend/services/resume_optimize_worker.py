@@ -199,7 +199,11 @@ async def optimize_batch_resumes(batch_id) -> None:
                 db.add(opt)
                 await db.execute(sa_update(ApplyJob).where(ApplyJob.id == job.id).values(resume_status="ready"))
                 await db.commit()
-                await _broadcast(str(batch_id), {"apply_job_id": str(job.id), "resume_status": "ready"})
+                await _broadcast(str(batch_id), {
+                    "apply_job_id": str(job.id),
+                    "resume_status": "ready",
+                    "resume_name": resume_row.display_name,
+                })
 
             except Exception as e:
                 logger.error(f"[resume_optimize_worker] job {job.id} failed: {e}", exc_info=True)

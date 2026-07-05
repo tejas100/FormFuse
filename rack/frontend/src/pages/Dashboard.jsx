@@ -149,15 +149,37 @@ function CompanyLogo({ company, size = 32, radius = 9, fontSize = 13 }) {
 function statusMeta(status) {
   switch (status) {
     case 'submitted':         return { label: 'Submitted',      color: 'var(--accent3)',  bg: 'rgba(52,211,153,0.12)' }
+    case 'queued':            return { label: 'Queued',         color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
+    case 'filling':           return { label: 'Filling…',       color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
     case 'inflight':          return { label: 'In flight',      color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
     case 'needsyou':          return { label: 'Needs you',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
+    case 'awaiting_review':   return { label: 'Needs you',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
     case 'needs_attention':   return { label: 'Needs you',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
     case 'approved':          return { label: 'Approved',       color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
     case 'replaying':         return { label: 'Applying…',      color: '#60a5fa',         bg: 'rgba(96,165,250,0.12)' }
     case 'awaiting_otp':      return { label: 'Needs OTP',      color: '#f5a623',         bg: 'rgba(245,166,35,0.12)' }
     case 'failed':            return { label: 'Failed',         color: 'var(--danger)',   bg: 'rgba(248,113,113,0.12)' }
+    case 'job_removed':       return { label: 'Job removed',    color: 'var(--danger)',   bg: 'rgba(248,113,113,0.12)' }
     case 'skipped':           return { label: 'Skipped',        color: 'var(--text-dim)', bg: 'var(--chip-bg)' }
     default:                  return { label: status?.replace(/_/g, ' ') || '—', color: 'var(--text-dim)', bg: 'var(--chip-bg)' }
+  }
+}
+
+// Maps a raw ApplyJob.status (11 real values, from models/orm.py's state
+// machine comment) onto the 5 tabs the UI actually shows. Previously
+// filteredApps compared a.status === appsTab directly — but the tabs use
+// bucket ids ('inflight', 'needsyou') that no backend status ever equals,
+// so those two tabs always rendered 0 regardless of what was happening.
+function statusBucket(status) {
+  switch (status) {
+    case 'submitted':                                     return 'submitted'
+    case 'queued': case 'filling': case 'approved': case 'replaying':
+      return 'inflight'
+    case 'awaiting_review': case 'needs_attention': case 'awaiting_otp':
+      return 'needsyou'
+    case 'failed': case 'job_removed':                    return 'failed'
+    case 'skipped':                                       return 'skipped'
+    default:                                              return 'inflight'
   }
 }
 
@@ -1621,13 +1643,26 @@ export default function Dashboard({ onNavigate }) {
       if (!res.ok) throw new Error(data.detail || 'Could not start this application.')
 
       // Idempotent: this job was already applied (prior session) — just reflect
-      // it in the UI. No batch to open, no stream to subscribe.
+      // it in the UI. No batch to open, no stream to subscribe. Surfaced visibly
+      // (not a silent no-op) so a mismatch between "shown as open" and "already
+      // applied in the DB" is obvious instead of looking like a dead button.
       if (data.already_applied) {
+        console.warn('[handleApply] backend reports already_applied for job', jobId, data)
         setAppliedIds(prev => new Set([...prev, jobId]))
         setPendingApplyIds(prev => { const n = new Set(prev); n.delete(jobId); return n })
+        setApplyError('Rack already applied to this job in an earlier session.')
+        setTimeout(() => setApplyError(null), 4500)
         return
       }
       // (data.already_active carries batch_id and flows through the normal path.)
+
+      if (!data.batch_id) {
+        // Defensive: an unexpected response shape (a backend branch we haven't
+        // handled here) must never fail silently the way already_applied used
+        // to. Throw so the catch block below surfaces it as a toast.
+        console.error('[handleApply] unexpected response with no batch_id:', data)
+        throw new Error(data.message || 'Unexpected response starting this application.')
+      }
 
       // create_apply_batch only returns batch_id — fetch the batch to get
       // the actual ApplyJob row (its `id` is what the resume review panel needs to
@@ -1660,7 +1695,7 @@ export default function Dashboard({ onNavigate }) {
         if (!evt.apply_job_id) return
         setAppsData(prev => prev.map(a =>
           (a.id === evt.apply_job_id || a.job_id === jobId)
-            ? { ...a, resume_status: evt.resume_status }
+            ? { ...a, resume_status: evt.resume_status, resume_name: evt.resume_name ?? a.resume_name }
             : a
         ))
       })
@@ -1693,7 +1728,7 @@ export default function Dashboard({ onNavigate }) {
 
   const filteredApps = appsTab === 'all'
     ? appsData
-    : appsData.filter(a => a.status === appsTab)
+    : appsData.filter(a => statusBucket(a.status) === appsTab)
 
   // ── Search ⌘K shortcut ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -2391,7 +2426,7 @@ function AllApplicationsStrip({ apps, allApps, activeTab, tabDefs, onTabChange, 
         {/* Tabs + search row */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '13px 16px', borderBottom: '1px solid var(--border)', overflowX: 'auto', flexWrap: 'nowrap' }}>
           {tabDefs.map(t => {
-            const count = t.id === 'all' ? allApps.length : allApps.filter(a => a.status === t.id).length
+            const count = t.id === 'all' ? allApps.length : allApps.filter(a => statusBucket(a.status) === t.id).length
             const active = activeTab === t.id
             return <AppTabBtn key={t.id} label={t.label} count={count} active={active} onClick={() => onTabChange(t.id)} />
           })}
@@ -2567,6 +2602,82 @@ function ResumeReviewPanel({ applyJobId, company, role, onClose }) {
 // resume_optimizer.py returns structured_doc / patches / requirement_classification.
 // ResumeOptimizer uses a generic sections model, so map between the two while
 // preserving the stable IDs that patches anchor to.
+//
+// resume_parser.py's heading heuristics occasionally garble two things on
+// real resumes (both confirmed on live output, not hypothetical):
+//   1. A trailing date fragment gets left behind on the title/company line
+//      (e.g. head ends in "…Engineer 08/" while `dates` only holds
+//      "2025 – Present") — the row then renders as a two-line title with the
+//      date's tail floating on its own line, overlapping the bullets below.
+//   2. A "Publications" block that sits directly under "Technical Skills" in
+//      the source PDF gets folded into the skills groups with generic,
+//      auto-incremented labels ("Skills 2", "Skills 3", …) instead of being
+//      recognized as its own section.
+// Both are repaired here defensively so the UI never renders the raw parser
+// artifact, regardless of what resume_parser.py hands back. This is a
+// display-layer safety net — the real fix still belongs in
+// resume_parser.py's heading heuristics (tracked separately).
+const _DATE_TAIL_RE = /[\s(,–—-]*\d{1,2}\/\s*$/            // trailing "08/" (or " (08/", " - 08/")
+const _DATE_HEAD_RE = /^\s*\)?\s*\d{4}\s*[-–—]/            // leading "2025 –" / "2025)–"
+function _repairSplitDate(head, right) {
+  let h = (head || '').trim()
+  let r = (right || '').trim()
+  if (!h || !r) return { head: h, right: r }
+  const tail = h.match(_DATE_TAIL_RE)
+  if (tail && (_DATE_HEAD_RE.test(r) || /^present$/i.test(r))) {
+    const monthDay = tail[0].replace(/[^\d/]/g, '')
+    h = h.slice(0, tail.index).trim().replace(/[-–—,(]\s*$/, '').trim()
+    r = `${monthDay}${r.replace(/^\)/, '')}`
+  }
+  return { head: h, right: r }
+}
+
+const _PUB_HINT_RE = /published|proceedings|conference journal|arxiv|doi\.org|\bieee\b|springer|patent/i
+const _GENERIC_SKILL_LABEL_RE = /^skills?\s*\d*$/i
+const _PUB_HEADER_RE = /^publications?:?$/i
+// Splits `api.skills` into real skill groups vs. a stray "Publications"
+// block that got swallowed into generic, auto-numbered "Skills N" groups.
+// Primary signal: a generic-labeled group whose entire text IS the literal
+// header word "Publications" — everything after it that's still
+// generically labeled belongs to that same misfiled run (a real named group
+// like "Cloud" or "Databases & Retrieval" ends the run). Falls back to
+// per-line keyword hints for groups the header-run pass didn't catch.
+function _splitStraySkillGroups(rawGroups) {
+  const groupText = (g) => (g.items || []).map(it => it.text).join(', ')
+  const isGeneric = (g) => _GENERIC_SKILL_LABEL_RE.test((g.group_label || '').trim())
+  const headerIdx = rawGroups.findIndex(g => isGeneric(g) && _PUB_HEADER_RE.test(groupText(g).trim()))
+  let keep = rawGroups
+  let strays = []
+  if (headerIdx !== -1) {
+    let end = headerIdx + 1
+    while (end < rawGroups.length && isGeneric(rawGroups[end])) end++
+    keep = [...rawGroups.slice(0, headerIdx), ...rawGroups.slice(end)]
+    strays = rawGroups.slice(headerIdx + 1, end).map(groupText)
+  }
+  // Safety net: any remaining generic-labeled group that reads like a
+  // publication line even without an adjacent header (e.g. header itself
+  // got dropped entirely rather than mis-filed as its own group).
+  const finalKeep = []
+  for (const g of keep) {
+    if (isGeneric(g) && _PUB_HINT_RE.test(groupText(g))) strays.push(groupText(g))
+    else finalKeep.push(g)
+  }
+  return { keep: finalKeep, strays }
+}
+// Publication lines are often themselves split across a "- title" fragment
+// and a trailing "Published …" fragment (mirrors the bullet-continuation
+// coalescing already used for bullets) — rejoin them into one line each.
+function _coalescePublicationLines(strays) {
+  const out = []
+  for (const raw of strays) {
+    const t = raw.trim()
+    const startsNew = /^[-•]/.test(t) || (out.length === 0)
+    if (startsNew || !out.length) out.push(t.replace(/^[-•]\s*/, ''))
+    else out[out.length - 1] = `${out[out.length - 1]} — ${t}`
+  }
+  return out
+}
+
 function apiDocToOptimizer(api) {
   if (!api) return undefined
   const h = api.header || {}
@@ -2576,36 +2687,57 @@ function apiDocToOptimizer(api) {
     sections.push({ id: 'summary', title: 'Summary', kind: 'lines', lines: [{ id: 'sum_1', label: '', text: api.summary }] })
   }
   if (Array.isArray(api.experience) && api.experience.length) {
-    sections.push({ id: 'exp', title: 'Experience', kind: 'entries', entries: api.experience.map(e => ({
-      id: e.company_id || e.id,
-      head: [e.company, e.title].filter(Boolean).join(' - '),
-      right: e.dates || '',
-      bullets: (e.bullets || []).map(b => ({ id: b.id, text: b.text })),
-    })) })
+    sections.push({ id: 'exp', title: 'Experience', kind: 'entries', entries: api.experience.map((e, i) => {
+      const { head, right } = _repairSplitDate([e.company, e.title].filter(Boolean).join(' - '), e.dates || '')
+      return {
+        id: e.company_id || e.id || `exp_${i}`,
+        head, right,
+        bullets: (e.bullets || []).map((b, j) => ({ id: b.id || `exp_${i}_b${j}`, text: b.text })),
+      }
+    }) })
   }
   if (Array.isArray(api.projects) && api.projects.length) {
-    sections.push({ id: 'proj', title: 'Projects', kind: 'entries', entries: api.projects.map(p => ({
-      id: p.company_id || p.id,
-      head: [p.company || p.name || p.title, p.title && p.company ? p.title : null].filter(Boolean).join(' - ') || (p.title || 'Project'),
-      right: p.dates || p.location || '',
-      bullets: (p.bullets || []).map(b => ({ id: b.id, text: b.text })),
-    })) })
+    sections.push({ id: 'proj', title: 'Projects', kind: 'entries', entries: api.projects.map((p, i) => {
+      const rawHead = [p.company || p.name || p.title, p.title && p.company ? p.title : null].filter(Boolean).join(' - ') || (p.title || 'Project')
+      const { head, right } = _repairSplitDate(rawHead, p.dates || p.location || '')
+      return {
+        id: p.company_id || p.id || `proj_${i}`,
+        head, right,
+        bullets: (p.bullets || []).map((b, j) => ({ id: b.id || `proj_${i}_b${j}`, text: b.text })),
+      }
+    }) })
   }
+  let strayPublicationLines = []
   if (Array.isArray(api.skills) && api.skills.length) {
-    sections.push({ id: 'skills', title: 'Technical Skills', kind: 'lines', lines: api.skills.map(g => ({
-      id: g.group_id,
-      label: g.group_label || '',
-      text: (g.items || []).map(it => it.text).join(', '),
-    })) })
+    const { keep, strays } = _splitStraySkillGroups(api.skills)
+    strayPublicationLines = _coalescePublicationLines(strays)
+    if (keep.length) {
+      sections.push({ id: 'skills', title: 'Technical Skills', kind: 'lines', lines: keep.map((g, i) => ({
+        id: g.group_id || `skillgrp_${i}`,
+        label: g.group_label || '',
+        text: (g.items || []).map(it => it.text).join(', '),
+      })) })
+    }
   }
   if (Array.isArray(api.certifications) && api.certifications.length) {
     sections.push({ id: 'certs', title: 'Certifications', kind: 'lines', lines: api.certifications.map((c, i) => ({
       id: c.id || `cert_${i}`, label: '', text: c.text || c.name || String(c),
     })) })
   }
+  // A real "Publications" block from the API always wins; the recovered
+  // stray lines (see above) only fill in when the parser never produced one.
+  if (Array.isArray(api.publications) && api.publications.length) {
+    sections.push({ id: 'pubs', title: 'Publications', kind: 'lines', lines: api.publications.map((pub, i) => ({
+      id: pub.id || `pub_${i}`, label: '', text: pub.text || pub.name || String(pub),
+    })) })
+  } else if (strayPublicationLines.length) {
+    sections.push({ id: 'pubs', title: 'Publications', kind: 'lines', lines: strayPublicationLines.map((text, i) => ({
+      id: `pub_recovered_${i}`, label: '', text,
+    })) })
+  }
   if (Array.isArray(api.education) && api.education.length) {
-    sections.push({ id: 'edu', title: 'Education', kind: 'edu', rows: api.education.map(r => ({
-      id: r.id, school: r.school || '', degree: r.degree || '', right: r.location || '', dates: r.dates || '',
+    sections.push({ id: 'edu', title: 'Education', kind: 'edu', rows: api.education.map((r, i) => ({
+      id: r.id || `edu_${i}`, school: r.school || '', degree: r.degree || '', right: r.location || '', dates: r.dates || '',
     })) })
   }
   return { header: { name: h.name || '', contact }, sections }
@@ -2682,14 +2814,15 @@ function AnimatedDots() {
 
 function ResumeStatusCell({ app }) {
   const rs = app.resume_status
-  if (!rs) return <>{app.resume_name || '—'}</>
+  const name = app.resume_name
+  if (!rs) return <>{name || '—'}</>
   if (rs === 'pending' || rs === 'optimizing') {
     return <span style={{ display: 'inline-flex', alignItems: 'center' }}>Optimizing<AnimatedDots /></span>
   }
-  if (rs === 'ready')    return <span style={{ color: 'var(--accent-ink)' }}>Optimized</span>
-  if (rs === 'approved') return <span>{app.resume_name || 'Optimized'}</span>
+  if (rs === 'ready')    return <span style={{ color: 'var(--accent-ink)' }}>{name ? `${name} · Optimized` : 'Optimized'}</span>
+  if (rs === 'approved') return <span>{name || 'Optimized'}</span>
   if (rs === 'failed')   return <span style={{ color: '#c14545' }}>Failed</span>
-  return <>{app.resume_name || '—'}</>
+  return <>{name || '—'}</>
 }
 
 function AppRow({ app, last, isNew, onOpen }) {
