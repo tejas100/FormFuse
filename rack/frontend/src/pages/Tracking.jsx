@@ -1754,6 +1754,31 @@ function trkBrandColor(company) {
   return palette[Math.abs(hash) % palette.length];
 }
 
+// Ported from Dashboard.jsx's ResumeTag so the matched-resume pill looks
+// identical on both pages — small pill, document icon + resume name.
+function TrkResumeTag({ name }) {
+  if (!name) return null;
+  return (
+    <span
+      title={`Matched with ${name}`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3.5,
+        fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600,
+        color: 'var(--text-dim)', background: 'var(--chip-bg)',
+        border: '1px solid var(--chip-border)', borderRadius: 20,
+        padding: '2.5px 8px 2.5px 6px',
+        maxWidth: 120, overflow: 'hidden',
+      }}
+    >
+      <svg width={9} height={9} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+        <path d="M4 2h5.5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
+        <path d="M9.5 2v3h3"/>
+      </svg>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+    </span>
+  );
+}
+
 function TrkJobCard({ match, index, isApplied, isPending, isSaved, isNew, onApply, onSave, onViewDetail }) {
   const [hovered, setHovered] = useState(false);
 
@@ -1765,6 +1790,7 @@ function TrkJobCard({ match, index, isApplied, isPending, isSaved, isNew, onAppl
   const skills   = match.matched_skills || [];
   const source   = (match.source || 'greenhouse').toUpperCase();
   const jobUrl   = match.job_url || match.url || null;
+  const resumeName = match.resume_name || match.job_data?.resume_name || null;
   const brand    = trkBrandColor(company);
   const tierLabel = score >= 85 ? 'Strong match' : score >= 70 ? 'Good match' : score >= 55 ? 'Potential' : 'Weak fit';
   const tierColor = score >= 85 ? 'var(--accent3)' : score >= 70 ? 'var(--accent-ink)' : score >= 55 ? '#f5a623' : 'var(--danger)';
@@ -1839,7 +1865,7 @@ function TrkJobCard({ match, index, isApplied, isPending, isSaved, isNew, onAppl
       )}
 
       {/* Top: company + ring */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <CompanyLogo company={company} size={30} radius={8} fontSize={12} />
           <div style={{ minWidth: 0 }}>
@@ -1851,20 +1877,23 @@ function TrkJobCard({ match, index, isApplied, isPending, isSaved, isNew, onAppl
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-          {onSave && (
-            <button onClick={(e) => { e.stopPropagation(); onSave(); }} title={isSaved ? 'Saved' : 'Save'}
-              style={{
-                width: 22, height: 22, borderRadius: 6, border: 'none',
-                background: 'transparent', cursor: 'pointer',
-                color: isSaved ? 'var(--accent)' : 'var(--text-dim)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 12, transition: 'color 0.15s',
-              }}>
-              {isSaved ? '★' : '☆'}
-            </button>
-          )}
-          <TrkMatchRing score={score} size={40} strokeW={3} />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {onSave && (
+              <button onClick={(e) => { e.stopPropagation(); onSave(); }} title={isSaved ? 'Saved' : 'Save'}
+                style={{
+                  width: 22, height: 22, borderRadius: 6, border: 'none',
+                  background: 'transparent', cursor: 'pointer',
+                  color: isSaved ? 'var(--accent)' : 'var(--text-dim)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 12, transition: 'color 0.15s',
+                }}>
+                {isSaved ? '★' : '☆'}
+              </button>
+            )}
+            <TrkMatchRing score={score} size={40} strokeW={3} />
+          </div>
+          {resumeName && <TrkResumeTag name={resumeName} />}
         </div>
       </div>
 
@@ -1976,11 +2005,29 @@ function trkStatusMeta(status) {
   }
 }
 
+// Maps the 11 real ApplyJob.status values onto the 5 UI buckets this strip
+// renders as tabs. Ported from Dashboard.jsx (Session 95) so both pages bucket
+// statuses identically — trkStatusMeta/the tab filter below only understand
+// bucket ids ('inflight', 'needsyou', ...), not raw statuses like 'queued' or
+// 'awaiting_review', so every call site must route through this first.
+function statusBucket(status) {
+  switch (status) {
+    case 'submitted':                                     return 'submitted'
+    case 'queued': case 'filling': case 'approved': case 'replaying':
+      return 'inflight'
+    case 'awaiting_review': case 'needs_attention': case 'awaiting_otp':
+      return 'needsyou'
+    case 'failed': case 'job_removed':                    return 'failed'
+    case 'skipped':                                       return 'skipped'
+    default:                                              return 'inflight'
+  }
+}
+
 function TrkAllApplicationsStrip({ appsData, activeTab, onTabChange, newAppRowIds }) {
   const [searchCo, setSearchCo] = useState('')
   const [hov, setHov] = useState(null)
 
-  const filtered = activeTab === 'all' ? appsData : appsData.filter(a => a.status === activeTab)
+  const filtered = activeTab === 'all' ? appsData : appsData.filter(a => statusBucket(a.status) === activeTab)
   const displayed = searchCo.trim()
     ? filtered.filter(a => (a.company || '').toLowerCase().includes(searchCo.toLowerCase()) || (a.job_title || '').toLowerCase().includes(searchCo.toLowerCase()))
     : filtered
@@ -1995,7 +2042,7 @@ function TrkAllApplicationsStrip({ appsData, activeTab, onTabChange, newAppRowId
         {/* Tabs + search */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '13px 16px', borderBottom: '1px solid var(--border)', overflowX: 'auto', flexWrap: 'nowrap' }}>
           {TRK_APP_TAB_DEFS.map(t => {
-            const count = t.id === 'all' ? appsData.length : appsData.filter(a => a.status === t.id).length
+            const count = t.id === 'all' ? appsData.length : appsData.filter(a => statusBucket(a.status) === t.id).length
             const active = activeTab === t.id
             return (
               <button key={t.id} onClick={() => onTabChange(t.id)} style={{
@@ -2046,7 +2093,7 @@ function TrkAllApplicationsStrip({ appsData, activeTab, onTabChange, newAppRowId
               : 'No applications match this filter.'}
           </div>
         ) : displayed.map((a, i) => {
-          const st = trkStatusMeta(a.status)
+          const st = trkStatusMeta(statusBucket(a.status))
           const isNew = newAppRowIds?.has(a.job_id)
           const isLast = i === displayed.length - 1
           const isHov = hov === i
@@ -2100,6 +2147,7 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
   const reasoning = match.llm_reasoning || match.llm_analysis || '';
   const jobUrl    = match.job_url || match.url || null;
   const jobId     = match.job_id || null;
+  const resumeName = match.resume_name || match.job_data?.resume_name || null;
 
   // ── Fetch full job details from job_pool ──
   const [fullJob, setFullJob]   = useState(null);
@@ -2226,6 +2274,7 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: tierColor, lineHeight: 1 }}>{tierLabel}</div>
               <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2 }}>{score}% match score</div>
+              {resumeName && <div style={{ marginTop: 6 }}><TrkResumeTag name={resumeName} /></div>}
             </div>
             {(skills.length > 0 || missing.length > 0) && (
               <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', maxWidth: 200 }}>
@@ -2324,20 +2373,6 @@ function TrkJobDetailModal({ match, onClose, onApply, isApplied, onSave, isSaved
                 {missing.map((s, i) => (
                   <span key={i} style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: 'rgba(248,113,113,0.08)', color: 'var(--danger)', border: '1px solid rgba(248,113,113,0.18)' }}>✗ {s}</span>
                 ))}
-              </div>
-            </div>
-          )}
-
-          {/* ── Best Matching Resume ── */}
-          {match.resume_name && (
-            <div style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-dim)', margin: '0 0 10px', paddingBottom: 7, borderBottom: '1px solid var(--border)' }}>Best Matching Resume</h3>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface2)' }}>
-                <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="var(--accent-ink)" strokeWidth="1.5" strokeLinecap="round"><rect x="3" y="1.5" width="10" height="13" rx="1.6"/><path d="M6 5h4M6 8h4M6 11h2.5"/></svg>
-                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{match.resume_name}</span>
-                {match.hybrid_score != null && (
-                  <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>hybrid: {match.hybrid_score}</span>
-                )}
               </div>
             </div>
           )}
@@ -2828,6 +2863,26 @@ function AutoMatchesTab({ profile, isPowerUser }) {
       return next;
     });
   };
+
+  // Pulls real application rows (created via Dashboard.jsx's Apply flow, or
+  // any other entry point) from the actual apply pipeline. Without this,
+  // trkAppsData only ever contained whatever handleApplyClick added locally
+  // in the current session — real queued/submitted/etc. applications from
+  // elsewhere never appeared here, and the strip reset to empty on reload.
+  const fetchTrkApps = useCallback(async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${API_BASE}/api/apply/review`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setTrkAppsData(data.jobs || []);
+      }
+    } catch (e) {
+      console.warn("Failed to load applications:", e);
+    }
+  }, []);
+
+  useEffect(() => { fetchTrkApps(); }, [fetchTrkApps]);
 
   const loadMeta = useCallback(async () => {
     try {

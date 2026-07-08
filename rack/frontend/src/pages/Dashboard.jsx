@@ -2790,11 +2790,21 @@ function apiPatchesToOptimizer(apiPatches, api) {
   const itemToGroup = _skillItemToGroup(api)
   return apiPatches.map(p => {
     const isReplace = p.operation === 'replace_text'
-    const anchor = (p.position && p.position.startsWith('after:')) ? p.position.slice(6) : ''
+    // resume_optimize_worker's backend guarantees position is EITHER exactly
+    // "end" OR "after:<verified-present-anchor>" (never anything else — see
+    // resume_optimizer.py's clean_patches: an unresolved anchor degrades to
+    // "end" server-side). atEnd is tracked explicitly rather than encoded as
+    // an empty-string anchor — text.indexOf('') always returns 0 in JS, not
+    // -1, so an empty anchor silently matched "found at the very start" and
+    // caused end-of-field insertions to render prepended (and duplicated,
+    // when two such patches targeted the same bullet).
+    const atEnd = p.position === 'end'
+    const anchor = (!atEnd && p.position && p.position.startsWith('after:')) ? p.position.slice(6) : ''
     return {
       id: p.id,
       target: itemToGroup[p.target_id] || p.target_id,   // remap skill-item ids → group line id
       op: isReplace ? 'replace' : 'insert',
+      atEnd,
       anchor,
       text: p.text || '',
       before: p.before,

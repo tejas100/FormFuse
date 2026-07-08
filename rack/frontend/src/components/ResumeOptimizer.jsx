@@ -235,6 +235,7 @@ I'd love to bring that mix of systems rigor and applied AI experience to Databri
 
 const applyPatch = (text, p) => {
   if (p.op === 'replace') return text.replace(p.before, p.after)
+  if (p.atEnd) return text + p.text
   const i = text.indexOf(p.anchor)
   return i === -1 ? text + p.text : text.slice(0, i + p.anchor.length) + p.text + text.slice(i + p.anchor.length)
 }
@@ -710,6 +711,14 @@ export default class ResumeOptimizer extends React.Component {
       if (!mine.length) return el('span', null, original)
       let segs = [{ text: original, added: null }]
       for (const p of mine) {
+        if (p.op !== 'replace' && p.atEnd) {
+          // True "append to end" — lands after everything built so far and
+          // never re-searches inside existing segments. Searching by anchor
+          // for an end-of-field insert is what caused duplicate/scrambled
+          // text when two such patches targeted the same bullet.
+          segs.push({ text: p.text, added: p })
+          continue
+        }
         const next = []
         for (const seg of segs) {
           if (seg.added) { next.push(seg); continue }
