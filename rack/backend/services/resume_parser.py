@@ -15,12 +15,19 @@ DOCUMENT MODEL (the contract — frontend and backend both key off this):
                     "items": [ { "id": str, "text": str } ] } ],
   "experience":[ { "company_id": str, "company": str, "title": str, "dates": str,
                     "bullets": [ { "id": str, "text": str } ] } ],
-  "projects":  [ { "project_id": str, "name": str,
+  "projects":  [ { "project_id": str, "name": str, "url": str,
                     "bullets": [ { "id": str, "text": str } ] } ],
   "education": [ { "id": str, "school": str, "degree": str, "dates": str } ],
   "certifications": [ { "id": str, "text": str } ],
-  "publications": [ { "id": str, "text": str } ]
+  "publications": [ { "id": str, "text": str, "url": str } ]
 }
+
+`url` fields (header.github, header.website, projects[].url, publications[].url)
+come from the PDF's real hyperlink annotations, not text matching — a resume
+commonly shows a shortened anchor label ("github/user", "portfolio", a paper
+title) whose visible text is not itself a URL, so no regex over the text
+stream can ever recover the destination. Empty string if the PDF has no
+matching annotation there.
 
 Every leaf that can be individually patched (summary, a skill item, a bullet)
 carries a stable `id`. IDs are deterministic (slug of company/section + index)
@@ -73,6 +80,10 @@ _DATE_RANGE_RE = re.compile(
     rf"({_DATE_TOKEN})\s*[-–—]\s*({_DATE_TOKEN}|Present|Current)",
     re.I,
 )
+_DEGREE_RE = re.compile(
+    r"\b(bachelor|master|b\.?s\.?|m\.?s\.?|ph\.?d\.?|associate|mba|b\.?a\.?|m\.?a\.?)\b",
+    re.I,
+)
 
 
 def _slug(text: str, maxlen: int = 24) -> str:
@@ -99,10 +110,58 @@ def _classify_header_section(line: str) -> Optional[str]:
 
 # ── PyMuPDF primary path ─────────────────────────────────────────────────────
 
+def _extract_link_annotations(doc) -> list[dict]:
+    """
+    Every clickable URI annotation in the PDF: [{"uri", "rect", "page"}].
+    This is the ONLY way to recover a hyperlink's real destination when the
+    visible anchor text is a shortened label ("portfolio", "github/user", a
+    paper title) rather than the URL itself — the destination isn't in the
+    text stream at all in that case, so no amount of regex tuning over
+    extracted text can find it. PyMuPDF exposes it separately, per-page,
+    keyed by the on-page rectangle the link is clickable within.
+    """
+    out = []
+    for page_idx, page in enumerate(doc):
+        try:
+            for link in page.get_links():
+                uri, rect = link.get("uri"), link.get("from")
+                if uri and rect:
+                    out.append({"uri": uri, "rect": tuple(rect), "page": page_idx})
+        except Exception:
+            continue
+    return out
+
+
+def _overlap_ratio(line_bbox: tuple, link_rect: tuple) -> float:
+    """Fraction of the link's OWN area that falls inside line_bbox. Using the
+    link's own area (not the line's) as the denominator matters when a line
+    is much wider than the link inside it (e.g. a project title line where
+    the link only covers one word) — a small link fully inside a big line
+    should still score ~1.0, not get diluted by the line's extra width."""
+    lx0, ly0, lx1, ly1 = line_bbox
+    rx0, ry0, rx1, ry1 = link_rect
+    ix0, iy0 = max(lx0, rx0), max(ly0, ry0)
+    ix1, iy1 = min(lx1, rx1), min(ly1, ry1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    inter_area = (ix1 - ix0) * (iy1 - iy0)
+    link_area = max((rx1 - rx0) * (ry1 - ry0), 1e-6)
+    return inter_area / link_area
+
+
+_MIN_LINK_OVERLAP = 0.5  # a link counts as "on this line" only if most of its own box is inside it
+
+
+def _union_bbox(boxes: list[tuple]) -> tuple:
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
 def _extract_blocks_pymupdf(pdf_bytes: bytes) -> Optional[list[dict]]:
     """
-    Returns a flat list of {"text": str, "size": float, "bold": bool, "page": int}
-    in reading order, or None if PyMuPDF isn't available / extraction is too thin.
+    Returns a flat list of {"text": str, "size": float, "bold": bool,
+    "page": int, "link_uris": list[str]} in reading order, or None if
+    PyMuPDF isn't available / extraction is too thin.
     """
     try:
         import fitz  # PyMuPDF
@@ -115,6 +174,8 @@ def _extract_blocks_pymupdf(pdf_bytes: bytes) -> Optional[list[dict]]:
     except Exception as e:
         logger.warning(f"[resume_parser] PyMuPDF failed to open PDF: {e}")
         return None
+
+    link_annotations = _extract_link_annotations(doc)
 
     lines: list[dict] = []
     for page_idx, page in enumerate(doc):
@@ -135,7 +196,15 @@ def _extract_blocks_pymupdf(pdf_bytes: bytes) -> Optional[list[dict]]:
                 size = round(rep.get("size", 10.0), 1)
                 font = (rep.get("font") or "").lower()
                 bold = "bold" in font or bool(rep.get("flags", 0) & 2**4)
-                lines.append({"text": text, "size": size, "bold": bold, "page": page_idx})
+                boxes = [s["bbox"] for s in spans if s.get("bbox")]
+                link_uris = []
+                if boxes:
+                    line_bbox = _union_bbox(boxes)
+                    link_uris = [a["uri"] for a in link_annotations
+                                 if a["page"] == page_idx
+                                 and _overlap_ratio(line_bbox, a["rect"]) >= _MIN_LINK_OVERLAP]
+                lines.append({"text": text, "size": size, "bold": bold, "page": page_idx,
+                              "link_uris": link_uris})
 
     doc.close()
     if len(lines) < 8:
@@ -148,6 +217,37 @@ def _split_bullets(block_text: str) -> list[str]:
     """A bullet 'block' from the regex fallback may contain multiple bullets glued together."""
     parts = re.split(r"(?:^|\n)\s*[•▪●\-–\*]\s+", block_text)
     return [p.strip() for p in parts if p.strip()]
+
+
+def _split_skill_items(text: str) -> list[str]:
+    """
+    Split a skills line on commas/semicolons — but never inside parentheses
+    or brackets, so "Azure (AI Foundry, AI Search, OneLake)" stays one item
+    instead of shattering into three. A naive re.split(",") has no concept
+    of bracket depth; this walks the string tracking it directly.
+    """
+    items: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch in "([":
+            depth += 1
+            buf.append(ch)
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch in ",;" and depth == 0:
+            items.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        items.append("".join(buf).strip())
+    # A trailing Oxford "and"/"or" survives the comma split as its own
+    # fragment's prefix ("..., and Function Calling") — strip it, it's list
+    # grammar, not part of the skill name.
+    cleaned = [re.sub(r"^(?:and|or)\s+", "", i, flags=re.I).strip() for i in items]
+    return [i for i in cleaned if i]
 
 
 # ── Structure builder — works from either extraction path ──────────────────
@@ -169,11 +269,13 @@ def _build_from_lines(lines: list[dict]) -> dict:
     # Header: first few lines before any recognized section heading
     body_start = 0
     header_lines = []
+    header_line_dicts = []
     for i, ln in enumerate(lines[:12]):
         if _classify_header_section(ln["text"]):
             body_start = i
             break
         header_lines.append(ln["text"])
+        header_line_dicts.append(ln)
         body_start = i + 1
 
     header_blob = " | ".join(header_lines)
@@ -188,10 +290,31 @@ def _build_from_lines(lines: list[dict]) -> dict:
     doc["header"]["linkedin"] = li.group(0) if li else ""
     doc["header"]["github"]   = gh.group(0) if gh else ""
 
+    # Enrich/override from real hyperlink annotations. A header often shows
+    # a shortened anchor label ("github/user" with no ".com", or just the
+    # bare word "portfolio") — the regexes above can miss or under-resolve
+    # those, but the PDF's actual link target is unambiguous when present,
+    # so it wins over a text-regex guess (or fills in what the regex found
+    # nothing for, for linkedin/email which the regex already handles well).
+    header_uris = [u for hl in header_line_dicts for u in hl.get("link_uris", [])]
+    for uri in header_uris:
+        ul = uri.lower()
+        if ul.startswith("mailto:"):
+            continue
+        elif "linkedin.com" in ul:
+            doc["header"]["linkedin"] = doc["header"]["linkedin"] or uri
+        elif "github.com" in ul:
+            doc["header"]["github"] = uri
+        elif not doc["header"]["website"]:
+            doc["header"]["website"] = uri
+
     # Walk remaining lines, tracking current section
     current_section = None
     current_company = None      # dict ref into doc["experience"]
-    current_project = None
+    current_project = None      # dict ref into doc["projects"]
+    current_skills_group = None # dict ref into doc["skills"]
+    current_skills_raw = ""     # un-split accumulated text for that group
+    current_edu = None          # dict ref into doc["education"]
     skills_group_counter = 0
 
     for ln in lines[body_start:]:
@@ -204,6 +327,9 @@ def _build_from_lines(lines: list[dict]) -> dict:
             current_section = sec
             current_company = None
             current_project = None
+            current_skills_group = None
+            current_skills_raw = ""
+            current_edu = None
             continue
 
         if current_section == "summary":
@@ -218,36 +344,75 @@ def _build_from_lines(lines: list[dict]) -> dict:
             m = re.match(r"^([A-Za-z /&]{2,30}):\s*(.+)$", text)
             if m:
                 group_label = m.group(1).strip()
-                items_text = m.group(2)
+                group_id = _stable_id("skills", group_label)
+                current_skills_group = {"group_id": group_id, "group_label": group_label, "items": []}
+                current_skills_raw = m.group(2)
+                doc["skills"].append(current_skills_group)
+            elif current_skills_group is not None:
+                # No "Label:" prefix, but a group is already open — the PDF
+                # wrapped this group's item list onto a second visual line.
+                # It can even split mid-term ("Agentic" / "RAG" → "Agentic
+                # RAG"), which is exactly why this joins the RAW text and
+                # re-splits the whole thing below, rather than appending a
+                # separately-split item list.
+                current_skills_raw += " " + text
             else:
                 skills_group_counter += 1
                 group_label = f"Skills {skills_group_counter}"
-                items_text = text
-            group_id = _stable_id("skills", group_label)
-            items = [i.strip() for i in re.split(r",|;", items_text) if i.strip()]
-            doc["skills"].append({
-                "group_id": group_id,
-                "group_label": group_label,
-                "items": [
-                    {"id": _stable_id(group_id, item, str(idx)), "text": item}
-                    for idx, item in enumerate(items)
-                ],
-            })
+                group_id = _stable_id("skills", group_label)
+                current_skills_group = {"group_id": group_id, "group_label": group_label, "items": []}
+                current_skills_raw = text
+                doc["skills"].append(current_skills_group)
+
+            current_skills_group["items"] = [
+                {"id": _stable_id(current_skills_group["group_id"], item, str(idx)), "text": item}
+                for idx, item in enumerate(_split_skill_items(current_skills_raw))
+            ]
             continue
 
         if current_section == "experience":
-            is_bullet = bool(re.match(r"^\s*[•▪●\-–\*]\s+", text)) or (
-                current_company is not None and not _DATE_RANGE_RE.search(text) and not ln["bold"]
-            )
-            if not is_bullet or current_company is None:
-                # New company/title line — bold lines or lines with a date range
-                # that aren't clearly a bullet start a new experience entry
-                dates_m = _DATE_RANGE_RE.search(text)
-                dates = f"{dates_m.group(1)} - {dates_m.group(2)}" if dates_m else ""
-                # "Company | Title" or "Title, Company" — best-effort split
+            has_marker = bool(re.match(r"^\s*[•▪●\-–\*]\s+", text))
+            date_m = _DATE_RANGE_RE.search(text)
+            is_date_only = bool(date_m) and not _DATE_RANGE_RE.sub("", text).strip(" |,-–")
+
+            if has_marker:
+                # An explicit new bullet.
+                if current_company is None:
+                    company_id = _stable_id("exp", "unlabeled", str(len(doc["experience"])))
+                    current_company = {"company_id": company_id, "company": "", "title": "",
+                                        "dates": "", "bullets": []}
+                    doc["experience"].append(current_company)
+                for b in _split_bullets(text) or [re.sub(r"^\s*[•▪●\-–\*]\s+", "", text)]:
+                    bid = _stable_id(current_company["company_id"], "b", str(len(current_company["bullets"])))
+                    current_company["bullets"].append({"id": bid, "text": b})
+
+            elif is_date_only and current_company is not None \
+                    and not current_company["bullets"] and not current_company["dates"]:
+                # A standalone "MM/YYYY – Present" line right after a company/
+                # title header with nothing else yet — PDF rendered the dates
+                # as their own line (common when they're right-aligned).
+                # This completes that same entry; it isn't a new job.
+                current_company["dates"] = f"{date_m.group(1)} - {date_m.group(2)}"
+
+            elif current_company is not None and not ln["bold"] and not date_m:
+                # No marker, not a header — this is a PDF line-wrap. If a
+                # bullet is already open, it's that bullet's second visual
+                # line; otherwise it's the first (unmarked) bullet content.
+                if current_company["bullets"]:
+                    current_company["bullets"][-1]["text"] += " " + text
+                else:
+                    bid = _stable_id(current_company["company_id"], "b", "0")
+                    current_company["bullets"].append({"id": bid, "text": text})
+
+            else:
+                # A genuine new company/title header.
+                dates = f"{date_m.group(1)} - {date_m.group(2)}" if date_m else ""
                 head = _DATE_RANGE_RE.sub("", text).strip(" |,-–")
+                sep_m = re.search(r"\s[-–—]\s", head)
                 if "|" in head:
                     company, _, title = head.partition("|")
+                elif sep_m:
+                    company, title = head[:sep_m.start()], head[sep_m.end():]
                 else:
                     company, title = head, ""
                 company_id = _stable_id("exp", company.strip(), str(len(doc["experience"])))
@@ -259,34 +424,71 @@ def _build_from_lines(lines: list[dict]) -> dict:
                     "bullets": [],
                 }
                 doc["experience"].append(current_company)
-            else:
-                for b in _split_bullets(text) or [re.sub(r"^\s*[•▪●\-–\*]\s+", "", text)]:
-                    bid = _stable_id(current_company["company_id"], "b", str(len(current_company["bullets"])))
-                    current_company["bullets"].append({"id": bid, "text": b})
             continue
 
         if current_section == "projects":
-            is_bullet = bool(re.match(r"^\s*[•▪●\-–\*]\s+", text))
-            if not is_bullet or current_project is None:
-                pid = _stable_id("proj", text.strip(), str(len(doc["projects"])))
-                current_project = {"project_id": pid, "name": text.strip()[:100], "bullets": []}
-                doc["projects"].append(current_project)
-            else:
+            has_marker = bool(re.match(r"^\s*[•▪●\-–\*]\s+", text))
+            line_uri = next((u for u in ln.get("link_uris", []) if not u.lower().startswith("mailto:")), None)
+
+            if has_marker:
+                if current_project is None:
+                    pid = _stable_id("proj", "unlabeled", str(len(doc["projects"])))
+                    current_project = {"project_id": pid, "name": "", "url": "", "bullets": []}
+                    doc["projects"].append(current_project)
                 for b in _split_bullets(text) or [re.sub(r"^\s*[•▪●\-–\*]\s+", "", text)]:
                     bid = _stable_id(current_project["project_id"], "b", str(len(current_project["bullets"])))
                     current_project["bullets"].append({"id": bid, "text": b})
+
+            elif current_project is not None and not ln["bold"] and current_project["bullets"]:
+                # No marker, not a header — the last bullet's PDF line wrapped.
+                current_project["bullets"][-1]["text"] += " " + text
+
+            elif current_project is not None and not ln["bold"] and not current_project["bullets"]:
+                # No marker, no bullets yet — this continues the project's own
+                # name/subtitle (e.g. a location line right under the title),
+                # not a brand new project.
+                current_project["name"] = (current_project["name"] + " · " + text).strip(" ·")
+
+            else:
+                # A genuine new project header (bold, or nothing open yet).
+                pid = _stable_id("proj", text.strip(), str(len(doc["projects"])))
+                current_project = {"project_id": pid, "name": text.strip()[:100], "url": "", "bullets": []}
+                doc["projects"].append(current_project)
+
+            if line_uri and current_project is not None and not current_project["url"]:
+                current_project["url"] = line_uri
             continue
 
         if current_section == "education":
-            eid = _stable_id("edu", text.strip(), str(len(doc["education"])))
             dates_m = _DATE_RANGE_RE.search(text)
-            dates = f"{dates_m.group(1)} - {dates_m.group(2)}" if dates_m else ""
-            doc["education"].append({"id": eid, "school": text.strip()[:120], "degree": "", "dates": dates})
+            if ln["bold"] or current_edu is None:
+                # A new institution entry — bold lines are how this resume
+                # (and most others) render the school name.
+                eid = _stable_id("edu", text.strip(), str(len(doc["education"])))
+                current_edu = {"id": eid, "school": text.strip()[:120], "degree": "", "dates": ""}
+                doc["education"].append(current_edu)
+                if dates_m:
+                    current_edu["dates"] = f"{dates_m.group(1)} - {dates_m.group(2)}"
+            elif dates_m:
+                current_edu["dates"] = f"{dates_m.group(1)} - {dates_m.group(2)}"
+            elif _DEGREE_RE.search(text) and not current_edu["degree"]:
+                current_edu["degree"] = text.strip()[:120]
+            else:
+                # Location or other detail line under the same institution.
+                current_edu["school"] = (current_edu["school"] + " — " + text.strip())[:160]
             continue
 
         if current_section == "certifications":
-            cid = _stable_id("cert", text.strip(), str(len(doc["certifications"])))
-            doc["certifications"].append({"id": cid, "text": text.strip()[:200]})
+            # Same wrap-continuation pattern already used for publications below —
+            # a bulleted line (or the section's first line) starts a new
+            # certification; anything else continues the previous one.
+            is_new = bool(re.match(r"^\s*[•▪●\-–\*]\s*", text)) or not doc["certifications"]
+            cleaned = re.sub(r"^\s*[•▪●\-–\*]\s*", "", text).strip()
+            if is_new:
+                cid = _stable_id("cert", cleaned, str(len(doc["certifications"])))
+                doc["certifications"].append({"id": cid, "text": cleaned[:200]})
+            else:
+                doc["certifications"][-1]["text"] = (doc["certifications"][-1]["text"] + " " + cleaned)[:200]
             continue
 
         if current_section == "publications":
@@ -297,11 +499,14 @@ def _build_from_lines(lines: list[dict]) -> dict:
             # anything else is a continuation of the previous one.
             is_new = bool(re.match(r"^\s*[•▪●\-–\*]\s*", text)) or not doc["publications"]
             cleaned = re.sub(r"^\s*[•▪●\-–\*]\s*", "", text).strip()
+            line_uri = next((u for u in ln.get("link_uris", []) if not u.lower().startswith("mailto:")), None)
             if is_new:
                 pid = _stable_id("pub", cleaned, str(len(doc["publications"])))
-                doc["publications"].append({"id": pid, "text": cleaned[:300]})
+                doc["publications"].append({"id": pid, "text": cleaned[:300], "url": ""})
             else:
                 doc["publications"][-1]["text"] = (doc["publications"][-1]["text"] + " " + cleaned)[:300]
+            if line_uri and doc["publications"] and not doc["publications"][-1]["url"]:
+                doc["publications"][-1]["url"] = line_uri
             continue
 
     return doc

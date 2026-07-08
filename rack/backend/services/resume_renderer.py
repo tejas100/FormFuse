@@ -133,6 +133,9 @@ def build_final_document(structured_doc: dict, patches: list, decisions: dict, m
         e["school"] = field(f"edu:{e['id']}:school", e.get("school", ""))
         e["dates"]  = field(f"edu:{e['id']}:dates", e.get("dates", ""))
 
+    for pub in doc.get("publications", []) or []:
+        pub["text"] = field(f"pub:{pub['id']}:text", pub.get("text", ""))
+
     return doc
 
 
@@ -168,13 +171,19 @@ class _ResumePDF(FPDF):
     def bullet(self, text: str):
         self.set_font(_FONT, "", 9.5)
         self.set_text_color(20, 20, 20)
-        x0 = self.get_x()
-        self.set_x(x0 + 4)
+        # Anchor to the page's actual left margin, not self.get_x() — fpdf2's
+        # multi_cell() leaves the cursor near the RIGHT margin after drawing a
+        # wrapped cell, not back at the left. Reading get_x() here (the
+        # original bug) meant every bullet after the first one in a section
+        # inherited that stale position and rendered squeezed into a sliver
+        # of space at the page edge instead of the full text width.
+        self.set_x(_PAGE_MARGIN + 4)
         self.multi_cell(self.w - 2 * _PAGE_MARGIN - 4, 4.6, f"- {_sanitize(text)}", align="L")
 
     def plain(self, text: str):
         self.set_font(_FONT, "", 9.5)
         self.set_text_color(20, 20, 20)
+        self.set_x(_PAGE_MARGIN)  # same cursor hazard as bullet() above
         self.multi_cell(self.w - 2 * _PAGE_MARGIN, 4.6, _sanitize(text), align="L")
 
 
@@ -227,7 +236,9 @@ def render_resume_pdf(structured_doc: dict, patches: list, decisions: dict, manu
     if final_doc.get("projects"):
         pdf.section_title("Projects")
         for p in final_doc["projects"]:
-            pdf.row(p.get("name", ""), p.get("dates", ""))
+            # Projects have no "dates" field in the doc model — show the
+            # project's real URL in that slot instead when one was recovered.
+            pdf.row(p.get("name", ""), p.get("dates") or p.get("url", ""))
             for b in p.get("bullets", []):
                 pdf.bullet(b["text"])
             pdf.ln(1.5)
@@ -241,5 +252,13 @@ def render_resume_pdf(structured_doc: dict, patches: list, decisions: dict, manu
         pdf.section_title("Certifications")
         for c in final_doc["certifications"]:
             pdf.bullet(c["text"])
+
+    if final_doc.get("publications"):
+        pdf.section_title("Publications")
+        for p in final_doc["publications"]:
+            text = p.get("text", "")
+            if p.get("url"):
+                text = f"{text} ({p['url']})"
+            pdf.bullet(text)
 
     return bytes(pdf.output())
