@@ -249,6 +249,29 @@ function MatchRing({ score, size = 52, strokeW = 3.5 }) {
   )
 }
 
+function ResumeTag({ name }) {
+  if (!name) return null
+  return (
+    <span
+      title={`Matched with ${name}`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3.5,
+        fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600,
+        color: 'var(--text-dim)', background: 'var(--chip-bg)',
+        border: '1px solid var(--chip-border)', borderRadius: 20,
+        padding: '2.5px 8px 2.5px 6px',
+        maxWidth: 120, overflow: 'hidden',
+      }}
+    >
+      <svg width={9} height={9} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+        <path d="M4 2h5.5l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/>
+        <path d="M9.5 2v3h3"/>
+      </svg>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+    </span>
+  )
+}
+
 function SkeletonCard() {
   return (
     <div style={{
@@ -275,6 +298,7 @@ function JobCard({ job, appliedIds, pendingApplyIds, passedIds, onApply, onPass,
   const posted   = job.posted_at  || job.matched_at
   const skills   = job.matched_skills || jd.skills || []
   const source   = (job.source || jd.source || 'greenhouse').toUpperCase()
+  const resumeName = job.resume_name || jd.resume_name || null
   const jobId    = job.job_id || job.id
   const isApplied = appliedIds.has(jobId)
   const isPending = pendingApplyIds?.has(jobId)
@@ -307,7 +331,7 @@ function JobCard({ job, appliedIds, pendingApplyIds, passedIds, onApply, onPass,
       onMouseLeave={() => setHovered(false)}
     >
       {/* Top row — logo + score ring side by side */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
           <CompanyLogo company={company} size={32} radius={9} fontSize={13} />
           <div style={{ minWidth: 0 }}>
@@ -319,7 +343,10 @@ function JobCard({ job, appliedIds, pendingApplyIds, passedIds, onApply, onPass,
             </div>
           </div>
         </div>
-        <MatchRing score={score} size={42} strokeW={3} />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, flexShrink: 0 }}>
+          <MatchRing score={score} size={42} strokeW={3} />
+          {resumeName && <ResumeTag name={resumeName} />}
+        </div>
       </div>
 
       {/* Title */}
@@ -472,6 +499,7 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
   const missing    = job?.missing_skills || []
   const source     = (job?.source || jd0.source || 'greenhouse').toUpperCase()
   const jobId      = job?.job_id || job?.id
+  const resumeName = job?.resume_name || jd0.resume_name || null
   const isApplied  = appliedIds?.has(jobId)
   const brand      = brandColor(company)
   const { label: tierLabel, color: tierColor } = tierMeta(score)
@@ -623,6 +651,7 @@ function JobDetailPanel({ job, onClose, onApply, appliedIds }) {
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: tierColor, lineHeight: 1 }}>{tierLabel}</div>
               <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginTop: 2 }}>{score}% match score</div>
+              {resumeName && <div style={{ marginTop: 6 }}><ResumeTag name={resumeName} /></div>}
             </div>
             {skills.length > 0 && (
               <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', maxWidth: 220 }}>

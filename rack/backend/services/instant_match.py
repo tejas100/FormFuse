@@ -13,11 +13,12 @@ Design constraints:
   - Results get promoted to llm_scored=TRUE automatically on next scheduled run.
 
 Over-fetch formula (ensures merged pool always has ≥50 unique jobs after dedup):
-  per_resume_cap = ceil(50 / n_resumes) + 25, floor of 50
-  1 resume → 100 candidates
-  2 resumes → 75 per resume
-  3 resumes → 42+25=67 → 67 per resume
-  5 resumes → 35 per resume
+  per_resume_cap = max(ceil(50 / n_resumes) + 25, 50)
+  1 resume  → 75 candidates
+  2 resumes → 50 per resume (floor — ceil(25)+25=50)
+  3 resumes → 50 per resume (floor — ceil(16.7)+25=42, floored up to 50)
+  5 resumes → 50 per resume (floor — ceil(10)+25=35, floored up to 50)
+  In practice the floor dominates for every n≥2; only n=1 ever exceeds it.
 
 Score in auto_match_results for instant-match rows:
   semantic_score (0–100) — 1 - cosine_distance, rescaled.
@@ -265,16 +266,17 @@ async def run_instant_match(user_id: str, db) -> dict:
                 score=entry["score"],
                 posted_at=entry["posted_at"],
                 matched_at=now,
+                recommended_resume_id=entry["resume_id"],
                 # llm_scored=False — instant match, no LLM
-                # recommended_resume_id — best resume for this job
             )
             .on_conflict_do_update(
                 constraint="uq_auto_match_user_job",
                 set_={
-                    "job_data":   entry["job_data"],
-                    "score":      entry["score"],
-                    "posted_at":  entry["posted_at"],
-                    "matched_at": now,
+                    "job_data":              entry["job_data"],
+                    "score":                 entry["score"],
+                    "posted_at":             entry["posted_at"],
+                    "matched_at":            now,
+                    "recommended_resume_id": entry["resume_id"],
                 },
                 # Only overwrite rows that haven't been LLM-scored yet.
                 # Rows with llm_scored=TRUE came from the full pipeline and are

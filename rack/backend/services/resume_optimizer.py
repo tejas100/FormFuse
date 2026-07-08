@@ -173,6 +173,61 @@ async def _call_llm(system: str, user: str) -> dict:
         raise HTTPException(status_code=422, detail="Optimizer returned malformed response.")
 
 
+_EXTRACT_SYSTEM_PROMPT = """You extract structured skill requirements from a job description.
+Return ONLY valid JSON, no markdown, no commentary, matching exactly:
+{
+  "required_skills": ["skill1", "skill2", ...],
+  "preferred_skills": ["skill1", "skill2", ...]
+}
+
+Rules:
+- required_skills: skills/tools/technologies stated as required, must-have, or minimum qualifications.
+- preferred_skills: skills stated as nice-to-have, preferred, bonus, or "a plus".
+- Use short skill names as they'd appear on a resume (e.g. "PySpark", not "experience with PySpark").
+- Only classify as required if the JD language is unambiguous ("must have", "required", "X+ years of").
+  If genuinely ambiguous, prefer preferred over required.
+- Do not invent skills that aren't mentioned in the text.
+- Cap each list at 12 items. Prioritize specific technical skills over generic ones
+  (e.g. skip "communication skills", keep "Kubernetes").
+"""
+
+
+async def extract_jd_requirements(jd_text: str) -> dict:
+    """
+    Call-time extraction of required/preferred skills from raw JD text.
+
+    job_pool has no required_skills/preferred_skills columns, so
+    generate_resume_patches() has no per-job signal to work from unless
+    something recovers it first. This is that step — one LLM call per
+    apply-click, reusing _call_llm so it shares the same httpx/JSON-cleanup
+    path as generate_resume_patches(). Fails soft: any LLM error returns
+    empty lists rather than raising, so a flaky extraction call degrades to
+    today's behavior (generic patches) instead of failing the whole job.
+    """
+    if not jd_text or not jd_text.strip():
+        return {"required_skills": [], "preferred_skills": []}
+
+    user_message = f"JOB DESCRIPTION:\n{jd_text[:4000]}"
+
+    try:
+        result = await _call_llm(_EXTRACT_SYSTEM_PROMPT, user_message)
+    except HTTPException as e:
+        logger.warning(f"[optimizer] requirement extraction failed, continuing with empty lists: {e.detail}")
+        return {"required_skills": [], "preferred_skills": []}
+
+    required = result.get("required_skills", [])
+    preferred = result.get("preferred_skills", [])
+    if not isinstance(required, list):
+        required = []
+    if not isinstance(preferred, list):
+        preferred = []
+
+    required = [str(s).strip() for s in required if str(s).strip()][:12]
+    preferred = [str(s).strip() for s in preferred if str(s).strip()][:12]
+
+    return {"required_skills": required, "preferred_skills": preferred}
+
+
 def _collect_valid_ids(doc: dict) -> set[str]:
     ids = set()
     if doc.get("summary"):

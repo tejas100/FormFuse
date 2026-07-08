@@ -147,7 +147,7 @@ async def _get_structured_doc(resume_row, db) -> dict:
 async def optimize_batch_resumes(batch_id) -> None:
     """Background task — kicked from routers/apply.py's create_apply_batch() via asyncio.create_task()."""
     from models.orm import ApplyBatch, ApplyJob, ResumeOptimization
-    from services.resume_optimizer import generate_resume_patches
+    from services.resume_optimizer import generate_resume_patches, extract_jd_requirements
 
     async with AsyncSessionLocal() as db:
         batch = (await db.execute(select(ApplyBatch).where(ApplyBatch.id == batch_id))).scalar_one_or_none()
@@ -179,8 +179,13 @@ async def optimize_batch_resumes(batch_id) -> None:
 
                 jd = _fetch_job_description(job.job_id) if job.job_id else {}
                 jd_text = jd.get("description_text") or jd.get("description") or ""
-                required_skills = jd.get("required_skills") or []
-                preferred_skills = jd.get("preferred_skills") or []
+
+                # job_pool has no required_skills/preferred_skills columns — extract
+                # them from jd_text at call time instead of reading dead keys that
+                # always returned [] (see extract_jd_requirements docstring).
+                extracted = await extract_jd_requirements(jd_text)
+                required_skills = extracted["required_skills"]
+                preferred_skills = extracted["preferred_skills"]
 
                 result = await generate_resume_patches(structured_doc, jd_text, required_skills, preferred_skills)
 
