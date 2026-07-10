@@ -11,11 +11,31 @@ Flow per job in the batch:
   1. Resolve resume: AutoMatchResult.recommended_resume_id (per-job best fit)
      > batch.resume_id > most-recent active resume
   2. Parse (or reuse resumes.structured_json cache) the structured document
-  3. Fetch JD text from job_pool (raw psycopg2 — job_pool is NEVER via ORM,
-     per the standing architectural invariant)
-  4. Call resume_optimizer.generate_resume_patches()
-  5. Persist a ResumeOptimization row, flip ApplyJob.resume_status
-  6. Broadcast the status change to any open SSE stream for this batch
+  3. Read the user's optimize_mode ("off"|"honest"|"aggressive", from
+     users.preferences — see routers/account.py) once per batch
+  4. Fetch JD text from job_pool (raw psycopg2 — job_pool is NEVER via ORM,
+     per the standing architectural invariant) — skipped entirely for "off"
+  5. Three-call pipeline (skipped entirely for "off", which just uses empty
+     patches and no score):
+       a. resume_optimizer.extract_jd_requirements(jd_text) — unchanged.
+       b. resume_optimizer.classify_and_score_requirements(...) — NEW. Scores
+          the resume against the JD and tags each requirement's importance
+          BEFORE any patch is attempted, returning a deterministic
+          match_score (percent + label) alongside the classification.
+       c. resume_optimizer.generate_resume_patches(..., precomputed_
+          classification=...) — same function as before, now called with
+          the Call-1 classification instead of doing its own; still 4 ops,
+          still confidence-gated, still refuses to patch a blocked
+          requirement.
+     This is 3 LLM calls per job now, not 2 — a deliberate, flagged
+     tradeoff. resume_optimizer.py's docstring has the full reasoning: the
+     extraction call (a) could fold into the classify call (b) and drop
+     this back to 2, but only once routers/apply.py's own call site is
+     visible and can be updated alongside it without guessing.
+  6. Persist a ResumeOptimization row — including match_score for the first
+     time; that column existed but nothing wrote to it before this change.
+     Flip ApplyJob.resume_status.
+  7. Broadcast the status change to any open SSE stream for this batch
 
 This is a NEW file rather than an edit to apply_worker.py — that file
 already runs the tested Phase 1/Phase 2 pipeline and I didn't want to touch
@@ -146,8 +166,12 @@ async def _get_structured_doc(resume_row, db) -> dict:
 
 async def optimize_batch_resumes(batch_id) -> None:
     """Background task — kicked from routers/apply.py's create_apply_batch() via asyncio.create_task()."""
-    from models.orm import ApplyBatch, ApplyJob, ResumeOptimization
-    from services.resume_optimizer import generate_resume_patches, extract_jd_requirements
+    from models.orm import ApplyBatch, ApplyJob, ResumeOptimization, User
+    from services.resume_optimizer import (
+        generate_resume_patches,
+        extract_jd_requirements,
+        classify_and_score_requirements,
+    )
 
     async with AsyncSessionLocal() as db:
         batch = (await db.execute(select(ApplyBatch).where(ApplyBatch.id == batch_id))).scalar_one_or_none()
@@ -159,6 +183,18 @@ async def optimize_batch_resumes(batch_id) -> None:
         )).scalars())
         user_id = batch.user_id
         batch_resume_id = str(batch.resume_id) if batch.resume_id else None
+
+        # Read once per batch, not once per job — same user, same setting for
+        # every job in this batch. From routers/account.py's ProfileUpdate:
+        # optimize_mode is "off"|"honest"|"aggressive"; DEFAULT_PREFERENCES
+        # doesn't include it, so a user who never touched onboarding step 6
+        # has no key at all here — default to "honest", today's only real
+        # behavior, rather than silently changing what un-configured users get.
+        user_row = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        optimize_mode = (user_row.preferences or {}).get("optimize_mode") if user_row else None
+        if optimize_mode not in ("off", "honest", "aggressive"):
+            optimize_mode = "honest"
+        logger.info(f"[resume_optimize_worker] batch {batch_id} user={user_id} optimize_mode={optimize_mode!r}")
 
     for job in jobs:
         async with AsyncSessionLocal() as db:
@@ -177,17 +213,49 @@ async def optimize_batch_resumes(batch_id) -> None:
 
                 structured_doc = await _get_structured_doc(resume_row, db)
 
-                jd = _fetch_job_description(job.job_id) if job.job_id else {}
-                jd_text = jd.get("description_text") or jd.get("description") or ""
+                if optimize_mode == "off":
+                    # "Send your resume exactly as uploaded" — don't spend
+                    # LLM calls computing edits that would just be discarded.
+                    # Same ResumeOptimization row shape as the other two
+                    # modes, just empty patches and no score, so the review
+                    # panel and PDF renderer need no special-casing — an
+                    # empty patch list already means "render the doc as-is"
+                    # in both of those, unrelated to this change.
+                    result = {"requirement_classification": [], "patches": [], "match_score": None}
+                else:
+                    jd = _fetch_job_description(job.job_id) if job.job_id else {}
+                    jd_text = jd.get("description_text") or jd.get("description") or ""
 
-                # job_pool has no required_skills/preferred_skills columns — extract
-                # them from jd_text at call time instead of reading dead keys that
-                # always returned [] (see extract_jd_requirements docstring).
-                extracted = await extract_jd_requirements(jd_text)
-                required_skills = extracted["required_skills"]
-                preferred_skills = extracted["preferred_skills"]
+                    # job_pool has no required_skills/preferred_skills columns — extract
+                    # them from jd_text at call time instead of reading dead keys that
+                    # always returned [] (see extract_jd_requirements docstring).
+                    extracted = await extract_jd_requirements(jd_text)
+                    required_skills = extracted["required_skills"]
+                    preferred_skills = extracted["preferred_skills"]
 
-                result = await generate_resume_patches(structured_doc, jd_text, required_skills, preferred_skills)
+                    # Call 1 — classify + score, no patches yet. Gives a real
+                    # match_score (percent + label) and an importance-tagged
+                    # classification before any patch is attempted, rather
+                    # than deriving both inside the same call that also
+                    # generates patches.
+                    classified = await classify_and_score_requirements(
+                        structured_doc, jd_text, required_skills, preferred_skills, mode=optimize_mode
+                    )
+
+                    # Call 2 — patches only, informed by Call 1's
+                    # classification. Same function as before this change;
+                    # precomputed_classification is what switches it onto the
+                    # new path instead of its own legacy combined-call behavior.
+                    patch_result = await generate_resume_patches(
+                        structured_doc, jd_text, required_skills, preferred_skills, mode=optimize_mode,
+                        precomputed_classification=classified["requirement_classification"],
+                    )
+
+                    result = {
+                        "requirement_classification": patch_result["requirement_classification"],
+                        "patches": patch_result["patches"],
+                        "match_score": classified["match_score"],
+                    }
 
                 opt = ResumeOptimization(
                     apply_job_id=job.id,
@@ -197,6 +265,7 @@ async def optimize_batch_resumes(batch_id) -> None:
                     structured_doc=structured_doc,
                     patches=result["patches"],
                     requirement_classification=result["requirement_classification"],
+                    match_score=result["match_score"],
                     decisions={p["id"]: "accepted" for p in result["patches"]},
                     manual_edits={},
                     status="ready",

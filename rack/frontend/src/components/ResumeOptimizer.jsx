@@ -14,7 +14,7 @@
  * Wire-up points (replace the mock data with your API contract):
  *   initialDoc()  — structured_doc from GET /api/apply/jobs/{id}/resume
  *   PATCHES       — patches[] from resume_optimizer.py
- *   REQ_SKILLS / PREF_SKILLS / matchPercent — requirement_classification + score
+ *   REQ_SKILLS / PREF_SKILLS / matchPercent / matchLabel — requirement_classification + score
  *   LETTER        — generated cover letter
  *   onDownload / startSubmit — hook to your endpoints
  */
@@ -235,6 +235,19 @@ I'd love to bring that mix of systems rigor and applied AI experience to Databri
 
 const applyPatch = (text, p) => {
   if (p.op === 'replace') return text.replace(p.before, p.after)
+  // Full bullet (or other target) replacement — mirrors resume_optimizer.py's
+  // apply_patch_to_text(): rewrite_bullet ignores whatever text was there
+  // before entirely, it never searches/anchors into it.
+  if (p.op === 'rewrite') return p.text
+  // add_bullet creates a whole new bullet dict rather than mutating an
+  // existing target's text (mirrors resume_optimizer.py's
+  // apply_patch_to_text() and resume_renderer.py's build_final_document(),
+  // both of which special-case add_bullet the same way and never route it
+  // through here). Nothing should ever call applyPatch() with an add_bullet
+  // patch — its target is a container id, never a real field id — but a
+  // no-op fallback is safer than falling into the anchor-search branch below
+  // with an id, and empty anchor, that was never meant to be searched as text.
+  if (p.op === 'add_bullet') return text
   if (p.atEnd) return text + p.text
   const i = text.indexOf(p.anchor)
   return i === -1 ? text + p.text : text.slice(0, i + p.anchor.length) + p.text + text.slice(i + p.anchor.length)
@@ -321,6 +334,15 @@ export default class ResumeOptimizer extends React.Component {
     this.patches    = remapPatches(_rawPatches, _mergedMap)
     this.reqSkills  = (props.reqSkills   && props.reqSkills.length)  ? props.reqSkills  : REQ_SKILLS
     this.prefSkills = (props.prefSkills  && props.prefSkills.length) ? props.prefSkills : PREF_SKILLS
+    // Was hardcoded "Excellent match" directly in the render below, for
+    // every job regardless of actual score — Dashboard.jsx never had a
+    // matchLabel prop to pass in the first place. Default here (used only
+    // for the standalone-prototype case with no real prop, matching the
+    // matchPercent={91} example in the usage doc up top) mirrors the same
+    // 0.85/0.65 cutoffs the backend uses, so the demo default stays
+    // self-consistent with a 91% demo score.
+    const _mp = props.matchPercent ?? 91
+    this.matchLabel = props.matchLabel || (_mp >= 85 ? 'Excellent Match' : _mp >= 65 ? 'Good Match' : 'Partial Match')
     this.letter     = props.coverLetter || LETTER
     const _theme = (props.theme === 'dark' || props.theme === 'light')
       ? props.theme
@@ -711,6 +733,15 @@ export default class ResumeOptimizer extends React.Component {
       if (!mine.length) return el('span', null, original)
       let segs = [{ text: original, added: null }]
       for (const p of mine) {
+        if (p.op === 'rewrite') {
+          // Full replacement — no relationship to the original text, so
+          // don't diff/anchor into it like the other ops. Whatever segments
+          // were built up so far from an earlier patch on this same target
+          // (not expected in practice, but don't compound if it happens) are
+          // discarded; the whole target becomes one highlighted "added" span.
+          segs = [{ text: p.text, added: p }]
+          continue
+        }
         if (p.op !== 'replace' && p.atEnd) {
           // True "append to end" — lands after everything built so far and
           // never re-searches inside existing segments. Searching by anchor
@@ -740,7 +771,7 @@ export default class ResumeOptimizer extends React.Component {
       return el('span', null, ...segs.map((seg, i) => seg.added
         ? el('span', {
             key: i, className: 'rk-hl',
-            title: 'AI insertion — click to review',
+            title: (seg.added.op === 'rewrite' ? 'AI rewrite' : 'AI insertion') + ' — click to review',
             onClick: e => { e.stopPropagation(); this.setState({ popover: { id: seg.added.id, x: e.clientX, y: e.clientY } }) },
             style: { background: 'var(--added-bg)', color: 'var(--added-text)', borderRadius: 3, padding: '0 2px', fontWeight: 600,
               boxShadow: S.hoverPatch === seg.added.id ? '0 0 0 2px var(--added-text)' : undefined },
@@ -750,6 +781,27 @@ export default class ResumeOptimizer extends React.Component {
 
     const target = (id, original) => editing ? editable(id, original) : highlighted(id, original)
     const field = (id, original) => editing ? editable(id, original) : el('span', { dangerouslySetInnerHTML: { __html: fieldHtml(id, original) } })
+
+    // A whole new bullet from an accepted add_bullet patch. There's no
+    // "original" bullet to diff against — nothing existed before — so unlike
+    // highlighted() it never searches for an anchor/before substring; it
+    // always renders as one fully-highlighted "AI-added" span (or an
+    // editable field, in edit mode). Field id is the PATCH's own id, not a
+    // bullet id from the document — manual edits key the same way on the
+    // backend: resume_renderer.py's build_final_document() reads
+    // `manual_edits.get(p["id"], p["text"])` for exactly this operation.
+    const addedBullet = (patchId, text) => {
+      if (editing) return editable(patchId, text)
+      const html = S.manualEdits[patchId] !== undefined ? S.manualEdits[patchId] : escapeHtml(this.baseText(patchId, text))
+      return el('span', {
+        className: 'rk-hl',
+        title: 'AI-added bullet — click to review',
+        onClick: e => { e.stopPropagation(); this.setState({ popover: { id: patchId, x: e.clientX, y: e.clientY } }) },
+        style: { background: 'var(--added-bg)', color: 'var(--added-text)', borderRadius: 3, padding: '0 2px', fontWeight: 600,
+          boxShadow: S.hoverPatch === patchId ? '0 0 0 2px var(--added-text)' : undefined },
+        dangerouslySetInnerHTML: { __html: html },
+      })
+    }
 
     const handle = (info, top) => editing ? el('span', {
       className: 'rk-handle', draggable: true,
@@ -785,12 +837,30 @@ export default class ResumeOptimizer extends React.Component {
             el('span', { style: { minWidth: 0, flex: '1 1 auto', overflowWrap: 'break-word' } }, field('e:' + ent.id + ':head', ent.head)),
             el('span', { style: { fontWeight: 400, color: '#444', fontSize: '0.92em', whiteSpace: 'nowrap', flexShrink: 0 } }, field('e:' + ent.id + ':right', ent.right)),
           ), G_SUB)
+          // add_bullet patches whose target is THIS entry's own container id
+          // (company_id/project_id — see resume_optimizer.py's
+          // _collect_container_ids()) render as brand-new bullets appended
+          // after the real ones, not as an edit to any existing bullet.
+          const addedBullets = this.patches.filter(p => p.op === 'add_bullet' && p.target === ent.id && S.decisions[p.id] !== 'rejected')
+          const realBulletsAreLast = addedBullets.length === 0
           ent.bullets.forEach((b, bi) => {
             const bInfo = { kind: 'bullet', id: b.id, parentSec: sec.id, parentEntry: ent.id }
+            const isLastOverall = realBulletsAreLast && bi === ent.bullets.length - 1
             push(b.id, 'bullet', dragRow(bInfo, { display: 'flex', alignItems: 'flex-start', gap: 6, paddingLeft: 4 },
               el('span', { style: { flexShrink: 0, lineHeight: S.lineGap } }, '•'),
               el('div', { style: { flex: 1, lineHeight: S.lineGap } }, target(b.id, b.text)),
-            ), bi === ent.bullets.length - 1 ? (ei === sec.entries.length - 1 ? G_SEC : G_ENTRY) : G_LINE)
+            ), isLastOverall ? (ei === sec.entries.length - 1 ? G_SEC : G_ENTRY) : G_LINE)
+          })
+          // Not wrapped in dragRow — these are ephemeral until approval, and
+          // reorderTo() looks items up inside doc.sections/ent.bullets, which
+          // a patch-derived virtual bullet was never added to, so a drag
+          // handle here would be inert. Same visual layout otherwise.
+          addedBullets.forEach((p, pi) => {
+            const isLastOverall = pi === addedBullets.length - 1
+            push(p.id, 'bullet', el('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 6, paddingLeft: 4 } },
+              el('span', { style: { flexShrink: 0, lineHeight: S.lineGap } }, '•'),
+              el('div', { style: { flex: 1, lineHeight: S.lineGap } }, addedBullet(p.id, p.text)),
+            ), isLastOverall ? (ei === sec.entries.length - 1 ? G_SEC : G_ENTRY) : G_LINE)
           })
         })
       } else if (sec.kind === 'lines') {
@@ -941,6 +1011,7 @@ export default class ResumeOptimizer extends React.Component {
       const rejected = S.decisions[p.id] === 'rejected'
       return {
         id: p.id, shown: p.shown || p.text.trim(), context: p.context, req: p.req, rejected,
+        op: p.op, opLabel: p.opLabel,
         onToggle: () => { const nd = rejected ? 'accepted' : 'rejected'; if (this.props.onDecisionChange) this.props.onDecisionChange(p.id, nd); this.setState(s => ({ decisions: { ...s.decisions, [p.id]: nd }, popover: null })) },
         onEnter: () => this.setState({ hoverPatch: p.id }),
         onLeave: () => this.setState(s => (s.hoverPatch === p.id ? { hoverPatch: null } : null)),
@@ -1052,7 +1123,7 @@ export default class ResumeOptimizer extends React.Component {
                     <div style={sx('min-width:0;')}>
                       <div style={sx('font-size:13.5px; font-weight:700; display:flex; align-items:center; gap:6px;')}>
                         <span style={sx('width:6px; height:6px; border-radius:50%; background:var(--accent3); flex:none;')} />
-                        Excellent match
+                        {this.matchLabel}
                       </div>
                       <div style={sx('font-family:var(--font-mono); font-size:10.5px; color:var(--text-dim); margin-top:3px;')}>{[...this.reqSkills, ...this.prefSkills].filter(s => s.met).length} of {this.reqSkills.length + this.prefSkills.length} keywords matched</div>
                     </div>
@@ -1093,11 +1164,11 @@ export default class ResumeOptimizer extends React.Component {
                 </div>
               )}
 
-              {/* AI insertions */}
+              {/* AI changes */}
               {S.stage === 'resume' && !S.editing && (
                 <div style={sx('padding:15px 20px 16px;')}>
                   <div style={sx('display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;')}>
-                    <span style={sx('font-family:var(--font-mono); font-size:9.5px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim);')}>AI insertions</span>
+                    <span style={sx('font-family:var(--font-mono); font-size:9.5px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim);')}>AI changes</span>
                     <span style={sx('font-family:var(--font-mono); font-size:10px; color:var(--text-dim);')}>{v.appliedCount}/{this.patches.length} applied</span>
                   </div>
                   <div style={sx('display:flex; flex-direction:column; gap:6px;')}>
@@ -1105,6 +1176,11 @@ export default class ResumeOptimizer extends React.Component {
                       <div key={p.id} onMouseEnter={p.onEnter} onMouseLeave={p.onLeave} onClick={p.onCardClick}
                         style={{ border: `1px solid ${p.rejected ? 'var(--border)' : 'var(--border-bright)'}`, borderRadius: 10, padding: '8px 10px', background: p.rejected ? 'transparent' : 'var(--surface)', transition: 'border-color 0.15s, box-shadow 0.15s', cursor: 'default', boxShadow: S.hoverPatch === p.id && !p.rejected ? 'inset 0 0 0 1px var(--added-text)' : 'none' }}>
                         <div style={{ fontSize: 11.5, lineHeight: 1.45, color: p.rejected ? 'var(--text-dim)' : 'var(--text)', textDecoration: p.rejected ? 'line-through' : 'none' }}>
+                          {(p.op === 'rewrite' || p.op === 'add_bullet') && (
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: p.rejected ? 'var(--text-dim)' : 'var(--accent2)', marginRight: 5 }}>
+                              {p.op === 'rewrite' ? 'Rewrite' : 'New'}
+                            </span>
+                          )}
                           <span style={{ background: p.rejected ? 'transparent' : 'var(--added-bg)', color: p.rejected ? 'var(--text-dim)' : 'var(--added-text)', borderRadius: 3, padding: '0 3px', fontWeight: 600 }}>{p.shown}</span>
                           <span style={{ color: 'var(--text-dim)' }}> — {p.context}</span>
                         </div>
@@ -1502,7 +1578,7 @@ export default class ResumeOptimizer extends React.Component {
           <>
             <div onClick={() => this.setState({ popover: null })} style={sx('position:fixed; inset:0; z-index:40;')} />
             <div style={{ ...sx('position:fixed; z-index:41; width:264px; background:var(--surface); border:1px solid var(--border-bright); border-radius:13px; box-shadow:var(--card-shadow); padding:13px 14px; animation:rkFadeUp 0.18s var(--ease);'), left: Math.min(S.popover.x, vw - 290), top: Math.min(S.popover.y + 14, vh - 220) }}>
-              <div style={sx('font-family:var(--font-mono); font-size:9px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--accent-ink); margin-bottom:6px;')}>AI insertion · {v.popPatch.req}</div>
+              <div style={sx('font-family:var(--font-mono); font-size:9px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--accent-ink); margin-bottom:6px;')}>{v.popPatch.opLabel || 'AI insertion'} · {v.popPatch.req}</div>
               <div style={sx('font-size:12px; line-height:1.5; margin-bottom:4px;')}><span style={sx('background:var(--added-bg); color:var(--added-text); border-radius:3px; padding:0 3px; font-weight:600;')}>{v.popPatch.shown || v.popPatch.text.trim()}</span></div>
               <div style={sx('font-size:11px; color:var(--text-mid); line-height:1.5; margin-bottom:11px;')}>{v.popPatch.reason}</div>
               <div style={sx('display:flex; gap:7px;')}>

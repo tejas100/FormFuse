@@ -2605,6 +2605,16 @@ function ResumeReviewPanel({ applyJobId, company, role, onClose }) {
   const matchPct   = typeof data.match_score?.percent === 'number'
     ? data.match_score.percent
     : (typeof data.match_score === 'number' ? data.match_score : 91)
+  // match_score.label was never read here at all before this — apply.py
+  // computes a real one (routers/apply.py's get_resume_optimization, now
+  // backed by services.resume_optimizer.score_from_classification), but
+  // nothing carried it past this point, so ResumeOptimizer.jsx had no real
+  // value to show and fell back to a hardcoded "Excellent match" for every
+  // job regardless of actual score. Fallback here mirrors the backend's own
+  // formula (same 0.85/0.65 cutoffs) for the rare case match_score is
+  // missing entirely rather than just unlabeled.
+  const matchLabel = data.match_score?.label
+    || (matchPct >= 85 ? 'Excellent Match' : matchPct >= 65 ? 'Good Match' : 'Partial Match')
 
   return (
     <ResumeOptimizer
@@ -2619,6 +2629,7 @@ function ResumeReviewPanel({ applyJobId, company, role, onClose }) {
       reqSkills={skills.req}
       prefSkills={skills.pref}
       matchPercent={matchPct}
+      matchLabel={matchLabel}
       onApprove={handleApprove}
       onDecisionChange={handleDecision}
       onDownload={handleDownload}
@@ -2730,7 +2741,17 @@ function apiDocToOptimizer(api) {
       const rawHead = [p.company || p.name || p.title, p.title && p.company ? p.title : null].filter(Boolean).join(' - ') || (p.title || 'Project')
       const { head, right } = _repairSplitDate(rawHead, p.dates || p.location || '')
       return {
-        id: p.company_id || p.id || `proj_${i}`,
+        // Project container id is `project_id` on the API's structured doc
+        // (see resume_optimizer.py's _collect_container_ids() and
+        // resume_renderer.py's build_final_document(), both of which read
+        // `proj.get("project_id") or proj.get("id")` — projects never carry
+        // a company_id, that field is experience-only). This previously
+        // checked company_id first, which is never present on a project, so
+        // it silently always fell through to `p.id`. That was harmless while
+        // nothing targeted a project's container id, but an add_bullet patch
+        // targeting a real project_id would never have matched this entry's
+        // id if `p.id` differs from `project_id`.
+        id: p.project_id || p.id || `proj_${i}`,
         head, right,
         bullets: (p.bullets || []).map((b, j) => ({ id: b.id || `proj_${i}_b${j}`, text: b.text })),
       }
@@ -2785,31 +2806,58 @@ function _addedFragment(before, after) {
   return after
 }
 
+// resume_optimizer.py emits four operation shapes (see generate_resume_patches()):
+//   insert_phrase  { target_id, position: "end"|"after:<anchor>", text }
+//   replace_text   { target_id, before, after }
+//   rewrite_bullet { target_id, text }                    — aggressive only
+//   add_bullet     { target_id (a company_id/project_id), text }  — aggressive only
+// ResumeOptimizer.jsx's applyPatch()/highlighted()/buildFlow() key off `op`
+// ('insert'|'replace'|'rewrite'|'add_bullet') to decide how to render/apply
+// each one — insert/replace patch into existing text, rewrite swaps an
+// entire target's text outright, add_bullet renders as a brand-new bullet
+// under the target entry rather than an edit to anything existing.
+const _OP_LABELS = { insert: 'AI insertion', replace: 'AI insertion', rewrite: 'AI rewrite', add_bullet: 'AI-added bullet' }
 function apiPatchesToOptimizer(apiPatches, api) {
   if (!Array.isArray(apiPatches)) return []
   const itemToGroup = _skillItemToGroup(api)
   return apiPatches.map(p => {
-    const isReplace = p.operation === 'replace_text'
+    const op = p.operation === 'replace_text' ? 'replace'
+      : p.operation === 'rewrite_bullet' ? 'rewrite'
+      : p.operation === 'add_bullet' ? 'add_bullet'
+      : 'insert' // insert_phrase
+    // add_bullet's target_id is a company_id/project_id (a container, not a
+    // bullet/skill/summary id) — it can never be a skill-item id, so it must
+    // skip the itemToGroup remap that every other operation's target goes
+    // through (that map only ever remaps a skill-ITEM id to its parent
+    // skill-GROUP line id; a container id was never in it, but this is
+    // explicit rather than relying on itemToGroup silently missing the key).
+    const target = op === 'add_bullet' ? p.target_id : (itemToGroup[p.target_id] || p.target_id)
     // resume_optimize_worker's backend guarantees position is EITHER exactly
     // "end" OR "after:<verified-present-anchor>" (never anything else — see
     // resume_optimizer.py's clean_patches: an unresolved anchor degrades to
-    // "end" server-side). atEnd is tracked explicitly rather than encoded as
-    // an empty-string anchor — text.indexOf('') always returns 0 in JS, not
-    // -1, so an empty anchor silently matched "found at the very start" and
-    // caused end-of-field insertions to render prepended (and duplicated,
-    // when two such patches targeted the same bullet).
-    const atEnd = p.position === 'end'
-    const anchor = (!atEnd && p.position && p.position.startsWith('after:')) ? p.position.slice(6) : ''
+    // "end" server-side) — but that `position` field only ever exists on
+    // insert_phrase patches. rewrite_bullet/add_bullet never carry one, so
+    // atEnd/anchor are only computed for op === 'insert'; otherwise they
+    // stay false/''. This matters: text.indexOf('') always returns 0 in JS,
+    // not -1, so treating a missing anchor as an empty string on a
+    // rewrite/add_bullet patch would silently match "found at the very
+    // start" and corrupt the target's text (the same footgun the 'atEnd'
+    // flag was introduced to avoid for insert_phrase in the first place) —
+    // rewrite/add_bullet are routed to their own dedicated `op` branches in
+    // ResumeOptimizer.jsx instead of ever reaching the anchor-search path.
+    const atEnd = op === 'insert' && p.position === 'end'
+    const anchor = (op === 'insert' && !atEnd && p.position && p.position.startsWith('after:')) ? p.position.slice(6) : ''
     return {
       id: p.id,
-      target: itemToGroup[p.target_id] || p.target_id,   // remap skill-item ids → group line id
-      op: isReplace ? 'replace' : 'insert',
+      target,
+      op,
+      opLabel: _OP_LABELS[op] || _OP_LABELS.insert,
       atEnd,
       anchor,
       text: p.text || '',
       before: p.before,
       after: p.after,
-      shown: isReplace ? _addedFragment(p.before, p.after) : (p.text || '').trim(),
+      shown: op === 'replace' ? _addedFragment(p.before, p.after) : (p.text || '').trim(),
       req: p.requirement_id || '',
       context: '',
       reason: p.reason || '',

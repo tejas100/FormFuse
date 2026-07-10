@@ -60,10 +60,15 @@ def _sanitize(text: str) -> str:
 
 
 # ── Patch application (mirrors resume_optimizer.apply_patch_to_text exactly) ──
+# add_bullet is NOT handled here on purpose — it doesn't modify an existing
+# target's text, it creates a whole new bullet dict. That's handled directly
+# in build_final_document() below, where there's a bullets list to append to.
 
 def _apply_patch_to_text(text: str, patch: dict) -> str:
     if patch["operation"] == "replace_text":
         return text.replace(patch["before"], patch["after"], 1)
+    if patch["operation"] == "rewrite_bullet":
+        return patch["text"]
     position = patch.get("position", "end")
     if position.startswith("after:"):
         anchor = position.split("after:", 1)[1]
@@ -94,8 +99,18 @@ def _final_text(target_id: str, original_text: str, patches_by_target: dict, dec
 def build_final_document(structured_doc: dict, patches: list, decisions: dict, manual_edits: dict) -> dict:
     doc = deepcopy(structured_doc)
     patches_by_target: dict[str, list] = {}
+    # add_bullet targets a container id (company_id/project_id), not a text
+    # field — it can't go through _final_text like everything else. Split it
+    # out here, keyed by that container id, and append the accepted ones
+    # directly to the matching bullets list further down.
+    add_bullets_by_container: dict[str, list] = {}
     for p in patches:
-        patches_by_target.setdefault(p["target_id"], []).append(p)
+        if p["operation"] == "add_bullet":
+            if decisions.get(p["id"]) == "rejected":
+                continue
+            add_bullets_by_container.setdefault(p["target_id"], []).append(p)
+        else:
+            patches_by_target.setdefault(p["target_id"], []).append(p)
 
     def field(key, fallback):
         return manual_edits.get(key, fallback)
@@ -122,12 +137,16 @@ def build_final_document(structured_doc: dict, patches: list, decisions: dict, m
         exp["dates"]   = field(f"exp:{cid}:dates", exp.get("dates", ""))
         for b in exp.get("bullets", []) or []:
             b["text"] = _final_text(b["id"], b["text"], patches_by_target, decisions, manual_edits)
+        for p in add_bullets_by_container.get(cid, []):
+            exp["bullets"].append({"id": p["id"], "text": manual_edits.get(p["id"], p["text"])})
 
     for proj in doc.get("projects", []) or []:
         pid = proj.get("project_id") or proj.get("id")
         proj["name"] = field(f"proj:{pid}:name", proj.get("name", proj.get("title", "")))
         for b in proj.get("bullets", []) or []:
             b["text"] = _final_text(b["id"], b["text"], patches_by_target, decisions, manual_edits)
+        for p in add_bullets_by_container.get(pid, []):
+            proj["bullets"].append({"id": p["id"], "text": manual_edits.get(p["id"], p["text"])})
 
     for e in doc.get("education", []) or []:
         e["school"] = field(f"edu:{e['id']}:school", e.get("school", ""))

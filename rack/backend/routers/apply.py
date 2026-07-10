@@ -1011,9 +1011,16 @@ async def get_resume_optimization(
     if not opt:
         raise HTTPException(status_code=404, detail="Resume optimization hasn't started for this application yet.")
 
-    required = [c for c in opt.requirement_classification if c.get("importance") == "required"]
-    total = len(opt.requirement_classification) or 1
-    met = sum(1 for c in opt.requirement_classification if c.get("classification") != "absent")
+    # score_from_classification is only reached here as a fallback — for
+    # optimize_mode="off" (where resume_optimize_worker.py deliberately never
+    # sets match_score), or for any row that predates match_score being
+    # stored at all. The common case reads opt.match_score straight off the
+    # row, computed once by resume_optimizer.py at optimization time — not
+    # recomputed here anymore. Was previously a second, inline copy of this
+    # exact formula (plus a dead `required = [...]` line that filtered on an
+    # importance field requirement_classification never actually had); both
+    # retired in favor of importing the one real implementation.
+    from services.resume_optimizer import score_from_classification
 
     return {
         "apply_job_id":              str(job.id),
@@ -1023,10 +1030,7 @@ async def get_resume_optimization(
         "requirement_classification": opt.requirement_classification,
         "decisions":                 opt.decisions,
         "manual_edits":              opt.manual_edits,
-        "match_score":               opt.match_score or {
-            "percent": round(100 * met / total),
-            "label": "Excellent Match" if met / total >= 0.85 else "Good Match" if met / total >= 0.65 else "Partial Match",
-        },
+        "match_score":               opt.match_score or score_from_classification(opt.requirement_classification),
         "status": opt.status,
     }
 
