@@ -1012,15 +1012,30 @@ async def get_resume_optimization(
         raise HTTPException(status_code=404, detail="Resume optimization hasn't started for this application yet.")
 
     # score_from_classification is only reached here as a fallback — for
-    # optimize_mode="off" (where resume_optimize_worker.py deliberately never
-    # sets match_score), or for any row that predates match_score being
-    # stored at all. The common case reads opt.match_score straight off the
-    # row, computed once by resume_optimizer.py at optimization time — not
+    # legacy rows that have a real requirement_classification but somehow
+    # never got match_score stored (predates match_score being stored at
+    # all). The common case reads opt.match_score straight off the row,
+    # computed once by resume_optimizer.py at optimization time — not
     # recomputed here anymore. Was previously a second, inline copy of this
     # exact formula (plus a dead `required = [...]` line that filtered on an
     # importance field requirement_classification never actually had); both
     # retired in favor of importing the one real implementation.
+    #
+    # Guarded on a non-empty classification list — resume_optimize_worker.py's
+    # segment-rewrite pipeline (optimize_mode "honest"/"aggressive" as of
+    # this change) never computes a classification at all and stores
+    # requirement_classification=[] deliberately, not as a gap to patch over.
+    # score_from_classification([]) would happily compute 0 met / 1 total =
+    # "0%, Poor Match" from that empty list — a fabricated-looking score
+    # that reads as "we checked and it's a bad match" when the truth is
+    # "nothing was scored." None is the honest value for "no score exists
+    # yet"; the frontend should treat None as "hide the score chip", not
+    # coerce it into a percentage.
     from services.resume_optimizer import score_from_classification
+
+    match_score = opt.match_score
+    if match_score is None and opt.requirement_classification:
+        match_score = score_from_classification(opt.requirement_classification)
 
     return {
         "apply_job_id":              str(job.id),
@@ -1030,7 +1045,7 @@ async def get_resume_optimization(
         "requirement_classification": opt.requirement_classification,
         "decisions":                 opt.decisions,
         "manual_edits":              opt.manual_edits,
-        "match_score":               opt.match_score or score_from_classification(opt.requirement_classification),
+        "match_score":               match_score,
         "status": opt.status,
     }
 
