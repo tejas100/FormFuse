@@ -2602,19 +2602,22 @@ function ResumeReviewPanel({ applyJobId, company, role, onClose }) {
   const optDoc     = apiDocToOptimizer(data.structured_doc)
   const optPatches = apiPatchesToOptimizer(data.patches, data.structured_doc)
   const skills     = classificationToSkills(data.requirement_classification)
-  const matchPct   = typeof data.match_score?.percent === 'number'
+  // data.match_score is genuinely null for two real cases, not just missing
+  // data: optimize_mode "off" (resume sent as-is, nothing to score) and the
+  // new segment-rewrite pipeline (resume_optimize_worker.py's single-call
+  // rewrite path — see resume_optimizer.py's rewrite_experience_projects()
+  // — which does holistic bullet rewriting but computes no classification,
+  // so there is genuinely no score, not an unlabeled one). Previously this
+  // coerced straight to a hardcoded 91, which rendered a fabricated
+  // "Excellent Match" on every one of those jobs — worse than no score at
+  // all, since it reads as a real, checked result. null is passed straight
+  // through now; ResumeOptimizer renders its own explicit "not scored" state
+  // rather than ever inventing a number.
+  const matchPct = typeof data.match_score?.percent === 'number'
     ? data.match_score.percent
-    : (typeof data.match_score === 'number' ? data.match_score : 91)
-  // match_score.label was never read here at all before this — apply.py
-  // computes a real one (routers/apply.py's get_resume_optimization, now
-  // backed by services.resume_optimizer.score_from_classification), but
-  // nothing carried it past this point, so ResumeOptimizer.jsx had no real
-  // value to show and fell back to a hardcoded "Excellent match" for every
-  // job regardless of actual score. Fallback here mirrors the backend's own
-  // formula (same 0.85/0.65 cutoffs) for the rare case match_score is
-  // missing entirely rather than just unlabeled.
-  const matchLabel = data.match_score?.label
-    || (matchPct >= 85 ? 'Excellent Match' : matchPct >= 65 ? 'Good Match' : 'Partial Match')
+    : (typeof data.match_score === 'number' ? data.match_score : null)
+  const matchLabel = matchPct === null ? null : (data.match_score?.label
+    || (matchPct >= 85 ? 'Excellent Match' : matchPct >= 65 ? 'Good Match' : 'Partial Match'))
 
   return (
     <ResumeOptimizer

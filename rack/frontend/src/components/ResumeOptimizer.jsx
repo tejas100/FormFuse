@@ -17,6 +17,19 @@
  *   REQ_SKILLS / PREF_SKILLS / matchPercent / matchLabel — requirement_classification + score
  *   LETTER        — generated cover letter
  *   onDownload / startSubmit — hook to your endpoints
+ *
+ * matchPercent contract — null is NOT the same as omitted:
+ *   - omitted (undefined)  — standalone/demo usage, no real API behind it.
+ *     Falls back to the 91-demo default, same as always.
+ *   - explicitly null      — a real API call happened and genuinely
+ *     produced no score (optimize_mode "off", or the segment-rewrite
+ *     pipeline in resume_optimizer.py's rewrite_experience_projects(),
+ *     which does holistic bullet rewriting but runs no classification
+ *     pass). Renders an explicit "Not scored" state — dashed ring, em-dash,
+ *     muted label — never a fabricated percentage. Dashboard.jsx's
+ *     ResumeReviewPanel passes null deliberately for these jobs; don't
+ *     coerce it back to a number with ?? or || anywhere in this file.
+ *   - a real number         — renders and animates normally.
  */
 
 import React from 'react'
@@ -334,15 +347,25 @@ export default class ResumeOptimizer extends React.Component {
     this.patches    = remapPatches(_rawPatches, _mergedMap)
     this.reqSkills  = (props.reqSkills   && props.reqSkills.length)  ? props.reqSkills  : REQ_SKILLS
     this.prefSkills = (props.prefSkills  && props.prefSkills.length) ? props.prefSkills : PREF_SKILLS
-    // Was hardcoded "Excellent match" directly in the render below, for
-    // every job regardless of actual score — Dashboard.jsx never had a
-    // matchLabel prop to pass in the first place. Default here (used only
-    // for the standalone-prototype case with no real prop, matching the
-    // matchPercent={91} example in the usage doc up top) mirrors the same
-    // 0.85/0.65 cutoffs the backend uses, so the demo default stays
-    // self-consistent with a 91% demo score.
-    const _mp = props.matchPercent ?? 91
-    this.matchLabel = props.matchLabel || (_mp >= 85 ? 'Excellent Match' : _mp >= 65 ? 'Good Match' : 'Partial Match')
+    // this.hasScore distinguishes two different callers:
+    //   - matchPercent PROP OMITTED (undefined) — the standalone-prototype
+    //     usage shown in this file's own header doc (matchPercent={91}) —
+    //     keeps the historical 91-demo default so the component still works
+    //     unwired, exactly as before.
+    //   - matchPercent EXPLICITLY null — Dashboard.jsx's ResumeReviewPanel,
+    //     for a job whose ResumeOptimization.match_score is genuinely null
+    //     (optimize_mode "off", or the segment-rewrite pipeline which does
+    //     holistic bullet rewriting but computes no classification/score at
+    //     all — see resume_optimizer.py's rewrite_experience_projects()).
+    //     This is a real, distinct state: NOT "unknown, guess 91" but "there
+    //     is no score for this job." Rendered explicitly below rather than
+    //     defaulting into a fabricated number and label — a fake 91%
+    //     "Excellent Match" on a job nobody scored is worse than showing
+    //     nothing, since it reads as a real, checked result.
+    this.hasScore = props.matchPercent !== null
+    const _mp = this.hasScore ? (props.matchPercent ?? 91) : 0
+    this.matchLabel = !this.hasScore ? null
+      : props.matchLabel || (_mp >= 85 ? 'Excellent Match' : _mp >= 65 ? 'Good Match' : 'Partial Match')
     this.letter     = props.coverLetter || LETTER
     const _theme = (props.theme === 'dark' || props.theme === 'light')
       ? props.theme
@@ -581,6 +604,7 @@ export default class ResumeOptimizer extends React.Component {
     }, 720)
   }
   countScore() {
+    if (!this.hasScore) return   // no real score — nothing to animate toward, see constructor
     const target = this.props.matchPercent ?? 91
     const iv = this.iv(() => {
       const s = Math.min(this.state.score + 4, target)
@@ -1112,22 +1136,53 @@ export default class ResumeOptimizer extends React.Component {
               {/* Match score */}
               {S.stage !== 'optimizing' && (
                 <div style={sx('padding:16px 20px 14px; border-bottom:1px solid var(--hairline);')}>
-                  <div style={sx('display:flex; align-items:center; gap:14px;')}>
-                    <div style={sx('position:relative; width:62px; height:62px; flex:none;')}>
-                      <svg width="62" height="62" viewBox="0 0 62 62" style={{ display: 'block' }}>
-                        <circle cx="31" cy="31" r="26" fill="none" stroke="var(--ring-track)" strokeWidth="5" />
-                        <circle cx="31" cy="31" r="26" fill="none" stroke="var(--accent-strong)" strokeWidth="5" strokeLinecap="round" strokeDasharray="163.36" strokeDashoffset={163.36 * (1 - S.score / 100)} transform="rotate(-90 31 31)" style={{ transition: 'stroke-dashoffset 0.5s var(--ease)' }} />
-                      </svg>
-                      <div style={sx('position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text);')}>{S.score}%</div>
-                    </div>
-                    <div style={sx('min-width:0;')}>
-                      <div style={sx('font-size:13.5px; font-weight:700; display:flex; align-items:center; gap:6px;')}>
-                        <span style={sx('width:6px; height:6px; border-radius:50%; background:var(--accent3); flex:none;')} />
-                        {this.matchLabel}
+                  {this.hasScore ? (
+                    <div style={sx('display:flex; align-items:center; gap:14px;')}>
+                      <div style={sx('position:relative; width:62px; height:62px; flex:none;')}>
+                        <svg width="62" height="62" viewBox="0 0 62 62" style={{ display: 'block' }}>
+                          <circle cx="31" cy="31" r="26" fill="none" stroke="var(--ring-track)" strokeWidth="5" />
+                          <circle cx="31" cy="31" r="26" fill="none" stroke="var(--accent-strong)" strokeWidth="5" strokeLinecap="round" strokeDasharray="163.36" strokeDashoffset={163.36 * (1 - S.score / 100)} transform="rotate(-90 31 31)" style={{ transition: 'stroke-dashoffset 0.5s var(--ease)' }} />
+                        </svg>
+                        <div style={sx('position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-weight:700; font-size:14px; color:var(--text);')}>{S.score}%</div>
                       </div>
-                      <div style={sx('font-family:var(--font-mono); font-size:10.5px; color:var(--text-dim); margin-top:3px;')}>{[...this.reqSkills, ...this.prefSkills].filter(s => s.met).length} of {this.reqSkills.length + this.prefSkills.length} keywords matched</div>
+                      <div style={sx('min-width:0;')}>
+                        <div style={sx('font-size:13.5px; font-weight:700; display:flex; align-items:center; gap:6px;')}>
+                          <span style={sx('width:6px; height:6px; border-radius:50%; background:var(--accent3); flex:none;')} />
+                          {this.matchLabel}
+                        </div>
+                        <div style={sx('font-family:var(--font-mono); font-size:10.5px; color:var(--text-dim); margin-top:3px;')}>{[...this.reqSkills, ...this.prefSkills].filter(s => s.met).length} of {this.reqSkills.length + this.prefSkills.length} keywords matched</div>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    // No score computed for this job (optimize_mode "off", or
+                    // the segment-rewrite pipeline — see resume_optimizer.py's
+                    // rewrite_experience_projects(), which rewrites bullets
+                    // holistically but runs no classification pass, so there
+                    // is genuinely nothing to score). Deliberately NOT a ring
+                    // with a fabricated number — a dashed/empty ring plus a
+                    // muted label makes clear this is an absence, not a
+                    // result, so it can never be mistaken for a real
+                    // low-but-measured score. The Required/Preferred chip
+                    // section right below this still renders normally — it
+                    // already degrades correctly to empty lists on its own
+                    // (classificationToSkills([]) in Dashboard.jsx), no
+                    // change needed there.
+                    <div style={sx('display:flex; align-items:center; gap:14px;')}>
+                      <div style={sx('position:relative; width:62px; height:62px; flex:none;')}>
+                        <svg width="62" height="62" viewBox="0 0 62 62" style={{ display: 'block' }}>
+                          <circle cx="31" cy="31" r="26" fill="none" stroke="var(--ring-track)" strokeWidth="5" strokeDasharray="4 5" />
+                        </svg>
+                        <div style={sx('position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-weight:700; font-size:16px; color:var(--text-dim);')}>—</div>
+                      </div>
+                      <div style={sx('min-width:0;')}>
+                        <div style={sx('font-size:13.5px; font-weight:700; display:flex; align-items:center; gap:6px; color:var(--text-dim);')}>
+                          <span style={sx('width:6px; height:6px; border-radius:50%; background:var(--text-dim); flex:none;')} />
+                          Not scored
+                        </div>
+                        <div style={sx('font-family:var(--font-mono); font-size:10.5px; color:var(--text-dim); margin-top:3px;')}>This resume was optimized without a match score</div>
+                      </div>
+                    </div>
+                  )}
                   <div style={{ marginTop: 13 }}>
                     <div style={sx('display:flex; justify-content:space-between; align-items:baseline; margin-bottom:7px;')}>
                       <span style={sx('font-family:var(--font-mono); font-size:9.5px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim);')}>Required</span>
@@ -1489,7 +1544,7 @@ export default class ResumeOptimizer extends React.Component {
                   <div style={sx('font-size:19px; font-weight:700; letter-spacing:-0.01em;')}>Application submitted</div>
                   <div style={sx('font-size:13px; color:var(--text-mid); margin:7px 0 22px; line-height:1.55;')}>Your optimized resume and cover letter went to <b style={{ color: 'var(--text)' }}>Databricks</b>. We'll track the reply in your inbox and tracker.</div>
                   <div style={sx('display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:22px;')}>
-                    {[[S.score + '%', 'Match', 'var(--accent-ink)'], [String(v.appliedCount), 'Keywords', 'var(--text)'], ['18s', 'Fill time', 'var(--text)']].map(([val, lab, col], i) => (
+                    {[[this.hasScore ? S.score + '%' : '—', 'Match', 'var(--accent-ink)'], [String(v.appliedCount), 'Keywords', 'var(--text)'], ['18s', 'Fill time', 'var(--text)']].map(([val, lab, col], i) => (
                       <div key={i} style={sx('border:1px solid var(--border); border-radius:11px; padding:11px 8px; background:var(--surface2);')}>
                         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 700, color: col }}>{val}</div>
                         <div style={sx('font-family:var(--font-mono); font-size:9px; color:var(--text-dim); letter-spacing:0.08em; text-transform:uppercase; margin-top:2px;')}>{lab}</div>
