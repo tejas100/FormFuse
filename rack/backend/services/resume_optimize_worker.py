@@ -15,26 +15,43 @@ Flow per job in the batch:
      users.preferences — see routers/account.py) once per batch
   4. Fetch JD text from job_pool (raw psycopg2 — job_pool is NEVER via ORM,
      per the standing architectural invariant) — skipped entirely for "off"
-  5. Three-call pipeline (skipped entirely for "off", which just uses empty
-     patches and no score):
-       a. resume_optimizer.extract_jd_requirements(jd_text) — unchanged.
-       b. resume_optimizer.classify_and_score_requirements(...) — NEW. Scores
-          the resume against the JD and tags each requirement's importance
-          BEFORE any patch is attempted, returning a deterministic
-          match_score (percent + label) alongside the classification.
-       c. resume_optimizer.generate_resume_patches(..., precomputed_
-          classification=...) — same function as before, now called with
-          the Call-1 classification instead of doing its own; still 4 ops,
-          still confidence-gated, still refuses to patch a blocked
-          requirement.
-     This is 3 LLM calls per job now, not 2 — a deliberate, flagged
-     tradeoff. resume_optimizer.py's docstring has the full reasoning: the
-     extraction call (a) could fold into the classify call (b) and drop
-     this back to 2, but only once routers/apply.py's own call site is
-     visible and can be updated alongside it without guessing.
-  6. Persist a ResumeOptimization row — including match_score for the first
-     time; that column existed but nothing wrote to it before this change.
-     Flip ApplyJob.resume_status.
+  5. ONE LLM call (skipped entirely for "off", which just uses empty
+     patches and no score): resume_optimizer.rewrite_experience_projects().
+     Replaces the earlier extract -> classify -> patch 3-call chain
+     entirely — that chain, and the functions it called
+     (extract_jd_requirements, classify_and_score_requirements,
+     generate_resume_patches), still exist in resume_optimizer.py but are
+     no longer called from here. They're left in place rather than deleted
+     because routers/apply.py's module docstring flagged its own
+     regenerate-on-demand endpoint as a possible caller of the old
+     generate_resume_patches() path — confirmed this session by reading
+     apply.py in full that it does NOT call any of the three directly (it
+     only reads already-persisted ResumeOptimization row fields), but
+     they're kept rather than deleted purely as a "known-safe, zero-risk"
+     choice, not because anything still needs them.
+
+     rewrite_experience_projects() sends the full, untruncated experience +
+     projects JSON straight to GPT-4o (not mini — this needs holistic
+     rewriting judgment, not keyword classification) along with the raw JD
+     text, and gets back the same bullets with an inline "segments" array
+     on any bullet it touched: small insertions/edits as "llm_suggested"
+     segments anchored against the surrounding original text, or full
+     sentence replacements as a single "rewritten" segment. Every
+     "original"-typed segment is verified server-side against the real
+     stored bullet text before anything is trusted — a segment that claims
+     to be unchanged but doesn't match gets relabeled "llm_suggested"
+     (never silently discarded) so the user still reviews it. The verified
+     segments are then converted into the SAME insert_phrase/rewrite_bullet
+     patch shape the old pipeline produced, so ResumeOptimization.patches
+     keeps its existing shape and Dashboard.jsx / ResumeOptimizer.jsx /
+     resume_renderer.py need no changes to consume it.
+
+     No requirement classification and no match_score come out of this
+     call — both are dropped for now (a deliberate simplification, not an
+     oversight; see resume_optimizer.py's rewrite_experience_projects()
+     docstring). ResumeOptimization.requirement_classification is stored as
+     [] and match_score as None for jobs optimized this way.
+  6. Persist a ResumeOptimization row. Flip ApplyJob.resume_status.
   7. Broadcast the status change to any open SSE stream for this batch
 
 This is a NEW file rather than an edit to apply_worker.py — that file
@@ -167,11 +184,7 @@ async def _get_structured_doc(resume_row, db) -> dict:
 async def optimize_batch_resumes(batch_id) -> None:
     """Background task — kicked from routers/apply.py's create_apply_batch() via asyncio.create_task()."""
     from models.orm import ApplyBatch, ApplyJob, ResumeOptimization, User
-    from services.resume_optimizer import (
-        generate_resume_patches,
-        extract_jd_requirements,
-        classify_and_score_requirements,
-    )
+    from services.resume_optimizer import rewrite_experience_projects
 
     async with AsyncSessionLocal() as db:
         batch = (await db.execute(select(ApplyBatch).where(ApplyBatch.id == batch_id))).scalar_one_or_none()
@@ -226,35 +239,34 @@ async def optimize_batch_resumes(batch_id) -> None:
                     jd = _fetch_job_description(job.job_id) if job.job_id else {}
                     jd_text = jd.get("description_text") or jd.get("description") or ""
 
-                    # job_pool has no required_skills/preferred_skills columns — extract
-                    # them from jd_text at call time instead of reading dead keys that
-                    # always returned [] (see extract_jd_requirements docstring).
-                    extracted = await extract_jd_requirements(jd_text)
-                    required_skills = extracted["required_skills"]
-                    preferred_skills = extracted["preferred_skills"]
-
-                    # Call 1 — classify + score, no patches yet. Gives a real
-                    # match_score (percent + label) and an importance-tagged
-                    # classification before any patch is attempted, rather
-                    # than deriving both inside the same call that also
-                    # generates patches.
-                    classified = await classify_and_score_requirements(
-                        structured_doc, jd_text, required_skills, preferred_skills, mode=optimize_mode
-                    )
-
-                    # Call 2 — patches only, informed by Call 1's
-                    # classification. Same function as before this change;
-                    # precomputed_classification is what switches it onto the
-                    # new path instead of its own legacy combined-call behavior.
-                    patch_result = await generate_resume_patches(
-                        structured_doc, jd_text, required_skills, preferred_skills, mode=optimize_mode,
-                        precomputed_classification=classified["requirement_classification"],
+                    # Single call — replaces the old extract -> classify ->
+                    # patch chain. The model sees the full experience+
+                    # projects JSON and the raw JD text directly (its own
+                    # prompt does the requirement reading, no separate
+                    # extraction step) and returns bullets with inline
+                    # "segments" wherever it made a change, already
+                    # converted to the same insert_phrase/rewrite_bullet
+                    # patch shape the old pipeline produced — see
+                    # resume_optimizer.py's rewrite_experience_projects()
+                    # docstring for the full contract.
+                    #
+                    # requirement_classification / match_score are
+                    # deliberately empty/None here — this pipeline doesn't
+                    # compute either anymore (dropped along with the
+                    # classify call). apply.py's GET /resume endpoint
+                    # already has a graceful fallback via
+                    # score_from_classification([]), which just reads as
+                    # 0%/"Poor Match" rather than crashing — accurate for
+                    # "no score was computed," not a bug. Scoring may come
+                    # back later as a separate, cheap, non-LLM pass.
+                    rewrite_result = await rewrite_experience_projects(
+                        structured_doc, jd_text, mode=optimize_mode
                     )
 
                     result = {
-                        "requirement_classification": patch_result["requirement_classification"],
-                        "patches": patch_result["patches"],
-                        "match_score": classified["match_score"],
+                        "requirement_classification": [],
+                        "patches": rewrite_result["patches"],
+                        "match_score": None,
                     }
 
                 opt = ResumeOptimization(

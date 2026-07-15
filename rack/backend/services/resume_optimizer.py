@@ -99,6 +99,7 @@ import json
 import logging
 import os
 import re
+from copy import deepcopy
 
 import httpx
 from fastapi import HTTPException
@@ -421,7 +422,22 @@ Return JSON exactly matching this schema:
 """
 
 
-async def _call_llm(system: str, user: str) -> dict:
+async def _call_llm(
+    system: str, user: str,
+    model: str | None = None, timeout: float | None = None, max_tokens: int | None = None,
+) -> dict:
+    """
+    model/timeout/max_tokens default to this file's original mini-model
+    constants — every existing caller (classify_and_score_requirements,
+    generate_resume_patches, extract_jd_requirements) passes none of these
+    and behaves exactly as before. rewrite_experience_projects() is the only
+    caller that overrides them, to use GPT-4o with a larger output budget
+    and longer timeout for its full-document rewrite call.
+    """
+    model = model or _LLM_MODEL
+    timeout = timeout if timeout is not None else _LLM_TIMEOUT
+    max_tokens = max_tokens or 2500
+
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
@@ -432,16 +448,16 @@ async def _call_llm(system: str, user: str) -> dict:
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
-                    "model": _LLM_MODEL,
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user",   "content": user},
                     ],
                     "temperature": 0,
-                    "max_tokens": 2500,
+                    "max_tokens": max_tokens,
                     "response_format": {"type": "json_object"},
                 },
-                timeout=_LLM_TIMEOUT,
+                timeout=timeout,
             )
     except httpx.TimeoutException:
         raise HTTPException(status_code=502, detail="Optimizer timed out. Try again.")
@@ -1336,6 +1352,511 @@ async def generate_resume_patches(
         "requirement_classification": classification,
         "patches": clean_patches,
     }
+
+
+# ── Segment-rewrite pipeline (new, single-call) ──────────────────────────────
+#
+# Replaces the extract -> classify -> patch 3-call chain for
+# resume_optimize_worker.py's normal path (optimize_mode "honest"/
+# "aggressive"). One LLM call, full experience+projects JSON in, the SAME
+# sections back out with per-bullet "segments" arrays wherever the model
+# touched something. No requirement classification, no match_score — those
+# are deliberately dropped for now (see resume_optimize_worker.py).
+#
+# Model is GPT-4o, not GPT-4o-mini — this call asks for holistic rewriting
+# judgment (which existing sentence to restructure, how to fold a concept in
+# so it reads as one accomplishment rather than a keyword tacked on), not
+# keyword-list classification. Separate constants from _LLM_MODEL/_LLM_TIMEOUT
+# above so other functions in this file keep using mini unless individually
+# switched.
+_REWRITE_LLM_MODEL   = "gpt-4o"
+_REWRITE_LLM_TIMEOUT = 50.0
+_REWRITE_MAX_TOKENS  = 6000
+
+# Segment types the model is allowed to emit. "original" is a factual claim
+# about the candidate's actual resume text — verified server-side against the
+# real stored bullet, never trusted blindly (see _verify_and_relabel_segments
+# below). "llm_suggested" is a small addition/edit within an otherwise-intact
+# bullet. "rewritten" is the model replacing the ENTIRE bullet with new
+# phrasing — same underlying accomplishment, substantially reworded. Both
+# "llm_suggested" and "rewritten" are proposals the user accepts or rejects;
+# neither is ever auto-applied or auto-discarded by this module.
+_SEGMENT_TYPES = ("original", "llm_suggested", "rewritten")
+
+_REWRITE_SYSTEM_PROMPT_HONEST = """You are optimizing a resume against a job description. The resume is provided as JSON below.
+
+STRICT RULES — DO NOT VIOLATE:
+1. Do NOT change any "dates" fields.
+2. Do NOT change any "title" fields.
+3. Do NOT change any "company" fields.
+4. Do NOT change any "id" or "company_id" fields — copy them exactly as given.
+
+YOUR TASK:
+For the experience and project sections the JSON has, compare them against the
+job description below. Optimize these bullets so they align strongly with the
+job description, aiming to push the resume as close as realistically possible
+toward a strong match — around 80 to 85 percent alignment as a rough target,
+not a number you calculate or report back, just a bar to aim for. You may
+propose a keyword change, add a keyword, add a small phrase in the middle of
+an existing sentence, or add your own sentence that strengthens the resume for
+this job description. Prefer small, targeted edits over full rewrites in this
+mode — only fully rewrite a bullet when a small edit genuinely cannot capture
+the improvement.
+
+Bullets are provided in this format:
+"bullets": [
+  { "id": "<id1>", "text": "<original 1st bullet>" },
+  { "id": "<id2>", "text": "<original 2nd bullet>" }
+]
+
+For every bullet you touch in ANY way, add a "segments" array to that bullet
+object alongside its existing "text" field (leave "text" as the untouched
+original — segments is the new/changed view). Two ways a bullet can be
+touched:
+
+A) SMALL EDIT — you add or change a phrase but most of the sentence is
+   unchanged. Split the bullet into segments: the unchanged parts stay
+   "type": "original" with their EXACT VERBATIM text from the resume, and
+   your addition(s) become "type": "llm_suggested" with their own "id"
+   (format "chg_NNN") and a short "reason". Example:
+   {
+     "id": "exp_cfc552fd_d09a8631",
+     "text": "Built & shipped AI-powered support experiences used across Uber's operations, leveraging LLMs, RAG, and agentic workflows to automate investigation of 10,000+ safety reports and reduce resolution time from 12 minutes to under 3 minutes",
+     "segments": [
+       { "type": "original", "text": "Built & shipped AI-powered support experiences used across Uber's operations," },
+       { "type": "llm_suggested", "id": "chg_001", "text": " using Azure AI Foundry along with Azure One Lake and Redis for latency,", "reason": "adds specific tech stack for ATS keyword match" },
+       { "type": "original", "text": " leveraging LLMs, RAG, and agentic workflows to automate investigation of 10,000+ safety reports and reduce resolution time from 12 minutes to under 3 minutes" }
+     ]
+   }
+   The concatenation of all segment "text" values in order, with "original"
+   segments copied EXACTLY verbatim from the resume, must read as one fluent
+   sentence.
+
+B) FULL REWRITE — the sentence needs substantial restructuring to align well,
+   not just an inserted phrase. In this case "segments" is a SINGLE element
+   with "type": "rewritten", its own "id" ("chg_NNN"), the complete new
+   sentence as "text", and a "reason". Do not include any "original"-typed
+   segments in a rewritten bullet — there is nothing unchanged left to show.
+   {
+     "id": "exp_ab12cd34_ef567890",
+     "text": "<the untouched original sentence, unchanged>",
+     "segments": [
+       { "type": "rewritten", "id": "chg_002", "text": "<the complete new sentence>", "reason": "restructures around the JD's data-pipeline framing while describing the same underlying work" }
+     ]
+   }
+
+If a bullet is not touched at all, omit "segments" entirely (or return an
+empty array) — do not manufacture a change just to have something to show.
+
+RULES:
+- Sound human, not textbook or robotic. Never sound AI-generated.
+- Do not use em dashes, en dashes, or hyphens used as sentence-connecting
+  punctuation. It reads as AI-generated.
+- Never drop any bullet, any company, any experience. Every bullet in the
+  input must appear in the output (with or without a "segments" addition).
+  You are optimizing what is there, not removing anything.
+- Rewrite phrases so they sound like genuine engineering work rather than
+  keyword additions. Polish the wording so added concepts feel organically
+  embedded in the accomplishment, not appended.
+- Prefer adjacent, truthful terminology over copied job-description language.
+  Use language that naturally fits the accomplishment rather than lifting JD
+  phrases verbatim.
+- Optimize around evidence, not keywords. Every keyword you add must be
+  backed by the rest of the bullet's description of the work. If you mention
+  "multi-agent systems," the bullet should describe agents coordinating work.
+  If you mention "GPU acceleration," reference PyTorch, TensorRT, or training
+  pipelines specifically, not the term alone.
+- NEVER introduce new experience, employers, projects, research, publications,
+  patents, or domain expertise not already present in the resume. Only
+  strengthen, rephrase, or reorder information already explicitly there.
+- Only add a keyword if it is directly supported by the existing
+  accomplishment, defensible in an interview based on that bullet alone.
+- Keep ATS keywords attached to a concrete technical action, never a vague
+  phrase.
+  Weak: "Built RESTful services facilitating AI system synergy."
+  Better: "Built RESTful services that integrated ML inference into
+  high-volume enterprise workflows."
+  Weak: "Enhanced production-level AI system reliability."
+  Better: "Improved production AI reliability through evaluation pipelines,
+  validation checks, and failure analysis."
+- Structure bullets around: action + system + scale/constraint + measurable
+  outcome, where the resume already supports each part.
+- Return ONLY valid JSON, no markdown, no commentary — the exact schema shown
+  in the user message.
+"""
+
+_REWRITE_SYSTEM_PROMPT_AGGRESSIVE = """You are optimizing a resume against a job description. The resume is provided as JSON below. The user explicitly asked for AGGRESSIVE optimization — more freedom to restructure existing bullets — and will review and accept or reject every change before anything is sent anywhere. Aggressive controls how much of their TRUE, evidenced experience you may restructure and expand. It does NOT permit inventing anything the candidate didn't actually do — that line does not move.
+
+STRICT RULES — DO NOT VIOLATE:
+1. Do NOT change any "dates" fields.
+2. Do NOT change any "title" fields.
+3. Do NOT change any "company" fields.
+4. Do NOT change any "id" or "company_id" fields — copy them exactly as given.
+
+YOUR TASK:
+For the experience and project sections the JSON has, compare them against the
+job description below. Optimize these bullets so they align as strongly as
+realistically possible with the job description, aiming for around 90 to 95
+percent alignment as a rough target, not a number you calculate or report
+back, just a bar to aim for as high as the real evidence allows. You have more
+freedom here than standard mode: prefer full sentence rewrites when they let
+you fold in more of the JD's language and structure truthfully, not just
+small inserted phrases.
+
+Bullets are provided in this format:
+"bullets": [
+  { "id": "<id1>", "text": "<original 1st bullet>" },
+  { "id": "<id2>", "text": "<original 2nd bullet>" }
+]
+
+For every bullet you touch in ANY way, add a "segments" array to that bullet
+object alongside its existing "text" field (leave "text" as the untouched
+original — segments is the new/changed view). Two ways a bullet can be
+touched:
+
+A) SMALL EDIT — you add or change a phrase but most of the sentence is
+   unchanged. Split the bullet into segments: the unchanged parts stay
+   "type": "original" with their EXACT VERBATIM text from the resume, and
+   your addition(s) become "type": "llm_suggested" with their own "id"
+   (format "chg_NNN") and a short "reason". Example:
+   {
+     "id": "exp_cfc552fd_d09a8631",
+     "text": "Built & shipped AI-powered support experiences used across Uber's operations, leveraging LLMs, RAG, and agentic workflows to automate investigation of 10,000+ safety reports and reduce resolution time from 12 minutes to under 3 minutes",
+     "segments": [
+       { "type": "original", "text": "Built & shipped AI-powered support experiences used across Uber's operations," },
+       { "type": "llm_suggested", "id": "chg_001", "text": " using Azure AI Foundry along with Azure One Lake and Redis for latency,", "reason": "adds specific tech stack for ATS keyword match" },
+       { "type": "original", "text": " leveraging LLMs, RAG, and agentic workflows to automate investigation of 10,000+ safety reports and reduce resolution time from 12 minutes to under 3 minutes" }
+     ]
+   }
+   The concatenation of all segment "text" values in order, with "original"
+   segments copied EXACTLY verbatim from the resume, must read as one fluent
+   sentence.
+
+B) FULL REWRITE — preferred in this mode when it produces a stronger match.
+   "segments" is a SINGLE element with "type": "rewritten", its own "id"
+   ("chg_NNN"), the complete new sentence as "text", and a "reason". Do not
+   include any "original"-typed segments in a rewritten bullet.
+   {
+     "id": "exp_ab12cd34_ef567890",
+     "text": "<the untouched original sentence, unchanged>",
+     "segments": [
+       { "type": "rewritten", "id": "chg_002", "text": "<the complete new sentence>", "reason": "restructures around the JD's data-pipeline framing while describing the same underlying work" }
+     ]
+   }
+
+If a bullet is not touched at all, omit "segments" entirely (or return an
+empty array) — do not manufacture a change just to have something to show.
+
+RULES:
+- Sound human, not textbook or robotic. Never sound AI-generated.
+- Do not use em dashes, en dashes, or hyphens used as sentence-connecting
+  punctuation. It reads as AI-generated.
+- Never drop any bullet, any company, any experience. Every bullet in the
+  input must appear in the output (with or without a "segments" addition).
+  You are optimizing what is there, not removing anything.
+- Rewrite phrases so they sound like genuine engineering work rather than
+  keyword additions. Polish the wording so added concepts feel organically
+  embedded in the accomplishment, not appended.
+- Prefer adjacent, truthful terminology over copied job-description language.
+  Use language that naturally fits the accomplishment rather than lifting JD
+  phrases verbatim.
+- Optimize around evidence, not keywords. Every keyword you add must be
+  backed by the rest of the bullet's description of the work. If you mention
+  "multi-agent systems," the bullet should describe agents coordinating work.
+  If you mention "GPU acceleration," reference PyTorch, TensorRT, or training
+  pipelines specifically, not the term alone.
+- NEVER introduce new experience, employers, projects, research, publications,
+  patents, or domain expertise not already present in the resume. Only
+  strengthen, rephrase, or reorder information already explicitly there. This
+  is the one rule aggressive mode does not relax.
+- Only add a keyword if it is directly supported by the existing
+  accomplishment, defensible in an interview based on that bullet alone.
+- Keep ATS keywords attached to a concrete technical action, never a vague
+  phrase.
+  Weak: "Built RESTful services facilitating AI system synergy."
+  Better: "Built RESTful services that integrated ML inference into
+  high-volume enterprise workflows."
+  Weak: "Enhanced production-level AI system reliability."
+  Better: "Improved production AI reliability through evaluation pipelines,
+  validation checks, and failure analysis."
+- Structure bullets around: action + system + scale/constraint + measurable
+  outcome, where the resume already supports each part.
+- Return ONLY valid JSON, no markdown, no commentary — the exact schema shown
+  in the user message.
+"""
+
+
+def _build_rewrite_user_prompt(experience: list, projects: list, jd_text: str) -> str:
+    return f"""
+JOB DESCRIPTION:
+{jd_text[:6000]}
+
+EXPERIENCE AND PROJECTS (full, structured, ids included — optimize these):
+{json.dumps({"experience": experience, "projects": projects}, indent=None)}
+
+Return JSON exactly matching this schema (only "experience" and "projects" —
+same bullets, same ids, same order, "segments" added only where touched):
+{{
+  "experience": [ ... same shape as input, bullets optionally carrying "segments" ... ],
+  "projects": [ ... same shape as input, bullets optionally carrying "segments" ... ]
+}}
+"""
+
+
+def _verify_and_relabel_segments(bullet: dict, real_text: str) -> tuple[list, list]:
+    """
+    Server-side guardrail on a single bullet's "segments" array.
+
+    Only "original"-typed segments are ever checked — that type is a factual
+    claim ("this text is unchanged, verbatim, from your resume") and is the
+    one thing this function verifies. "llm_suggested" and "rewritten"
+    segments are proposals, not claims, and are never touched here — the
+    user reviews and accepts/rejects those, this function doesn't get a vote.
+
+    Reconstructs the bullet by walking segments left to right and confirming
+    each "original"-typed segment's text is found, in order, inside
+    `real_text` (the bullet's actual stored text, before this call).
+    "llm_suggested"/"rewritten" segments between two verified "original"
+    segments are allowed — they don't have to appear in real_text, that's
+    the whole point of them.
+
+    If an "original"-typed segment's text is NOT found at or after the
+    current search position, it's relabeled to "llm_suggested" (with a
+    reason explaining it's unverified) so it goes through the same
+    accept/reject review as everything else instead of being silently
+    trusted as unchanged. Nothing is discarded; the user still decides.
+
+    Returns (segments, warnings) — warnings is a list of strings for logging.
+    """
+    segments = bullet.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return [], []
+
+    warnings = []
+    # A "rewritten" bullet has no original-typed segments to verify at all —
+    # pass through untouched, it's a proposal by construction.
+    if any(isinstance(s, dict) and s.get("type") == "rewritten" for s in segments):
+        return segments, warnings
+
+    cursor = 0  # search position within real_text, advances left-to-right
+    clean_segments = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        seg_type = seg.get("type")
+        seg_text = str(seg.get("text", ""))
+        if seg_type not in _SEGMENT_TYPES:
+            warnings.append(f"dropped segment with unknown type {seg_type!r}")
+            continue
+
+        if seg_type != "original":
+            clean_segments.append(seg)
+            continue
+
+        idx = real_text.find(seg_text, cursor)
+        if idx == -1:
+            # Claimed-original text doesn't actually appear (in order) in the
+            # real bullet — the model altered something it labeled as
+            # unchanged. Relabel rather than discard: the user still gets to
+            # see and decide on this text, just correctly flagged as
+            # unverified instead of trusted blindly.
+            warnings.append(
+                f"segment claimed 'original' but not found verbatim in source text at "
+                f"expected position — relabeled to llm_suggested: {seg_text[:80]!r}"
+            )
+            clean_segments.append({
+                "type": "llm_suggested",
+                "id": seg.get("id") or f"chg_unverified_{len(clean_segments)}",
+                "text": seg_text,
+                "reason": "Unverified — model returned this as unchanged text but it did not "
+                          "match the original resume verbatim. Review before accepting.",
+                "_unverified_original": True,
+            })
+            continue
+
+        clean_segments.append(seg)
+        cursor = idx + len(seg_text)
+
+    return clean_segments, warnings
+
+
+def _bullets_to_patches(bullets: list) -> list[dict]:
+    """
+    Converts validated {id, segments} bullets into the SAME patch operation
+    shape generate_resume_patches() already produces (insert_phrase /
+    rewrite_bullet with target_id/position/text/reason/confidence), so
+    nothing downstream — Dashboard.jsx's adapter, ResumeOptimizer.jsx's
+    rendering, resume_renderer.py's PDF baking — needs to change for this
+    new pipeline to work. A "rewritten" segment becomes one rewrite_bullet
+    patch. Each "llm_suggested" segment becomes one insert_phrase patch,
+    anchored on the tail of whichever "original" segment precedes it (falls
+    back to "end" if it's the very first segment in the bullet).
+
+    confidence is fixed at 1.0 — there's no separate classification call
+    scoring these anymore, and CONFIDENCE_FLOOR (0.65) is well below that,
+    so nothing here gets dropped by any _validate_and_clean_patches-style
+    floor check a future caller might still run. requirement_id is None —
+    there's no JD requirement list this call classifies against.
+    """
+    patches = []
+    for b in bullets:
+        segments = b.get("segments")
+        if not isinstance(segments, list) or not segments:
+            continue
+        target_id = b.get("id")
+        if not target_id:
+            continue
+
+        rewritten = next((s for s in segments if isinstance(s, dict) and s.get("type") == "rewritten"), None)
+        if rewritten is not None:
+            patches.append({
+                "id":              rewritten.get("id") or f"chg_{len(patches)}_{target_id}",
+                "operation":       "rewrite_bullet",
+                "target_id":       target_id,
+                "text":            str(rewritten.get("text", "")).strip(),
+                "reason":          str(rewritten.get("reason", "")),
+                "requirement_id":  None,
+                "confidence":      1.0,
+            })
+            continue
+
+        preceding_text_tail = ""
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            if seg.get("type") == "original":
+                # Keep a bounded tail as the anchor for the NEXT suggested
+                # segment — using the whole original chunk as an anchor
+                # risks not matching if the model reproduces long spans with
+                # tiny whitespace drift; a short exact tail is both a real
+                # substring (verified above) and a stable insertion point.
+                preceding_text_tail = seg.get("text", "")[-60:]
+                continue
+            if seg.get("type") == "llm_suggested":
+                position = f"after:{preceding_text_tail}" if preceding_text_tail else "end"
+                patches.append({
+                    "id":              seg.get("id") or f"chg_{len(patches)}_{target_id}",
+                    "operation":       "insert_phrase",
+                    "target_id":       target_id,
+                    "position":        position,
+                    "text":            str(seg.get("text", "")),
+                    "reason":          str(seg.get("reason", "")),
+                    "requirement_id":  None,
+                    "confidence":      1.0,
+                })
+                # A relabeled (originally-"original", verification-failed)
+                # segment's own text is REAL text that will exist in the
+                # rendered bullet once this patch is accepted — same as a
+                # genuine "original" segment for anchoring purposes. Without
+                # this, two segments that both got relabeled in the same
+                # bullet would both anchor off the same stale position and
+                # collide instead of chaining in order. A genuine
+                # model-authored "llm_suggested" segment is different: it's
+                # new text with no guaranteed position in the base document,
+                # so it must NOT become an anchor for what follows — anchor
+                # again off the next real "original" text instead.
+                if seg.get("_unverified_original"):
+                    preceding_text_tail = seg.get("text", "")[-60:]
+                else:
+                    preceding_text_tail = ""
+    return patches
+
+
+async def rewrite_experience_projects(structured_doc: dict, jd_description_text: str, mode: str = "honest") -> dict:
+    """
+    Single-call replacement for the extract -> classify -> patch chain, for
+    resume_optimize_worker.py's normal path. Sends the FULL experience +
+    projects sections (no [:6000] truncation — the legacy patch-only path's
+    doc_json slice doesn't apply here, this call needs the whole thing) plus
+    the JD text, and asks the model to rewrite bullets in place with inline
+    "segments" wherever it makes a change. No classification, no match_score
+    — see resume_optimize_worker.py's docstring for why those are dropped
+    for now.
+
+    mode is "honest" or "aggressive" (never "off" — the worker skips this
+    function entirely for "off"). Unrecognized values fall back to "honest".
+
+    Returns: { "patches": [...] } — same patch operation shape
+    generate_resume_patches() has always produced (insert_phrase /
+    rewrite_bullet), so every downstream consumer of
+    ResumeOptimization.patches needs zero changes. requirement_classification
+    / match_score are NOT computed by this function — caller sets them to
+    [] / None.
+    """
+    if structured_doc.get("_extraction_confidence") == "low":
+        raise HTTPException(
+            status_code=422,
+            detail="Could not extract enough structure from this resume to optimize it safely. "
+                   "Try re-uploading as a text-based PDF.",
+        )
+    if mode not in ("honest", "aggressive"):
+        mode = "honest"
+
+    experience = deepcopy(structured_doc.get("experience") or [])
+    projects = deepcopy(structured_doc.get("projects") or [])
+
+    if not experience and not projects:
+        return {"patches": []}
+
+    # Index real bullet text BEFORE the call, keyed by id — this is the
+    # ground truth _verify_and_relabel_segments checks "original" claims
+    # against.
+    real_text_by_id: dict[str, str] = {}
+    for exp in experience:
+        for b in exp.get("bullets", []) or []:
+            real_text_by_id[b["id"]] = b.get("text", "")
+    for proj in projects:
+        for b in proj.get("bullets", []) or []:
+            real_text_by_id[b["id"]] = b.get("text", "")
+
+    system_prompt = _REWRITE_SYSTEM_PROMPT_AGGRESSIVE if mode == "aggressive" else _REWRITE_SYSTEM_PROMPT_HONEST
+    user_message = _build_rewrite_user_prompt(experience, projects, jd_description_text or "")
+
+    result = await _call_llm(
+        system_prompt, user_message,
+        model=_REWRITE_LLM_MODEL, timeout=_REWRITE_LLM_TIMEOUT, max_tokens=_REWRITE_MAX_TOKENS,
+    )
+    returned_experience = result.get("experience", [])
+    returned_projects = result.get("projects", [])
+    if not isinstance(returned_experience, list):
+        returned_experience = []
+    if not isinstance(returned_projects, list):
+        returned_projects = []
+
+    valid_ids = _collect_valid_ids(structured_doc)
+    all_bullets: list[dict] = []
+    total_warnings = 0
+    for section in (returned_experience, returned_projects):
+        for container in section:
+            if not isinstance(container, dict):
+                continue
+            for b in container.get("bullets", []) or []:
+                if not isinstance(b, dict) or not b.get("id"):
+                    continue
+                bid = b["id"]
+                if bid not in valid_ids:
+                    logger.warning(f"[optimizer] rewrite call returned unknown bullet id {bid!r} — skipped")
+                    continue
+                real_text = real_text_by_id.get(bid, "")
+                clean_segments, warnings = _verify_and_relabel_segments(b, real_text)
+                total_warnings += len(warnings)
+                for w in warnings:
+                    logger.warning(f"[optimizer] bullet {bid!r}: {w}")
+                if clean_segments:
+                    all_bullets.append({"id": bid, "segments": clean_segments})
+
+    patches = _bullets_to_patches(all_bullets)
+
+    op_counts: dict[str, int] = {}
+    for p in patches:
+        op_counts[p["operation"]] = op_counts.get(p["operation"], 0) + 1
+    logger.info(
+        f"[optimizer] rewrite_experience_projects ({mode}, {_REWRITE_LLM_MODEL}): "
+        f"{len(all_bullets)} bullet(s) touched -> {len(patches)} patch(es), ops={op_counts}, "
+        f"{total_warnings} segment warning(s)"
+    )
+
+    return {"patches": patches}
 
 
 def apply_patch_to_text(current_text: str, patch: dict) -> str:
