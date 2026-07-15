@@ -526,8 +526,7 @@ export default function Landing({ onEnter, onSkip }) {
               <span className="ld-grad">Rack handles the rest.</span>
             </h1>
             <p className="ld-hero-sub" style={hv(0.24)}>
-              Rack scans every company board, scores each posting against your exact resume, and
-              applies to jobs on your behalf. You wake up to ranked matches, not another search bar.
+             Rack scans every company board, scores each posting against your exact version of resume, and applies to jobs on your behalf using an <b>MCP powered AI agent</b>. You wake up to the applied jobs.
             </p>
             <div className="ld-hero-ctas" style={hv(0.34)}>
               <button className="ld-btn-primary" onClick={openModal}>Get started free<Arrow size={16} /></button>
@@ -861,7 +860,7 @@ const CSS = `
   .ld-badge-pulse { width: 7px; height: 7px; background: var(--em); border-radius: 50%; animation: ldPulse 2s ease-in-out infinite; flex-shrink: 0; }
   .ld-hero-h1 { font-weight: 800; font-size: clamp(46px, 7vw, 84px); line-height: 1.0; letter-spacing: -0.045em; color: var(--ink); margin: 0 0 22px; }
   .ld-grad { background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
-  .ld-hero-sub { font-size: clamp(16px, 2.1vw, 19px); line-height: 1.65; color: var(--ink3); max-width: 580px; margin: 0 0 34px; font-weight: 400; text-wrap: pretty; }
+  .ld-hero-sub { font-size: clamp(16px, 2.1vw, 19px); line-height: 1.65; color: var(--ink3); max-width: 680px; margin: 0 0 34px; font-weight: 400; text-wrap: pretty; }
   .ld-hero-ctas { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center; margin-bottom: 18px; }
   .ld-hero-note { font-size: 13px; color: var(--ink4); margin: 0 0 56px; }
   .ld-hero-visual { width: 100%; max-width: 940px; }
